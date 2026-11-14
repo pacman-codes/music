@@ -28,3 +28,20 @@ The Wave uses weighted sampling without replacement **inside each batch**. The n
 Telegram: /rate ID SCORE, /skip ID, /finished ID or rating inline keyboard.
 Mini App: 1–10 selector, manual feedback buttons.
 An HTML widget renderer exists but remains disabled pending Telegram widget runtime safety and aiogram widget_query support.
+
+## Personalized catalogue discovery (not native playback)
+
+This is separate from the local playable /wave.
+
+- 1–10 score is a positive seed only above 4; liked and high-rated songs
+  contribute to artist preferences. A manual skip streak removes an artist
+  seed derived solely from a frequently skipped song, without unliking it.
+- At most three favorite artists are selected; similar recording metadata
+  comes from ListenBrainz and is resolved by MusicBrainz.
+- Records are interleaved across seed artists, duplicate recordings and
+  previously owned titles filtered out. Partial provider failures degrade
+  gracefully.
+- Only a confirmed MusicBrainz MBID is used as a definite identity. A textual
+  match is a suggestion, not proof.
+- No track is auto-sent in Telegram until a real Telegram audio file exists.
+  Do not count a catalog recommendation as a native playback event.
