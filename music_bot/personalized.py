@@ -13,6 +13,7 @@ from music_bot.catalog import (
     CatalogError, CatalogTrack, MusicCatalog, normalize, normalized_identity,
 )
 from music_bot.recommend import fatigue_suppressed
+from music_bot.discovery_ranking import fuse_artist_radio
 from music_bot.storage import Library
 
 
@@ -72,7 +73,7 @@ async def personalized_discovery(
     db: Library, catalog: MusicCatalog, *, difficulty: str = "medium",
     limit: int = 15, max_seeds: int = 3,
 ) -> tuple[list[str], list[CatalogTrack]]:
-    """Collect LB radio from top-rated artist seeds, fairly interleaved.
+    """Collect LB radio from top-rated artist seeds, rank-fused and diversified.
 
     Partial catalog outages may reduce choices without breaking the entire
     feed. On total outage raise CatalogError. No user token is required.
@@ -86,7 +87,7 @@ async def personalized_discovery(
         return [], []
 
     known_ids = db.confirmed_recording_ids()
-    own_tracks = db.all_tracks(1000)
+    own_tracks = db.all_tracks(10000)
     own_names = {normalized_identity(t.title, t.artist) for t in own_tracks}
     suppressed_names = {
         normalized_identity(t.title, t.artist)
@@ -117,21 +118,7 @@ async def personalized_discovery(
     if errors == len(seeds):
         raise CatalogError("Не удалось связаться с музыкальными каталогами")
 
-    result: list[CatalogTrack] = []
-    seen_names: set[tuple[str, str]] = set()
-    seen_ids: set[str] = set()
-    cursor = 0
-    # Per-seed round robin, no permanently assigned artist bias.
-    while len(result) < limit and any(pools):
-        pool = pools[cursor % len(pools)]
-        cursor += 1
-        if not pool:
-            continue
-        song = pool.pop(0)
-        identity = normalized_identity(song.title, song.artist)
-        if song.mbid in seen_ids or identity in seen_names:
-            continue
-        seen_ids.add(song.mbid)
-        seen_names.add(identity)
-        result.append(song)
-    return used_seeds, result
+    # An item suggested by multiple different preferred artists is usually
+    # a stronger bridge than a recommendation from only one seed. Reciprocal
+    # rank fusion joins their rankings, then softens artist repetition.
+    return used_seeds, fuse_artist_radio(pools, limit=limit)
