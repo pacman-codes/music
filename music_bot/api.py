@@ -17,6 +17,7 @@ from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normaliz
 from music_bot.config import Settings, load_settings
 from music_bot.importer import AudioIngestService, MediaImportError
 from music_bot.main import deliver_queue
+from music_bot.personalized import personalized_discovery
 from music_bot.selection import select_wave_batch
 from music_bot.storage import Library
 from music_bot.webapp_auth import InvalidInitData, verify_init_data
@@ -240,6 +241,27 @@ def create_app(config: Settings | None = None,
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         db.remember_candidates(matches)
         return {"results": catalog_result(matches), "type": "metadata_only"}
+
+    @app.get("/api/discovery/for-you", dependencies=[auth])
+    async def catalog_for_you(
+        difficulty: Literal["easy", "medium", "hard"] = "medium",
+        limit: int = Query(default=15, ge=1, le=20),
+    ):
+        try:
+            seeds, songs = await personalized_discovery(
+                db, catalog_client, difficulty=difficulty, limit=limit,
+            )
+        except CatalogError as exc:
+            raise HTTPException(502, detail=str(exc)) from exc
+        if not seeds:
+            raise HTTPException(
+                409, detail="Поставь 7–10 любимым песням или добавь их в избранное"
+            )
+        db.remember_candidates(songs)
+        return {
+            "seed_artists": seeds, "results": catalog_result(songs),
+            "type": "metadata_only",
+        }
 
     @app.get("/api/discovery/radio", dependencies=[auth])
     async def catalog_artist_radio(
