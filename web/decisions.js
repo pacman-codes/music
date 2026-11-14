@@ -117,6 +117,8 @@
     await refreshCategories();
     await refreshItems();
   }
+  // Allows the library/discovery cards to refresh verdict category counts.
+  window.refreshDecisions = refreshAll;
 
   document.getElementById("decisions-refresh").addEventListener(
     "click", () => refreshAll().catch(error => toast(error.message)),
