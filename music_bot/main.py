@@ -12,7 +12,9 @@ from aiogram.types import (
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaAudio, Message, WebAppInfo,
 )
 
+from music_bot.catalog import MusicCatalog
 from music_bot.config import load_settings
+from music_bot.telegram_catalog import install_catalog_handlers
 from music_bot.selection import DYNAMIC_MODES, select_wave_batch
 from music_bot.storage import Library, Track
 
@@ -23,6 +25,9 @@ HELP = """🎵 music — личный плеер
 Отправь аудио, чтобы добавить трек в библиотеку.
 /library — последние треки
 /search Текст — поиск в своей библиотеке
+/find Название — внешний поиск MusicBrainz
+/radio Исполнитель — похожая музыка ListenBrainz
+/saved — отложенные находки (пока без аудио)
 /liked — избранное
 /like ID /unlike ID /dislike ID — избранное и исключения
 /rate ID 1-10 — оценка трека
@@ -228,7 +233,8 @@ async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
         )
 
 
-def create_router(db: Library, owner_id: int, webapp_url: str | None = None) -> Router:
+def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
+                  catalog: MusicCatalog | None = None) -> Router:
     router = Router()
     router.message.middleware(OwnerOnly(owner_id))
     router.callback_query.middleware(OwnerOnly(owner_id))
@@ -656,6 +662,8 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None) -> 
             "discover" if action == "discover" else "balanced",
         )
 
+    if catalog is not None:
+        install_catalog_handlers(router, db, catalog)
     return router
 
 
@@ -663,12 +671,16 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     config = load_settings()
     db = Library(config.db_path)
+    catalog = MusicCatalog(config.db_path)
     bot = Bot(token=config.token)
     dp = Dispatcher()
-    dp.include_router(create_router(db, config.owner_id, config.webapp_url))
+    dp.include_router(create_router(
+        db, config.owner_id, config.webapp_url, catalog=catalog,
+    ))
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        await catalog.close()
         await bot.session.close()
 
 
