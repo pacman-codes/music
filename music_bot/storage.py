@@ -149,6 +149,11 @@ class Library:
               source_kind TEXT NOT NULL,
               cursor INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS queue_filters (
+              queue_id INTEGER PRIMARY KEY REFERENCES queues(id) ON DELETE CASCADE,
+              min_rating INTEGER NOT NULL DEFAULT 0 CHECK(min_rating BETWEEN 0 AND 10),
+              liked_only INTEGER NOT NULL DEFAULT 0 CHECK(liked_only IN (0,1)),
+              no_repeat_today INTEGER NOT NULL DEFAULT 0 CHECK(no_repeat_today IN (0,1)));
             CREATE TABLE IF NOT EXISTS queue_items(
               queue_id INTEGER NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
               position INTEGER NOT NULL,
@@ -414,6 +419,151 @@ class Library:
         with self.con() as db:
             row = db.execute("SELECT source_kind FROM queues WHERE id=?", (queue_id,)).fetchone()
             return str(row["source_kind"]) if row is not None else None
+
+    def get_queue_filters(self, queue_id: int) -> dict:
+        with self.con() as db:
+            if db.execute("SELECT id FROM queues WHERE id=?", (queue_id,)).fetchone() is None:
+                raise ValueError("Queue not found")
+            row = db.execute(
+                """SELECT min_rating,liked_only,no_repeat_today
+                   FROM queue_filters WHERE queue_id=?""", (queue_id,),
+            ).fetchone()
+            return {
+                "min_rating": int(row["min_rating"]) if row else 0,
+                "liked_only": bool(row["liked_only"]) if row else False,
+                "no_repeat_today": bool(row["no_repeat_today"]) if row else False,
+            }
+
+    def sent_today_ids(self) -> set[int]:
+        """Telegram-delivered, NOT necessarily listened-to, songs."""
+        with self.con() as db:
+            return {int(r[0]) for r in db.execute(
+                "SELECT DISTINCT track_id FROM sent_history "
+                "WHERE sent_at>=datetime('now','start of day')"
+            )}
+
+    def set_queue_filters(self, queue_id: int, *, min_rating: int,
+                          liked_only: bool, no_repeat_today: bool) -> dict:
+        if type(min_rating) is not int or not 0 <= min_rating <= 10:
+            raise ValueError("min_rating must be 0..10")
+        if type(liked_only) is not bool or type(no_repeat_today) is not bool:
+            raise ValueError("Queue filters must be booleans")
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT source_kind FROM queues WHERE id=?", (queue_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Queue not found")
+            if row["source_kind"] not in {"balanced", "discover", "favorites"}:
+                raise ValueError("Filters apply to generated radio queues only")
+            db.execute(
+                """INSERT INTO queue_filters(queue_id,min_rating,liked_only,no_repeat_today)
+                   VALUES(?,?,?,?) ON CONFLICT(queue_id) DO UPDATE SET
+                     min_rating=excluded.min_rating,liked_only=excluded.liked_only,
+                     no_repeat_today=excluded.no_repeat_today""",
+                (queue_id, min_rating, int(liked_only), int(no_repeat_today)),
+            )
+        return self.get_queue_filters(queue_id)
+
+    def queue_snapshot(self, queue_id: int, *, limit: int = 50) -> dict:
+        if not 1 <= limit <= 100:
+            raise ValueError("Invalid preview size")
+        with self.con() as db:
+            queue = db.execute(
+                "SELECT id,label,source_kind,cursor FROM queues WHERE id=?",
+                (queue_id,),
+            ).fetchone()
+            if queue is None:
+                raise ValueError("Queue not found")
+            pending_total = int(db.execute(
+                "SELECT COUNT(*) FROM queue_items WHERE queue_id=? AND position>=?",
+                (queue_id, queue["cursor"]),
+            ).fetchone()[0])
+            upcoming = [
+                {"position": int(r["position"]), "track_id": int(r["id"]),
+                 "title": r["title"], "artist": r["artist"]}
+                for r in db.execute(
+                    """SELECT qi.position,t.id,t.title,t.artist FROM queue_items qi
+                       JOIN tracks t ON t.id=qi.track_id
+                       WHERE qi.queue_id=? AND qi.position>=?
+                       ORDER BY qi.position LIMIT ?""",
+                    (queue_id, queue["cursor"], limit),
+                )
+            ]
+            return {
+                "queue_id": int(queue["id"]), "label": queue["label"],
+                "kind": queue["source_kind"], "cursor": int(queue["cursor"]),
+                "pending_total": pending_total, "upcoming": upcoming,
+                "is_dynamic": queue["source_kind"] in {"balanced", "discover", "favorites"},
+            }
+
+    def edit_queue(self, queue_id: int, action: str, *,
+                   track_id: int | None = None, position: int | None = None,
+                   to_position: int | None = None,
+                   expected_cursor: int | None = None) -> dict:
+        """Atomically edit ONLY not-yet-sent queue items (0-based positions).
+
+        New tracks may be inserted at the front or appended. Moving/removing
+        requires an exact pending position, not a title or vague track ID.
+        Never mutate an in-flight send. Telegram already-delivered media
+        is immutable.
+        """
+        if action not in {"next", "append", "move", "remove"}:
+            raise ValueError("Unsupported queue operation")
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            q = db.execute(
+                "SELECT cursor FROM queues WHERE id=?", (queue_id,),
+            ).fetchone()
+            if q is None:
+                raise ValueError("Queue not found")
+            cursor = int(q["cursor"])
+            if expected_cursor is not None and expected_cursor != cursor:
+                raise ValueError("Queue changed; refresh the pending list")
+            locked = db.execute(
+                """SELECT 1 FROM media_import_leases
+                   WHERE source_type='queue' AND source_key=?
+                     AND expires_at>unixepoch('now')""",
+                (str(queue_id),),
+            ).fetchone()
+            if locked:
+                raise ValueError("Queue is currently sending audio")
+            pending = [int(r[0]) for r in db.execute(
+                "SELECT track_id FROM queue_items WHERE queue_id=? "
+                "AND position>=? ORDER BY position", (queue_id, cursor),
+            )]
+            if action in {"next", "append"}:
+                if type(track_id) is not int or track_id <= 0:
+                    raise ValueError("A valid track ID is required")
+                if len(pending) >= 1000:
+                    raise ValueError("Queue limit is 1000 pending tracks")
+                if db.execute(
+                    "SELECT 1 FROM tracks WHERE id=?", (track_id,)
+                ).fetchone() is None:
+                    raise ValueError("Track not found")
+                pending.insert(0 if action == "next" else len(pending), track_id)
+            else:
+                if type(position) is not int or not cursor <= position < cursor+len(pending):
+                    raise ValueError("Cannot edit an already sent or missing position")
+                current_idx = position - cursor
+                if action == "remove":
+                    pending.pop(current_idx)
+                else:
+                    if (type(to_position) is not int or
+                            not cursor <= to_position < cursor+len(pending)):
+                        raise ValueError("Target position must still be pending")
+                    item = pending.pop(current_idx)
+                    pending.insert(to_position - cursor, item)
+            db.execute(
+                "DELETE FROM queue_items WHERE queue_id=? AND position>=?",
+                (queue_id, cursor),
+            )
+            db.executemany(
+                "INSERT INTO queue_items(queue_id,position,track_id) VALUES(?,?,?)",
+                [(queue_id, cursor+i, tid) for i, tid in enumerate(pending)],
+            )
+        return self.queue_snapshot(queue_id)
 
     def latest_sent_ids(self, limit: int = 3) -> set[int]:
         with self.con() as db:
