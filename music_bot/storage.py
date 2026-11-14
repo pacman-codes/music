@@ -120,6 +120,12 @@ class Library:
             CREATE INDEX IF NOT EXISTS queue_item_order ON queue_items(queue_id, position);
             """)
             db.execute("INSERT OR IGNORE INTO playlists(name,kind) VALUES('Мне нравится','liked')")
+            # Existing imported audio rows predate recording-identity links.
+            db.execute(
+                """INSERT OR IGNORE INTO track_recording_links(track_id,mbid,provenance)
+                   SELECT track_id,mbid,'import' FROM catalog_audio_assets
+                   ORDER BY linked_at DESC"""
+            )
 
     @staticmethod
     def track(row):
@@ -682,3 +688,10 @@ class Library:
             return {str(row[0]) for row in db.execute(
                 "SELECT mbid FROM track_recording_links"
             )}
+
+    def resolved_catalog_tracks(self) -> dict[str, int]:
+        """Explicit MBID associations, imported or manually confirmed only."""
+        resolved = self.linked_candidate_tracks()
+        for track_id, record in self.recording_for_tracks().items():
+            resolved[record["mbid"]] = track_id
+        return resolved
