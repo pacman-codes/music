@@ -291,6 +291,46 @@ class Library:
             )
             return queue_id
 
+    def queue_kind(self, queue_id: int) -> str | None:
+        with self.con() as db:
+            row = db.execute("SELECT source_kind FROM queues WHERE id=?", (queue_id,)).fetchone()
+            return str(row["source_kind"]) if row is not None else None
+
+    def latest_sent_ids(self, limit: int = 3) -> set[int]:
+        with self.con() as db:
+            return {int(row[0]) for row in db.execute(
+                "SELECT track_id FROM sent_history ORDER BY id DESC LIMIT ?", (limit,)
+            )}
+
+    def extend_exhausted_queue(self, queue_id: int, track_ids) -> bool:
+        """Append fresh radio candidates atomically, only after previous batch is consumed.
+
+        Existing explicit playlists are frozen snapshots and are not extendable.
+        Repeats across future radio batches are allowed; duplicates within a batch
+        are removed. The caller must recompute recommendations before invoking.
+        """
+        ids = list(dict.fromkeys(track_ids))
+        if not ids:
+            return False
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT source_kind, cursor FROM queues WHERE id=?", (queue_id,)
+            ).fetchone()
+            if row is None or row["source_kind"] not in ("balanced", "discover", "favorites"):
+                return False
+            total = int(db.execute(
+                "SELECT COUNT(*) FROM queue_items WHERE queue_id=?", (queue_id,)
+            ).fetchone()[0])
+            if int(row["cursor"]) != total:
+                return False
+            db.executemany(
+                "INSERT INTO queue_items(queue_id,position,track_id) VALUES(?,?,?)",
+                [(queue_id, total + offset, track_id)
+                 for offset, track_id in enumerate(ids)],
+            )
+            return True
+
     def peek_queue(self, queue_id, size=10):
         if not 1 <= size <= 10:
             raise ValueError("Telegram batch must contain 1..10 tracks")
