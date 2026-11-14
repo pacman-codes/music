@@ -59,6 +59,24 @@ class Library:
     def init(self):
         with self.con() as db:
             db.executescript("""
+            CREATE TABLE IF NOT EXISTS screen_titles (
+              media_type TEXT NOT NULL CHECK(media_type IN ('movie','tv')),
+              tmdb_id INTEGER NOT NULL, title TEXT NOT NULL,
+              original_title TEXT, release_year INTEGER,
+              description TEXT, average_score REAL,
+              last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY(media_type,tmdb_id));
+            CREATE TABLE IF NOT EXISTS screen_watchlist (
+              media_type TEXT NOT NULL, tmdb_id INTEGER NOT NULL,
+              watch_status TEXT NOT NULL CHECK (
+                watch_status IN ('planned','watching','completed','on_hold','dropped')),
+              season INTEGER NOT NULL DEFAULT 0 CHECK(season>=0),
+              episode INTEGER NOT NULL DEFAULT 0 CHECK(episode>=0),
+              score INTEGER CHECK(score BETWEEN 1 AND 10),
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY(media_type,tmdb_id),
+              FOREIGN KEY(media_type,tmdb_id)
+                REFERENCES screen_titles(media_type,tmdb_id) ON DELETE CASCADE);
             CREATE TABLE IF NOT EXISTS anime_titles (
               id INTEGER PRIMARY KEY, title TEXT NOT NULL,
               english TEXT, native TEXT, episodes INTEGER,
@@ -857,4 +875,75 @@ class Library:
         with self.con() as db:
             return bool(db.execute(
                 "DELETE FROM anime_watchlist WHERE anime_id=?", (anime_id,),
+            ).rowcount)
+
+    def remember_screen_titles(self, items) -> None:
+        """Only TMDB metadata without streaming links or credentials."""
+        with self.con() as db:
+            db.executemany(
+                """INSERT INTO screen_titles(media_type,tmdb_id,title,original_title,
+                   release_year,description,average_score)
+                   VALUES(?,?,?,?,?,?,?)
+                   ON CONFLICT(media_type,tmdb_id) DO UPDATE SET
+                    title=excluded.title,original_title=excluded.original_title,
+                    release_year=excluded.release_year,
+                    description=excluded.description,average_score=excluded.average_score,
+                    last_seen_at=CURRENT_TIMESTAMP""",
+                [(t.media_type,t.id,t.title,t.original_title,t.release_year,
+                  t.description,t.average_score) for t in items],
+            )
+
+    def screen_watchlist(self, limit: int = 200) -> list[dict]:
+        with self.con() as db:
+            return [dict(r) for r in db.execute(
+                """SELECT t.media_type,t.tmdb_id,t.title,t.original_title,
+                          t.release_year,t.description,t.average_score,
+                          w.watch_status,w.season,w.episode,w.score
+                   FROM screen_watchlist w JOIN screen_titles t
+                     ON t.media_type=w.media_type AND t.tmdb_id=w.tmdb_id
+                   ORDER BY w.updated_at DESC LIMIT ?""", (limit,),
+            )]
+
+    def update_screen_watch(self, media_type: str, tmdb_id: int, *,
+                            watch_status: str, season: int = 0, episode: int = 0,
+                            score: int | None = None) -> dict:
+        if media_type not in {"movie","tv"} or type(tmdb_id) is not int or tmdb_id<=0:
+            raise ValueError("Invalid TMDB title")
+        if watch_status not in {"planned","watching","completed","on_hold","dropped"}:
+            raise ValueError("Invalid watch status")
+        if (type(season) is not int or type(episode) is not int
+                or not 0 <= season <= 1000 or not 0 <= episode <= 10000):
+            raise ValueError("Invalid season or episode")
+        if media_type == "movie" and (season != 0 or episode != 0):
+            raise ValueError("Movies have no season/episode progress")
+        if score is not None and (type(score) is not int or not 1 <= score <= 10):
+            raise ValueError("Score must be 1..10")
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute(
+                "SELECT 1 FROM screen_titles WHERE media_type=? AND tmdb_id=?",
+                (media_type,tmdb_id),
+            ).fetchone():
+                raise ValueError("Find the title in TMDB first")
+            db.execute(
+                """INSERT INTO screen_watchlist
+                     (media_type,tmdb_id,watch_status,season,episode,score)
+                   VALUES(?,?,?,?,?,?)
+                   ON CONFLICT(media_type,tmdb_id) DO UPDATE SET
+                     watch_status=excluded.watch_status,season=excluded.season,
+                     episode=excluded.episode,score=excluded.score,
+                     updated_at=CURRENT_TIMESTAMP""",
+                (media_type,tmdb_id,watch_status,season,episode,score),
+            )
+            return dict(db.execute(
+                """SELECT media_type,tmdb_id,watch_status,season,episode,score
+                   FROM screen_watchlist WHERE media_type=? AND tmdb_id=?""",
+                (media_type,tmdb_id),
+            ).fetchone())
+
+    def remove_screen_watch(self, media_type: str, tmdb_id: int) -> bool:
+        with self.con() as db:
+            return bool(db.execute(
+                "DELETE FROM screen_watchlist WHERE media_type=? AND tmdb_id=?",
+                (media_type,tmdb_id),
             ).rowcount)
