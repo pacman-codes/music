@@ -15,6 +15,8 @@ class Settings:
     youtube_download_enabled: bool = False
     tmdb_read_token: str | None = None
     acoustid_client_key: str | None = None
+    profile_github_repo: str | None = None
+    profile_github_token: str | None = None
 
 def load_settings() -> Settings:
     load_dotenv()
@@ -39,9 +41,14 @@ def load_settings() -> Settings:
     download = os.getenv("MUSIC_ENABLE_YOUTUBE_DOWNLOAD", "").strip().lower() in ("1", "true", "yes")
     if download and not search:
         raise RuntimeError("YouTube downloading requires search to be enabled")
+    github_repo = os.getenv("MUSIC_PROFILE_GITHUB_REPO", "").strip() or None
+    github_token = os.getenv("MUSIC_PROFILE_GITHUB_TOKEN", "").strip() or None
+    if bool(github_repo) != bool(github_token):
+        raise RuntimeError("Both MUSIC_PROFILE_GITHUB_REPO and MUSIC_PROFILE_GITHUB_TOKEN must be set together")
     return Settings(
         token, owner_id, Path(os.getenv("MUSIC_DB_PATH", "data/music.db")), url,
         hosts, search, download,
         os.getenv("TMDB_READ_TOKEN", "").strip() or None,
         os.getenv("ACOUSTID_CLIENT_KEY", "").strip() or None,
+        github_repo, github_token,
     )
