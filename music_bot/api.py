@@ -77,6 +77,24 @@ class WavePresetRequest(BaseModel):
     preset: Literal["balanced", "familiar", "explore"]
 
 
+class QueueItemRequest(BaseModel):
+    action: Literal["next", "append"]
+    track_id: int = Field(ge=1, strict=True)
+    expected_cursor: int | None = Field(default=None, ge=0, strict=True)
+
+
+class QueueMoveRequest(BaseModel):
+    position: int = Field(ge=0, strict=True)
+    to_position: int = Field(ge=0, strict=True)
+    expected_cursor: int | None = Field(default=None, ge=0, strict=True)
+
+
+class QueueFiltersRequest(BaseModel):
+    min_rating: int = Field(default=0, ge=0, le=10, strict=True)
+    liked_only: bool = False
+    no_repeat_today: bool = False
+
+
 class QueueRequest(BaseModel):
     kind: Literal["wave", "discover", "liked", "playlist"]
     playlist_id: int | None = None
@@ -671,6 +689,66 @@ def create_app(config: Settings | None = None,
     @app.put("/api/wave/preset", dependencies=[auth])
     async def update_wave_preset(payload: WavePresetRequest):
         return {"preset": db.set_wave_preset(payload.preset)}
+
+    @app.get("/api/queue/current", dependencies=[auth])
+    async def queue_current():
+        current = db.latest_queue_id()
+        return db.queue_snapshot(current) if current is not None else None
+
+    @app.get("/api/queue/{queue_id}", dependencies=[auth])
+    async def queue_preview(queue_id: int):
+        try:
+            preview = db.queue_snapshot(queue_id)
+            preview["filters"] = db.get_queue_filters(queue_id)
+            return preview
+        except ValueError as exc:
+            raise HTTPException(404, detail=str(exc)) from exc
+
+    @app.post("/api/queue/{queue_id}/items", dependencies=[auth])
+    async def queue_insert(queue_id: int, request: QueueItemRequest):
+        try:
+            return db.edit_queue(
+                queue_id, request.action, track_id=request.track_id,
+                expected_cursor=request.expected_cursor,
+            )
+        except ValueError as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+
+    @app.put("/api/queue/{queue_id}/items", dependencies=[auth])
+    async def queue_reorder(queue_id: int, request: QueueMoveRequest):
+        try:
+            return db.edit_queue(
+                queue_id, "move", position=request.position,
+                to_position=request.to_position,
+                expected_cursor=request.expected_cursor,
+            )
+        except ValueError as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+
+    @app.delete("/api/queue/{queue_id}/items/{position}", dependencies=[auth])
+    async def queue_remove(queue_id: int, position: int):
+        try:
+            return db.edit_queue(queue_id, "remove", position=position)
+        except ValueError as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+
+    @app.get("/api/queue/{queue_id}/filters", dependencies=[auth])
+    async def queue_filters(queue_id: int):
+        try:
+            return db.get_queue_filters(queue_id)
+        except ValueError as exc:
+            raise HTTPException(404, detail=str(exc)) from exc
+
+    @app.put("/api/queue/{queue_id}/filters", dependencies=[auth])
+    async def queue_set_filters(queue_id: int, request: QueueFiltersRequest):
+        try:
+            return db.set_queue_filters(
+                queue_id, min_rating=request.min_rating,
+                liked_only=request.liked_only,
+                no_repeat_today=request.no_repeat_today,
+            )
+        except ValueError as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
 
     @app.post("/api/queue", dependencies=[auth])
     async def send_to_telegram(request: QueueRequest):

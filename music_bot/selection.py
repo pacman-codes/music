@@ -13,12 +13,25 @@ from music_bot.storage import Library, Track
 DYNAMIC_MODES = frozenset(("balanced", "discover", "favorites"))
 
 
-def select_wave_batch(db: Library, mode: str, count: int = 10) -> list[Track]:
+def select_wave_batch(db: Library, mode: str, count: int = 10,
+                      *, queue_id: int | None = None) -> list[Track]:
     if mode not in DYNAMIC_MODES:
         raise ValueError("Unknown radio mode")
     if not 1 <= count <= 10:
         raise ValueError("Batch size must be 1–10")
     candidates = db.all_tracks()
+    if queue_id is not None:
+        filters = db.get_queue_filters(queue_id)
+        if filters["liked_only"]:
+            liked = db.liked_ids()
+            candidates = [t for t in candidates if t.id in liked]
+        if filters["min_rating"]:
+            ratings = db.ratings()
+            candidates = [t for t in candidates
+                          if ratings.get(t.id, 0) >= filters["min_rating"]]
+        if filters["no_repeat_today"]:
+            already_sent = db.sent_today_ids()
+            candidates = [t for t in candidates if t.id not in already_sent]
     if not candidates:
         return []
 

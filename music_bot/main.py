@@ -251,7 +251,7 @@ async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
                     return
                 mode = db.queue_kind(queue_id)
                 if not batch.tracks and mode in DYNAMIC_MODES:
-                    fresh = select_wave_batch(db, mode)
+                    fresh = select_wave_batch(db, mode, queue_id=queue_id)
                     if fresh and db.extend_exhausted_queue(queue_id, [t.id for t in fresh]):
                         batch = db.peek_queue(queue_id, size=10)
                     elif fresh:
