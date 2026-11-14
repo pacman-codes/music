@@ -5,6 +5,8 @@ const byId = (id) => document.getElementById(id);
 const show = (id, text) => { byId(id).textContent = text; };
 let toastTimer;
 let directImportEnabled = false;
+let youtubeSearchEnabled = false;
+let youtubeDownloadEnabled = false;
 function toast(message) {
   const node = byId("toast");
   node.textContent = message;
@@ -307,6 +309,71 @@ async function showExternalWishlist() {
   renderExternalCatalog(value.results, true);
 }
 
+
+function renderYouTubeResults(videos) {
+  const host = byId("youtube-results");
+  host.replaceChildren();
+  if (!videos.length) {
+    host.append(element("div", "empty", "Результатов нет или YouTube ограничил поиск."));
+    return;
+  }
+  for (const video of videos) {
+    const card = element("div", "item track-card");
+    const header = element("div", "track-head");
+    const info = element("div", "info");
+    info.append(
+      element("div", "name", video.title),
+      element("div", "sub", video.channel +
+        (video.duration_sec ? " · " + Math.floor(video.duration_sec / 60) + " мин" : ""))
+    );
+    header.append(info);
+    const buttons = element("div", "track-actions");
+    if (/^[A-Za-z0-9_-]{11}$/.test(video.video_id)) {
+      const link=element("a","catalog-link","▶ YouTube");
+      link.href="https://www.youtube.com/watch?v="+video.video_id;
+      link.target="_blank";
+      link.rel="noopener noreferrer";
+      buttons.append(link);
+    }
+    if (video.track_id) {
+      buttons.append(element("span","catalog-available",
+        "✓ Уже сохранено как Telegram-аудио #" + video.track_id));
+    } else if (youtubeDownloadEnabled) {
+      buttons.append(action("🎧 В Telegram", async () => {
+        if (!window.confirm(
+          "Подтверждаешь, что у тебя есть право скачать этот материал " +
+          "и сохранить его в Telegram?")) return;
+        const result=await post("/api/youtube/import/" +
+          encodeURIComponent(video.video_id));
+        toast(result.reused ?
+          "Аудио отправлено повторно" : "MP3 отправлен в Telegram");
+        video.track_id=result.track_id;
+        renderYouTubeResults(videos);
+      }, "secondary-action"));
+    } else {
+      buttons.append(element("span","catalog-unavailable",
+        "Загрузка отключена, доступен только поиск"));
+    }
+    card.append(header,buttons);
+    host.append(card);
+  }
+}
+
+async function youtubeSearch(query) {
+  show("youtube-status","Ищу на YouTube…");
+  const result=await api("/api/youtube/search?q="+encodeURIComponent(query));
+  show("youtube-status",result.results.length+
+       " результатов. Это ссылки на ролики, не локальная библиотека.");
+  renderYouTubeResults(result.results);
+}
+
+async function refreshYoutubeSettings() {
+  const status=await api("/api/youtube/status");
+  youtubeSearchEnabled=status.search_enabled === true;
+  youtubeDownloadEnabled=status.download_enabled === true;
+  byId("youtube-section").hidden=!youtubeSearchEnabled;
+}
+
 async function refreshPlaylists(){ renderPlaylists(await api("/api/playlists")); }
 async function refreshTracks() {
   const q=byId("query").value.trim();
@@ -317,7 +384,10 @@ async function refreshImportSettings() {
   directImportEnabled = config.enabled === true;
 }
 async function refresh() {
-  await Promise.all([refreshPlaylists(),refreshTracks(),refreshImportSettings()]);
+  await Promise.all([
+    refreshPlaylists(), refreshTracks(),
+    refreshImportSettings(), refreshYoutubeSettings()
+  ]);
 }
 if (tg && initData) {
   tg.ready();
@@ -325,6 +395,13 @@ if (tg && initData) {
   show("status","Нативное прослушивание в Telegram");
   byId("wave").addEventListener("click",()=>sendQueue("wave").catch(e=>toast(e.message)));
   byId("discover").addEventListener("click",()=>sendQueue("discover").catch(e=>toast(e.message)));
+  byId("youtube-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const query=byId("youtube-query").value.trim();
+    if (query.length < 2 || !youtubeSearchEnabled) return;
+    try { await youtubeSearch(query); }
+    catch(error) {show("youtube-status","YouTube-поиск недоступен");toast(error.message);}
+  });
   byId("catalog-form").addEventListener("submit", async event => {
     event.preventDefault();
     const query=byId("catalog-query").value.trim();

@@ -21,3 +21,6 @@
 @media(max-width:390px){.catalog-radio select{max-width:100%}.catalog-radio input{width:100%;flex-basis:100%}}
 
 .catalog-section .heading .actions{margin-top:0}
+
+#youtube-section{margin-top:26px}
+#youtube-section .heading span{color:var(--tg-theme-hint-color,#aaa);font-size:12px}

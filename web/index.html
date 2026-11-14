@@ -50,6 +50,17 @@
       <div class="catalog-caption" id="catalog-status" role="status" aria-live="polite">Попробуй найти музыку или запусти радио.</div>
       <div id="catalog-results" class="list"></div>
     </section>
+    <section id="youtube-section" hidden>
+      <div class="heading"><h2>▶ YouTube</h2><span>Дополнительно</span></div>
+      <p class="catalog-hint">Поиск YouTube через yt-dlp. Скачивание включается только владельцем сервера и допускается для материалов, которые разрешено загрузить.</p>
+      <form id="youtube-form" class="catalog-form">
+        <input id="youtube-query" type="search" minlength="2" maxlength="90"
+               placeholder="Название трека или исполнителя" required>
+        <button type="submit">Найти</button>
+      </form>
+      <div class="catalog-caption" id="youtube-status" role="status" aria-live="polite"></div>
+      <div id="youtube-results" class="list"></div>
+    </section>
     <section>
       <div class="heading"><h2>Плейлисты</h2><button type="button" id="create">＋ Новый</button></div>
       <div id="playlists" class="list"></div>
