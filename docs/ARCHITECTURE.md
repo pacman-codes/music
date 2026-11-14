@@ -9,6 +9,7 @@
 - music_bot.recommend: локальное взвешенное ранжирование по оценкам, ручным событиям, избранному.
 - music_bot.selection: пересчёт следующей порции радио по запросу «Ещё 10» с учётом актуальных оценок и недавних отправок.
 - music_bot.widget_bridge: подготовка валидатора будущих widget_query (неактивен, Telegram пока блокирует обычные production-боты).
+- music_bot.catalog: внешние метаданные MusicBrainz и ListenBrainz, кеширование и ограничение частоты запросов; не возвращает file_id или медиапоток.
 - web/: адаптивный интерфейс. Не загружает аудио напрямую и не использует собственный player.
 
 ## Как связаны плеер и интерфейс
@@ -34,6 +35,9 @@ track_ratings: track_id, score (1..10).
 playback_events: track_id, event (manual skip/complete), source, dedupe_key, created_at.
 widget_bindings: chat_id + message_id → track_id (только подготовка).
 widget_receipts: query_id → результат (идемпотентность при будущем включении).
+external_catalog_cache: ключ запроса → JSON метаданных с TTL.
+catalog_candidates: trusted MusicBrainz recording MBID и метаданные (НЕ Telegram asset).
+discovery_wishlist: MBID отложенной записи, без файла.
 
 SQLite CREATE IF NOT EXISTS расширяет v0.1 без сброса медиа и плейлистов. Пользовательские плейлисты используют snapshots; у радио следующие порции добавляются к очереди при запросе. У всех очередей SQLite хранит уже выданные позиции, предотвращая случайное повторение того же блока.
 
@@ -51,6 +55,6 @@ SQLite CREATE IF NOT EXISTS расширяет v0.1 без сброса меди
 
 - Telegram file_id — не HTTP URL и привязан к загрузившему файлы боту.
 - Прямого воспроизведения произвольной ссылки в нативном Telegram player нет.
-- Внешние медиа/рекомендательные источники пока не подключены: сначала проектируем adapters, нормализацию записей, проверку прав и квоты.
+- Внешние **метаданные** уже поступают из MusicBrainz/ListenBrainz; сами медиафайлы не скачиваются, не транслируются и не отправляются в Telegram. Источники файлов потребуют отдельного проверяемого adapter/ingest.
 - Нет автозагрузки музыки с YouTube, торрент-клиента и браузерного видеоплеера.
 - В будущем: MusicBrainz/ListenBrainz, новые кандидаты, «Радио по треку», поиск TMDB/AniList и внешних допустимых источников.
