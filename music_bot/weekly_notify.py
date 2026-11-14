@@ -78,11 +78,14 @@ async def send_weekly_digest(
 async def main_async():
     config = load_settings()
     db = Library(config.db_path)
-    async with Bot(token=config.token) as bot:
-        async with MusicCatalog(config.db_path) as catalog:
+    catalog = MusicCatalog(config.db_path)
+    try:
+        async with Bot(token=config.token) as bot:
             async def publisher(text: str):
                 return await bot.send_message(config.owner_id, text)
             return await send_weekly_digest(db, catalog, publisher)
+    finally:
+        await catalog.close()
 
 
 def main():
