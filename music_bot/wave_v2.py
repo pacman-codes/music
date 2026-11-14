@@ -63,7 +63,7 @@ def allocate_mix(size: int, capacities: dict[str, int], preset: str) -> dict[str
         chosen = max(possible, key=lambda c: (
             raw[CATEGORIES.index(c)] - counts[c],
             ratios[CATEGORIES.index(c)],
-            -CATEGORIES.index(c),
+            CATEGORIES.index(c) if preset == "explore" else -CATEGORIES.index(c),
         ))
         counts[chosen] += 1
     return counts
