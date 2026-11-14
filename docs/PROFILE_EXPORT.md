@@ -42,8 +42,35 @@ python -m music_bot.profile_export \
 ```
 
 The export is written only when the destination does not exist, with mode
-`0600` on Unix. No automatic GitHub push, Telegram scheduled send, or network
-call is performed. The CLI emits only summary counts, not raw titles.
+`0600` on Unix. This CLI performs no automatic GitHub push, Telegram scheduled send,
+or network call. Optional `/tastesync` is a separate, explicit owner command. The CLI emits only summary counts, not raw titles.
+
+## Optional one-command upload to PRIVATE GitHub
+
+After creating a **separate private** repository and a fine-grained
+repository token (Contents: write, Metadata: read), configure the bot's
+private `.env` once:
+
+```dotenv
+MUSIC_PROFILE_GITHUB_REPO=pacman-codes/music-taste-private
+MUSIC_PROFILE_GITHUB_TOKEN=YOUR_PRIVATE_FINE_GRAINED_TOKEN
+```
+
+Then send `/tastesync` to your bot's **owner-only private chat**. It first
+checks GitHub's repository metadata and refuses to upload unless the repo
+is confirmed private. It writes `profiles/latest.json` using a current Git
+blob SHA to avoid silently overwriting someone else's update. Git history
+keeps earlier snapshot versions for comparisons; no nightly job is enabled.
+
+This feature is disabled unless **both** environment variables are set.
+Never paste the token into a chat, PR, public repo, or exported JSON. The
+server performs a new private-repository check on every write and does not
+expose the token in the successful reply. A JSON larger than 900 kB is
+not synced through this lightweight endpoint; use `/tasteexport` instead.
+
+The separate repository must also be accessible to the GitHub connection in
+ChatGPT if you want the assistant to read your taste snapshots on request.
+No playlist data has been uploaded anywhere merely by adding this code.
 
 ## How to use in ChatGPT or GitHub
 
