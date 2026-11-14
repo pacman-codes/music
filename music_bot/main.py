@@ -16,10 +16,12 @@ from music_bot.anime import AniListCatalog
 from music_bot.screen import TmdbCatalog
 from music_bot.catalog import MusicCatalog
 from music_bot.config import load_settings
+from music_bot.fingerprints import AudioRecognition
 from music_bot.telegram_anime import install_anime_handlers
 from music_bot.telegram_screen import install_screen_handlers
 from music_bot.telegram_catalog import install_catalog_handlers
 from music_bot.telegram_import import install_import_handlers
+from music_bot.telegram_fingerprint import install_fingerprint_handlers
 from music_bot.telegram_youtube import install_youtube_handlers
 from music_bot.selection import DYNAMIC_MODES, select_wave_batch
 from music_bot.storage import Library, Track
@@ -37,6 +39,7 @@ HELP = """🎵 music — личный плеер
 /radiotrack ID — радио по конкретной песне
 /recommend — персональные открытия по твоим высоким оценкам
 /identify ID — подобрать MusicBrainz ID для локального файла
+/fingerprint ID — распознать аудио через AcoustID (если включён)
 /unmatch ID — убрать ошибочную ручную привязку
 /saved — отложенные находки (пока без аудио)
 /import MBID URL — разрешённый прямой MP3/M4A → Telegram
@@ -341,7 +344,8 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                   youtube_search_enabled: bool = False,
                   youtube_download_enabled: bool = False,
                   anime_catalog: AniListCatalog | None = None,
-                  screen_catalog: TmdbCatalog | None = None) -> Router:
+                  screen_catalog: TmdbCatalog | None = None,
+                  fingerprint_recognizer: AudioRecognition | None = None) -> Router:
     router = Router()
     router.message.middleware(OwnerOnly(owner_id))
     router.callback_query.middleware(OwnerOnly(owner_id))
@@ -955,6 +959,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
     if catalog is not None:
         install_catalog_handlers(router, db, catalog)
     install_import_handlers(router, db, owner_id, media_hosts)
+    install_fingerprint_handlers(router, db, fingerprint_recognizer)
     install_youtube_handlers(
         router, db, owner_id, search_enabled=youtube_search_enabled,
         download_enabled=youtube_download_enabled,
@@ -973,6 +978,9 @@ async def main():
     catalog = MusicCatalog(config.db_path)
     anime_catalog = AniListCatalog(config.db_path)
     screen_catalog = TmdbCatalog(config.db_path, config.tmdb_read_token or "")
+    fingerprint_recognizer = AudioRecognition(
+        config.db_path, config.acoustid_client_key or "",
+    )
     bot = Bot(token=config.token)
     dp = Dispatcher()
     dp.include_router(create_router(
@@ -982,6 +990,7 @@ async def main():
         youtube_download_enabled=config.youtube_download_enabled,
         anime_catalog=anime_catalog,
         screen_catalog=screen_catalog,
+        fingerprint_recognizer=fingerprint_recognizer,
     ))
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
@@ -989,6 +998,7 @@ async def main():
         await catalog.close()
         await anime_catalog.close()
         await screen_catalog.close()
+        await fingerprint_recognizer.close()
         await bot.session.close()
 
 
