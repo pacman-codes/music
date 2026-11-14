@@ -26,6 +26,7 @@ from music_bot.telegram_youtube import install_youtube_handlers
 from music_bot.selection import DYNAMIC_MODES, select_wave_batch
 from music_bot.wrapped import wrapped_summary
 from music_bot.profile_export import export_profile, profile_json_bytes
+from music_bot.github_profile import ProfileSyncError, sync_private_profile
 from music_bot.storage import Library, Track
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ HELP = """🎵 music — личный плеер
 /weekly — новые релизы и личные находки недели
 /wrapped 30d|365d|all — музыкальная статистика
 /tasteexport — приватный JSON всей медиатеки для анализа рекомендаций
+/tastesync — обновить музыкальный профиль в приватном GitHub (если настроено)
 /identify ID — подобрать MusicBrainz ID для локального файла
 /fingerprint ID — распознать аудио через AcoustID (если включён)
 /tag ID — обновить локальные теги после подтверждения MusicBrainz
@@ -351,7 +353,9 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                   youtube_download_enabled: bool = False,
                   anime_catalog: AniListCatalog | None = None,
                   screen_catalog: TmdbCatalog | None = None,
-                  fingerprint_recognizer: AudioRecognition | None = None) -> Router:
+                  fingerprint_recognizer: AudioRecognition | None = None,
+                  profile_github_repo: str | None = None,
+                  profile_github_token: str | None = None) -> Router:
     router = Router()
     router.message.middleware(OwnerOnly(owner_id))
     router.callback_query.middleware(OwnerOnly(owner_id))
@@ -952,6 +956,32 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             "Сам файл Telegram не изменялся."
         )
 
+    @router.message(Command("tastesync"))
+    async def taste_sync_cmd(message: Message):
+        if len((message.text or "").split()) != 1:
+            await message.answer("Для обновления приватного GitHub: /tastesync")
+            return
+        if not profile_github_repo or not profile_github_token:
+            await message.answer(
+                "Приватный GitHub ещё не настроен. "
+                "Используй /tasteexport и передай JSON вручную."
+            )
+            return
+        try:
+            result = await sync_private_profile(
+                export_profile(db),
+                repo=profile_github_repo,
+                token=profile_github_token,
+            )
+        except ProfileSyncError as exc:
+            await message.answer(str(exc))
+            return
+        await message.answer(
+            "🔒 Музыкальный профиль обновлён в проверенном приватном GitHub: "
+            f"{result['repo']}/{result['path']}. "
+            "Теперь можно попросить меня сравнить изменения и улучшить рекомендации."
+        )
+
     @router.message(Command("tasteexport"))
     async def taste_export_cmd(message: Message):
         """Owner-only document, never published to GitHub."""
@@ -1070,6 +1100,8 @@ async def main():
         anime_catalog=anime_catalog,
         screen_catalog=screen_catalog,
         fingerprint_recognizer=fingerprint_recognizer,
+        profile_github_repo=config.profile_github_repo,
+        profile_github_token=config.profile_github_token,
     ))
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
