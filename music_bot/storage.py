@@ -147,6 +147,9 @@ class Library:
               PRIMARY KEY(playlist_id,track_id));
             CREATE TABLE IF NOT EXISTS dislikes(
               track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE);
+            CREATE TABLE IF NOT EXISTS weekly_digest_receipts (
+              week_key TEXT PRIMARY KEY,
+              sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS library_preferences (
               pref_key TEXT PRIMARY KEY,
               pref_value TEXT NOT NULL);
@@ -448,6 +451,24 @@ class Library:
                 (preset,),
             )
         return preset
+
+    def weekly_digest_sent(self, week_key: str) -> bool:
+        if not isinstance(week_key, str) or not 1 <= len(week_key) <= 32:
+            raise ValueError("Invalid digest week")
+        with self.con() as db:
+            return db.execute(
+                "SELECT 1 FROM weekly_digest_receipts WHERE week_key=?",
+                (week_key,),
+            ).fetchone() is not None
+
+    def mark_weekly_digest_sent(self, week_key: str) -> bool:
+        if not isinstance(week_key, str) or not 1 <= len(week_key) <= 32:
+            raise ValueError("Invalid digest week")
+        with self.con() as db:
+            return bool(db.execute(
+                "INSERT OR IGNORE INTO weekly_digest_receipts(week_key) VALUES(?)",
+                (week_key,),
+            ).rowcount)
 
     def latest_queue_id(self) -> int | None:
         """Return the latest persisted listening queue (owner-only bot)."""
@@ -1293,7 +1314,7 @@ class Library:
         """
         import secrets
         import time
-        if kind not in {"youtube", "musicbrainz", "global", "queue"}:
+        if kind not in {"youtube", "musicbrainz", "global", "queue", "weekly"}:
             raise ValueError("Unknown import provider")
         if not isinstance(key, str) or not 1 <= len(key) <= 128:
             raise ValueError("Invalid source identifier")
