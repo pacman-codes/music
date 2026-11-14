@@ -10,6 +10,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normalize, valid_mbid
+from music_bot.personalized import personalized_discovery
 from music_bot.storage import Library
 
 
@@ -209,6 +210,33 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
         await callback.answer(
             f"Связано с {record['artist']} — {record['title']}"[:180],
             show_alert=True,
+        )
+
+    @router.message(Command("recommend"))
+    async def recommend(message: Message):
+        try:
+            seeds, rows = await personalized_discovery(
+                db, catalog, difficulty="medium", limit=8,
+            )
+        except CatalogError:
+            await message.answer("Персональный поиск пока недоступен.")
+            return
+        if not seeds:
+            await message.answer(
+                "Добавь песни в «Мне нравится» или поставь им оценку от 7 до 10. "
+                "Потом используй /recommend."
+            )
+            return
+        if not rows:
+            await message.answer(
+                "По твоим любимым исполнителям пока не нашлось новых записей. "
+                "Попробуй /radio с другим исполнителем."
+            )
+            return
+        db.remember_candidates(rows)
+        await message.answer(
+            format_catalog(rows, "✨ Твои открытия по: " + ", ".join(seeds)),
+            reply_markup=catalog_keyboard(rows),
         )
 
     @router.message(Command("saved"))
