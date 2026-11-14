@@ -19,6 +19,9 @@ from music_bot.anime import AniListCatalog, AniListError
 from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normalize, normalized_identity, valid_mbid
 from music_bot.config import Settings, load_settings
 from music_bot.importer import AudioIngestService, MediaImportError
+from music_bot.fingerprints import (
+    AudioRecognition, RecognitionError, recognize_telegram_track,
+)
 from music_bot.main import deliver_queue, send_single_track
 from music_bot.personalized import personalized_discovery
 from music_bot.selection import select_wave_batch
@@ -106,13 +109,17 @@ def create_app(config: Settings | None = None,
                youtube_source: YouTubeSource | None = None,
                youtube_ingest: YouTubeIngestService | None = None,
                anime_catalog: AniListCatalog | None = None,
-               screen_catalog: TmdbCatalog | None = None) -> FastAPI:
+               screen_catalog: TmdbCatalog | None = None,
+               recognizer: AudioRecognition | None = None) -> FastAPI:
     settings = config or load_settings()
     db = Library(settings.db_path)
     catalog_client = catalog or MusicCatalog(settings.db_path)
     anime_client = anime_catalog or AniListCatalog(settings.db_path)
     screen_client = screen_catalog or TmdbCatalog(
         settings.db_path, settings.tmdb_read_token or "",
+    )
+    recognition_client = recognizer or AudioRecognition(
+        settings.db_path, settings.acoustid_client_key or "",
     )
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -125,6 +132,8 @@ def create_app(config: Settings | None = None,
                 await anime_client.close()
             if screen_catalog is None:
                 await screen_client.close()
+            if recognizer is None:
+                await recognition_client.close()
 
     app = FastAPI(
         title="music private Mini App",
@@ -232,6 +241,32 @@ def create_app(config: Settings | None = None,
                 502, detail="Telegram не смог отправить эту песню"
             ) from exc
         return {"sent": True, "track_id": track.id, "native_player": True}
+
+    @app.get("/api/fingerprint/status", dependencies=[auth])
+    async def fingerprint_status():
+        return {"enabled": bool(settings.acoustid_client_key)}
+
+    @app.post("/api/tracks/{track_id}/fingerprint", dependencies=[auth])
+    async def fingerprint_track(track_id: int):
+        if not settings.acoustid_client_key and recognizer is None:
+            raise HTTPException(409, detail="AcoustID не настроен")
+        if db.get_track(track_id) is None:
+            raise HTTPException(404, detail="Трек не найден")
+        # Serialization shares the existing global transfer lease so
+        # fingerprint downloads don't collide with a large media import.
+        lease = db.acquire_media_import("global", "media")
+        if lease is None:
+            raise HTTPException(409, detail="Сервер занят загрузкой другого файла")
+        try:
+            async with Bot(token=settings.token) as bot:
+                try:
+                    return await recognize_telegram_track(
+                        db, bot, recognition_client, track_id,
+                    )
+                except RecognitionError as exc:
+                    raise HTTPException(422, detail=str(exc)) from exc
+        finally:
+            db.release_media_import("global", "media", lease)
 
     @app.get("/api/tracks/{track_id}/recording", dependencies=[auth])
     async def track_recording(track_id: int):
