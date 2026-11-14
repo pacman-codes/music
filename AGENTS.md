@@ -5,6 +5,7 @@ Only personal media bot. No VOID/Soodoo subscription, payment, VPN, production-m
 - Never deploy or alter Soodoo production as part of music.
 - Require private chat and exact numeric owner Telegram user ID.
 - Never commit .env, passwords, tokens, private source URLs, SQLite or media.
+- Never commit personal music-profile JSON exports or private playlist histories to the public music repo. Inspect only on owner request; private GitHub uploads require confirmed private repo and least-privilege credentials.
 - Telegram native player needs actually uploaded media; file_id is reusable only with the corresponding bot.
 - No fake play/skip analytics: Bot API does not give these events.
 - Update docs and tests with all structural changes.
