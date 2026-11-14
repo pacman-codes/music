@@ -408,6 +408,13 @@ class Library:
                 "DELETE FROM track_verdicts WHERE track_id=? AND status='add'",
                 (track_id,),
             )
+            db.execute(
+                """DELETE FROM catalog_verdicts
+                   WHERE status='add' AND mbid IN (
+                       SELECT mbid FROM track_recording_links WHERE track_id=?
+                   )""",
+                (track_id,),
+            )
         return removed
 
     def playlist_tracks(self, playlist_id, limit=1000):
