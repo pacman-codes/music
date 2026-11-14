@@ -1,8 +1,7 @@
-"""Rank tracks using explicit 1–10 ratings and *reported* playback feedback.
+"""Rank *playable* tracks with explicit preferences and passive context.
 
-Telegram's native player does not emit skip or complete events to bots.
-All behavioral observations therefore originate in manual controls until an
-instrumented, separately authenticated player exists.
+Delivery history only measures Telegram sends, never actual listening.
+No need for questionnaires, forced ratings or telemetry Telegram does not expose.
 """
 from __future__ import annotations
 
@@ -11,21 +10,25 @@ from collections import Counter
 
 
 def fatigue_suppressed(skips: int, completions: int) -> bool:
-    """Frequent recent skips temporarily keep a song out of radio, not favorites.
-
-    Counts reflect at most the last 20 explicit events over 30 days.
-    A successful listening streak can restore eligibility; expiry also clears it.
-    """
+    """Frequent manually reported skips suppress radio, not saved favorites."""
     return skips >= 3 and skips >= 2 * completions + 3
 
 
 def track_weight(
     track, liked_ids, favorite_artists, seen_artist,
     *, recent_ids=frozenset(), ratings=None, playback=None, mode="balanced",
+    exposure=None, playlist_counts=None, related_ids=frozenset(),
+    recent_artists=(),
 ) -> float:
-    """Positive sampling weight. Dislikes are filtered before calling this."""
+    """Positive sampling weight with a mild, reversible exposure penalty.
+
+    A custom playlist is a weak positive signal. A delivered song is not a
+    disliked or skipped song; exposures only help rotate an overused library.
+    """
     ratings = ratings or {}
     playback = playback or {}
+    exposure = exposure or {}
+    playlist_counts = playlist_counts or {}
     artist = track.artist.strip().casefold()
     liked = track.id in liked_ids
     score = 1.0
@@ -34,27 +37,39 @@ def track_weight(
     if not liked and artist and artist in favorite_artists:
         score += 2.0
 
-    # A rating is an opinion, *not* a dislike or a request to remove favorites.
     rating = ratings.get(track.id)
     if rating is not None:
-        # 1 => 0.25x, 5 => 0.95x, 10 => 1.8x.
         score *= 0.25 + (rating - 1) * (1.55 / 9)
 
     skips, completions = playback.get(track.id, (0, 0))
-    # One skip alone is not enough to punish a favorite; repeats matter.
     adjusted_skips = max(0, skips - 1)
     skip_penalty = 1 / (1 + 1.7 * (adjusted_skips ** 1.8) / (1 + .7 * completions))
     completion_bonus = 1 + min(0.75, completions * 0.12)
     score *= skip_penalty * completion_bonus
+
+    # Strength is capped: putting a track in many playlists is not equivalent
+    # to many confirmed plays, and must not swamp explicit ratings.
+    score *= 1 + min(0.30, 0.08 * playlist_counts.get(track.id, 0))
+    if track.id in related_ids:
+        score *= 1.15
+
     if track.id in recent_ids:
-        score *= 0.08
+        score *= 0.45
+    score /= 1 + 0.65 * max(0.0, exposure.get(track.id, 0.0))
+
     if artist:
-        score /= 1 + 3 * seen_artist[artist]
+        score /= 1 + 2.5 * seen_artist[artist]
+        # Diversify neighboring songs without hard bans on small libraries.
+        if recent_artists and artist == recent_artists[-1]:
+            score *= 0.12
+        elif artist in recent_artists[-2:]:
+            score *= 0.50
     return max(0.0001, score)
 
 
 def wave(tracks, liked_ids, disliked_ids=frozenset(), count=30, seed=None,
-         recent_ids=frozenset(), mode="balanced", *, ratings=None, playback=None):
+         recent_ids=frozenset(), mode="balanced", *, ratings=None, playback=None,
+         exposure=None, playlist_counts=None, related_ids=frozenset()):
     if mode not in {"balanced", "discover", "favorites"}:
         raise ValueError("Unknown wave mode")
     ratings = ratings or {}
@@ -76,17 +91,22 @@ def wave(tracks, liked_ids, disliked_ids=frozenset(), count=30, seed=None,
     if mode == "discover" and any(t.id not in liked_ids for t in pool):
         pool = [t for t in pool if t.id not in liked_ids]
     seen_artist = Counter()
+    recent_artists: list[str] = []
     out = []
     while pool and len(out) < count:
         weights = [
             track_weight(
                 t, liked_ids, favorites, seen_artist,
                 recent_ids=recent_ids, ratings=ratings, playback=playback, mode=mode,
+                exposure=exposure, playlist_counts=playlist_counts,
+                related_ids=related_ids, recent_artists=recent_artists,
             )
             for t in pool
         ]
         selected = rng.choices(range(len(pool)), weights=weights, k=1)[0]
         track = pool.pop(selected)
-        seen_artist[track.artist.strip().casefold()] += 1
+        artist = track.artist.strip().casefold()
+        seen_artist[artist] += 1
+        recent_artists.append(artist)
         out.append(track)
     return out
