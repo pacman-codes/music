@@ -28,6 +28,7 @@ from music_bot.wrapped import wrapped_summary
 from music_bot.profile_export import export_profile, profile_json_bytes
 from music_bot.github_profile import ProfileSyncError, sync_private_profile
 from music_bot.storage import Library, Track
+from music_bot.verdicts import LABELS, STATUSES, valid_status, yandex_search_url
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ HELP = """🎵 music — личный плеер
 /tag ID — обновить локальные теги после подтверждения MusicBrainz
 /unmatch ID — убрать ошибочную ручную привязку
 /saved — отложенные находки (пока без аудио)
+/decisions — пять плейлистов реакций, с возможностью слушать
+/decide ID maybe|add|never|later|interesting — решение по локальному треку
 /import MBID URL — разрешённый прямой MP3/M4A → Telegram
 /yt Запрос — YouTube-поиск (если включён)
 /ytget VIDEO_ID — получить разрешённое аудио в Telegram
@@ -136,6 +139,7 @@ def home_keyboard(webapp_url: str | None = None) -> InlineKeyboardMarkup:
          button("🆕 Открытия", "nav:discover")],
         [button("❤️ Понравившиеся", "nav:liked"),
          button("📂 Плейлисты", "nav:playlists")],
+        [button("🧭 Пять реакций", "nav:verdicts")],
         [button("🎵 Библиотека", "nav:library"),
          button("▶ Продолжить", "nav:continue")],
     ]
@@ -152,10 +156,13 @@ def home_keyboard(webapp_url: str | None = None) -> InlineKeyboardMarkup:
 def track_keyboard(track_id: int) -> InlineKeyboardMarkup:
     return keyboard([
         [button("▶ Слушать", f"play:{track_id}")],
-        [button("⭐ Оценить 1–10", f"rateopen:{track_id}"),
-         button("❤️ Нравится", f"like:{track_id}")],
-        [button("➕ В плейлист", f"chooseadd:{track_id}"),
-         button("🚫 Не предлагать", f"dislike:{track_id}")],
+        [button("🤔 Может добавлю", f"vset:l:{track_id}:maybe"),
+         button("❤️ Добавлю", f"vset:l:{track_id}:add")],
+        [button("🚫 Никогда", f"vset:l:{track_id}:never"),
+         button("⏳ Не сейчас", f"vset:l:{track_id}:later")],
+        [button("🧠 Интересно, но не слушать", f"vset:l:{track_id}:interesting")],
+        [button("⭐ Доп. оценка 1–10", f"rateopen:{track_id}"),
+         button("➕ В свой плейлист", f"chooseadd:{track_id}")],
     ])
 
 
@@ -201,7 +208,7 @@ def queue_feedback_keyboard(tracks: tuple[Track, ...], queue_id: int,
     A single companion card allows selecting any of up to 10 tracks.
     """
     choices = [
-        button(f"⭐ {index + 1}. {track.title[:14]}", f"rateopen:{track.id}")
+        button(f"🧭 {index + 1}. {track.title[:14]}", f"vopen:l:{track.id}")
         for index, track in enumerate(tracks)
     ]
     rows = [choices[offset:offset + 2] for offset in range(0, len(choices), 2)]
@@ -389,14 +396,22 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
 
     async def show_playlists(message: Message) -> None:
         playlists = db.playlists()
+        counts = db.verdict_counts()
         text = "\n".join(
             f"#{p['id']} · {p['name']} ({p['count']})" for p in playlists[:30]
         )
         rows = [
+            [button(f"{LABELS[status]} ({counts[status]})", f"vlist:{status}:0")]
+            for status in STATUSES
+        ]
+        rows.extend(
             [button(f"▶️ {p['name'][:40]}", f"playlist:{p['id']}")]
             for p in playlists[:20]
-        ]
-        await message.answer("📂 Плейлисты:\n" + text, reply_markup=keyboard(rows))
+        )
+        await message.answer(
+            "🧭 Пять реакций + обычные плейлисты:\n" + text,
+            reply_markup=keyboard(rows),
+        )
 
     async def show_library(message: Message) -> None:
         tracks = db.all_tracks(20)
@@ -417,6 +432,172 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             else "Список понравившихся пока пуст.",
             reply_markup=keyboard(rows) if tracks else None,
         )
+
+    async def show_decisions(message: Message) -> None:
+        counts = db.verdict_counts()
+        rows = [
+            [button(f"{LABELS[status]} · {counts[status]}", f"vlist:{status}:0")]
+            for status in STATUSES
+        ]
+        await message.answer(
+            "🧭 Пять реакций. Каждая песня только в одной категории.\n"
+            "▶ Слушать в Telegram — если файл уже есть; "
+            "🎧 Яндекс — внешний поиск и воспроизведение в сервисе.",
+            reply_markup=keyboard(rows),
+        )
+
+    async def show_decision_list(message: Message, status: str, page: int = 0) -> None:
+        if not valid_status(status) or not 0 <= page <= 1000:
+            await message.answer("Некорректный список.")
+            return
+        entries = db.verdict_items(status)
+        page_size = 8
+        page_count = max(1, (len(entries) + page_size - 1) // page_size)
+        page = min(page, page_count - 1)
+        shown = entries[page * page_size:(page + 1) * page_size]
+        lines = [f"{LABELS[status]} — {len(entries)} треков · {page+1}/{page_count}"]
+        rows: list[list[InlineKeyboardButton]] = []
+        for i, entry in enumerate(shown, start=page * page_size + 1):
+            artist = str(entry["artist"]).replace("\n", " ").replace("\r", " ")
+            title = str(entry["title"]).replace("\n", " ").replace("\r", " ")
+            lines.append(
+                f"{i}. {artist[:90]} — {title[:110]} "
+                + ("▶ Telegram" if entry["track_id"] is not None else "🎧 Яндекс")
+            )
+            kind = "l" if entry["source"] == "local" else "c"
+            ident = str(entry["track_id"] if kind == "l" else entry["mbid"])
+            row = [
+                button("🧭 Изменить", f"vopen:{kind}:{ident}"),
+            ]
+            if entry["track_id"] is not None:
+                row.insert(0, button("▶ Слушать", f"play:{entry['track_id']}"))
+            else:
+                row.insert(0, InlineKeyboardButton(
+                    text="🎧 Найти в Яндексе",
+                    url=yandex_search_url(artist, title),
+                ))
+            rows.append(row)
+        nav = []
+        if page > 0:
+            nav.append(button("◀ Назад", f"vlist:{status}:{page-1}"))
+        if page + 1 < page_count:
+            nav.append(button("Дальше ▶", f"vlist:{status}:{page+1}"))
+        if nav:
+            rows.append(nav)
+        rows.append([button("🧭 Все пять списков", "vhome")])
+        if any(entry["track_id"] is not None for entry in entries):
+            rows.append([button("▶ Слушать доступные в Telegram", f"vplay:{status}")])
+        await message.answer(
+            "\n".join(lines)[:3900], reply_markup=keyboard(rows),
+        )
+
+    @router.message(Command("decisions", "verdicts"))
+    async def decision_home_cmd(message: Message):
+        await show_decisions(message)
+
+    @router.message(Command("decide"))
+    async def decision_cmd(message: Message):
+        raw = (message.text or "").split()
+        if len(raw) != 3 or not raw[1].isdecimal() or not valid_status(raw[2]):
+            await message.answer("Пример: /decide 12 maybe|add|never|later|interesting")
+            return
+        try:
+            db.set_track_verdict(int(raw[1]), raw[2])
+        except ValueError as exc:
+            await message.answer(str(exc))
+            return
+        await message.answer(f"🧭 #{raw[1]} → {LABELS[raw[2]]}")
+
+    @router.callback_query(F.data == "vhome")
+    async def decision_home_button(callback: CallbackQuery):
+        await callback.answer()
+        message = callback_message(callback)
+        if message is not None:
+            await show_decisions(message)
+
+    @router.callback_query(F.data.startswith("vlist:"))
+    async def decision_list_button(callback: CallbackQuery):
+        raw = (callback.data or "").split(":")
+        if (len(raw) != 3 or not valid_status(raw[1]) or
+                not raw[2].isdecimal() or int(raw[2]) > 1000):
+            await callback.answer("Неверный список", show_alert=True)
+            return
+        await callback.answer()
+        message = callback_message(callback)
+        if message is not None:
+            await show_decision_list(message, raw[1], int(raw[2]))
+
+    @router.callback_query(F.data.startswith("vplay:"))
+    async def decision_play_button(callback: CallbackQuery, bot: Bot):
+        status = (callback.data or "").partition(":")[2]
+        if not valid_status(status):
+            await callback.answer("Неверный плейлист", show_alert=True)
+            return
+        items = db.verdict_items(status)
+        track_ids = list(dict.fromkeys(
+            item["track_id"] for item in items if item["track_id"] is not None
+        ))
+        if not track_ids:
+            await callback.answer("Пока нет загруженных аудиофайлов", show_alert=True)
+            return
+        await callback.answer()
+        message = callback_message(callback)
+        if message is None:
+            return
+        queue_id = db.create_queue(track_ids, LABELS[status], "decision")
+        await deliver_queue(bot, db, message.chat.id, queue_id, send_lock)
+
+    @router.callback_query(F.data.startswith("vopen:"))
+    async def decision_picker(callback: CallbackQuery):
+        raw = (callback.data or "").split(":")
+        if len(raw) != 3 or raw[1] not in ("l", "c"):
+            await callback.answer("Неверная запись", show_alert=True)
+            return
+        kind, ident = raw[1], raw[2]
+        if kind == "l":
+            if not ident.isdecimal() or int(ident) <= 0:
+                await callback.answer("Неверный трек", show_alert=True)
+                return
+            track = db.get_track(int(ident))
+            item = {"artist": track.artist, "title": track.title} if track else None
+        else:
+            item = db.get_candidate(ident) if len(ident) == 36 else None
+        if item is None:
+            await callback.answer("Трек не найден", show_alert=True)
+            return
+        await callback.answer()
+        message = callback_message(callback)
+        if message is not None:
+            rows = [
+                [button(LABELS[status], f"vset:{kind}:{ident}:{status}")]
+                for status in STATUSES
+            ]
+            await message.answer(
+                f"🧭 {item['artist']} — {item['title']}\nКак поступить?",
+                reply_markup=keyboard(rows),
+            )
+
+    @router.callback_query(F.data.startswith("vset:"))
+    async def decision_set_button(callback: CallbackQuery):
+        raw = (callback.data or "").split(":")
+        if (len(raw) != 4 or raw[1] not in ("l", "c")
+                or not valid_status(raw[3])):
+            await callback.answer("Неверная реакция", show_alert=True)
+            return
+        kind, ident, status = raw[1], raw[2], raw[3]
+        try:
+            if kind == "l":
+                if not ident.isdecimal() or int(ident) <= 0:
+                    raise ValueError("Неверный трек")
+                db.set_track_verdict(int(ident), status)
+            else:
+                if len(ident) != 36:
+                    raise ValueError("Неверная запись каталога")
+                db.set_catalog_verdict(ident, status)
+        except ValueError as exc:
+            await callback.answer(str(exc)[:160], show_alert=True)
+            return
+        await callback.answer(f"Сохранено: {LABELS[status]}")
 
     @router.message(Command("start", "help"))
     async def start(message: Message):
@@ -610,6 +791,8 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             await show_liked(message)
         elif action == "playlists":
             await show_playlists(message)
+        elif action == "verdicts":
+            await show_decisions(message)
         elif action == "library":
             await show_library(message)
         elif action == "continue":

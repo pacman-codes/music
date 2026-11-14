@@ -9,6 +9,7 @@
   <script src="https://telegram.org/js/telegram-web-app.js?65"></script>
   <script src="/assets/app.js" defer></script>
   <script src="/assets/queue.js" defer></script>
+  <script src="/assets/decisions.js" defer></script>
   <script src="/assets/wrapped.js" defer></script>
   <script src="/assets/anime.js" defer></script>
   <script src="/assets/screen.js" defer></script>
@@ -131,6 +132,20 @@
       </form>
       <div class="catalog-caption" id="screen-status" role="status" aria-live="polite"></div>
       <div id="screen-results" class="list"></div>
+    </section>
+    <section id="decision-section" aria-labelledby="decision-heading">
+      <div class="heading">
+        <h2 id="decision-heading">🧭 Пять реакций</h2>
+        <button type="button" id="decisions-refresh">Обновить</button>
+      </div>
+      <p class="catalog-hint">«Не сейчас» — не дизлайк. «Интересно, но не слушать» — сохраняем без автопроигрывания. Для доступного Telegram-аудио работает ▶, для внешних треков — поиск в Яндексе.</p>
+      <div id="decision-categories" class="actions"></div>
+      <div id="decision-items" class="list"></div>
+      <div class="actions">
+        <button type="button" id="decision-prev">◀ Назад</button>
+        <span id="decision-pagination" class="catalog-caption"></span>
+        <button type="button" id="decision-next">Вперёд ▶</button>
+      </div>
     </section>
     <section>
       <div class="heading"><h2>Плейлисты</h2><button type="button" id="create">＋ Новый</button></div>

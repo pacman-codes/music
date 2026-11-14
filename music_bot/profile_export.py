@@ -46,6 +46,19 @@ def export_profile(
         dislikes = {
             int(row["track_id"]) for row in sql.execute("SELECT track_id FROM dislikes")
         }
+        verdicts = {
+            int(row["track_id"]): str(row["status"])
+            for row in sql.execute("SELECT track_id,status FROM track_verdicts")
+        }
+        catalog_verdicts = [
+            {"mbid": r["mbid"], "title": r["title"], "artist": r["artist"],
+             "decision": r["status"], "updated_at_utc": r["updated_at"]}
+            for r in sql.execute(
+                """SELECT v.mbid,c.title,c.artist,v.status,v.updated_at
+                   FROM catalog_verdicts v JOIN catalog_candidates c ON c.mbid=v.mbid
+                   ORDER BY v.updated_at DESC,v.mbid"""
+            )
+        ]
         pl_rows = sql.execute(
             "SELECT id,name,kind FROM playlists ORDER BY id"
         ).fetchall()
@@ -112,6 +125,7 @@ def export_profile(
             "rating": ratings.get(track_id),
             "liked": track_id in liked,
             "disliked": track_id in dislikes,
+            "decision": verdicts.get(track_id),
             **links.get(track_id, {}),
             **exposure.get(track_id, {"recent_deliveries": 0, "last_delivered_at": None}),
             **feedback.get(track_id, {"manual_skips_30d": 0, "manual_finishes_30d": 0}),
@@ -134,6 +148,7 @@ def export_profile(
         "total_tracks": len(exported_tracks),
         "recently_added_track_ids": new_ids,
         "tracks": exported_tracks,
+        "catalog_decisions": catalog_verdicts,
         "playlists": [
             {
                 "id": int(p["id"]), "name": p["name"], "kind": p["kind"],
@@ -172,6 +187,22 @@ def compare_profiles(previous: dict[str, Any], current: dict[str, Any]) -> dict:
         tid for tid in sorted(old.keys() & new.keys())
         if not old[tid].get("liked") and new[tid].get("liked")
     ]
+    decision_changes = [
+        {"id": tid, "before": old[tid].get("decision"), "after": new[tid].get("decision")}
+        for tid in sorted(old.keys() & new.keys())
+        if old[tid].get("decision") != new[tid].get("decision")
+    ]
+    old_catalog = {
+        record["mbid"]: record["decision"]
+        for record in previous.get("catalog_decisions", [])
+    }
+    catalog_decision_changes = [
+        {"mbid": record["mbid"], "artist": record["artist"],
+         "title": record["title"], "before": old_catalog.get(record["mbid"]),
+         "after": record["decision"]}
+        for record in current.get("catalog_decisions", [])
+        if old_catalog.get(record["mbid"]) != record["decision"]
+    ]
     old_lists = {
         int(pl["id"]): set(pl["track_ids_in_order"])
         for pl in previous.get("playlists", [])
@@ -197,6 +228,8 @@ def compare_profiles(previous: dict[str, Any], current: dict[str, Any]) -> dict:
         "removed_track_ids": deleted_ids,
         "rating_changes": rating_changes,
         "newly_liked_track_ids": newly_liked,
+        "decision_changes": decision_changes,
+        "catalog_decision_changes": catalog_decision_changes,
         "playlist_additions": playlist_additions,
         "warning": "Compare only snapshots of the same music bot database",
     }

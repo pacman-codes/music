@@ -38,13 +38,13 @@ def test_batch_keyboard_has_ten_track_choices_and_more(tmp_path):
         card = bot.messages[-1][1]["reply_markup"]
         buttons = controls(card)
         first_batch_ids = {str(t.id) for t in songs[:10]}
-        ratings = [x.callback_data for x in buttons if x.callback_data.startswith("rateopen:")]
+        ratings = [x.callback_data for x in buttons if x.callback_data.startswith("vopen:l:")]
         assert len(ratings) == 10
-        assert {x.split(":")[1] for x in ratings} == first_batch_ids
+        assert {x.split(":")[2] for x in ratings} == first_batch_ids
         assert any(b.callback_data == f"more:{queue_id}:10" for b in buttons)
         await deliver_queue(bot, db, 123, queue_id, asyncio.Lock())
         last_buttons = controls(bot.messages[-1][1]["reply_markup"])
-        assert len([b for b in last_buttons if b.callback_data.startswith("rateopen:")]) == 3
+        assert len([b for b in last_buttons if b.callback_data.startswith("vopen:l:")]) == 3
         assert not any(b.callback_data.startswith("more:") for b in last_buttons)
 
     asyncio.run(exercise())
@@ -57,7 +57,7 @@ def test_track_access_and_long_title_truncation(tmp_path):
     assert db.get_track(98293) is None
     markup = queue_feedback_keyboard((t,), 10, False)
     items = controls(markup)
-    assert items[0].callback_data == f"rateopen:{t.id}"
+    assert items[0].callback_data == f"vopen:l:{t.id}"
     assert len(items[0].text) < 35
 
 

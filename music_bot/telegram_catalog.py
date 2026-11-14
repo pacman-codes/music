@@ -38,6 +38,10 @@ def catalog_keyboard(rows: list[CatalogTrack], *,
             text=f"📌 {track.artist[:14]} — {track.title[:25]}",
             callback_data=f"wish:{track.mbid}",
         )])
+        controls.append([InlineKeyboardButton(
+            text=f"🧭 Оценить: {track.artist[:14]} — {track.title[:22]}",
+            callback_data=f"vopen:c:{track.mbid}",
+        )])
     return InlineKeyboardMarkup(inline_keyboard=controls)
 
 
@@ -59,7 +63,7 @@ def format_catalog(rows: list[CatalogTrack], title: str) -> str:
     for i, item in enumerate(rows[:8], 1):
         variant = " [другая версия]" if item.variant else ""
         lines.append(f"{i}. {item.artist} — {item.title}{variant}"[:250])
-    lines.append("📌 Отложить — добавить в список ожидания. Для прослушивания нужен файл.")
+    lines.append("🧭 Оценить — один из пяти списков. ▶ только если аудио уже загружено.")
     return "\n".join(lines)[:3800]
 
 
@@ -230,11 +234,12 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
     @router.message(Command("weekly"))
     async def weekly(message: Message):
         result = await weekly_discovery(db, catalog, limit=8)
+        decided = db.catalog_verdicts()
         rows = [
             CatalogTrack(t["mbid"], t["title"], t["artist"],
                          t.get("artist_mbid"), t.get("duration_ms"),
                          t.get("variant", False))
-            for t in result["tracks"]
+            for t in result["tracks"] if t["mbid"] not in decided
         ]
         db.remember_candidates(rows)
         lines = [f"✨ Находки недели {result['year']} / {result['week']}"]
@@ -278,6 +283,10 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
                 "Потом используй /recommend."
             )
             return
+        # Already reviewed discoveries belong to their decision lists.
+        # Do not pressure the owner to assess the same recording repeatedly.
+        decided = db.catalog_verdicts()
+        rows = [row for row in rows if row.mbid not in decided]
         if not rows:
             await message.answer(
                 "По твоим любимым исполнителям пока не нашлось новых записей. "
