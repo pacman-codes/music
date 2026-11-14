@@ -40,5 +40,17 @@ def test_catalog_handler_registration_with_private_parent_middleware(tmp_path):
         pass
 
     install_catalog_handlers(router, db, FakeCatalog())
-    assert len(router.message.handlers) - before_msg == 3
-    assert len(router.callback_query.handlers) - before_cb == 2
+    assert len(router.message.handlers) - before_msg == 6
+    assert len(router.callback_query.handlers) - before_cb == 3
+
+
+def test_identify_keyboard_contains_only_existing_mbid_and_track_id():
+    from music_bot.catalog import CatalogTrack
+    mbid="8a49dba0-253a-4535-b87f-78bb035336ce"
+    markup=catalog_keyboard(
+        [CatalogTrack(mbid, "Roads", "Portishead")], match_track_id=12
+    )
+    callbacks=[b.callback_data for row in markup.inline_keyboard for b in row]
+    assert f"match:12:{mbid}" in callbacks
+    assert f"wish:{mbid}" in callbacks
+    assert all(len(value.encode("utf-8")) <= 64 for value in callbacks)
