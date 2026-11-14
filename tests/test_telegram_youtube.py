@@ -17,5 +17,5 @@ def test_owner_protected_routes_are_registered(tmp_path):
     router=Router()
     install_youtube_handlers(router,db,42,
                              search_enabled=False,download_enabled=False)
-    assert len(router.message.handlers)==2
+    assert len(router.message.handlers)==3
     assert len(router.callback_query.handlers)==1

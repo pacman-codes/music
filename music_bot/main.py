@@ -37,6 +37,7 @@ HELP = """🎵 music — личный плеер
 /import MBID URL — разрешённый прямой MP3/M4A → Telegram
 /yt Запрос — YouTube-поиск (если включён)
 /ytget VIDEO_ID — получить разрешённое аудио в Telegram
+/ytfor MBID — подобрать YouTube-версии записи MusicBrainz
 /liked — избранное
 /like ID /unlike ID /dislike ID — избранное и исключения
 /rate ID 1-10 — оценка трека
