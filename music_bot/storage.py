@@ -82,6 +82,17 @@ class Library:
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE INDEX IF NOT EXISTS playback_event_recent
               ON playback_events(track_id, id DESC);
+            CREATE TABLE IF NOT EXISTS widget_bindings(
+              chat_id INTEGER NOT NULL,
+              message_id INTEGER NOT NULL,
+              track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+              expires_at INTEGER NOT NULL,
+              PRIMARY KEY(chat_id, message_id));
+            CREATE TABLE IF NOT EXISTS widget_receipts(
+              query_id TEXT PRIMARY KEY,
+              result TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE INDEX IF NOT EXISTS widget_expiry ON widget_bindings(expires_at);
             CREATE TABLE IF NOT EXISTS sent_history(
               id INTEGER PRIMARY KEY,
               queue_id INTEGER REFERENCES queues(id) ON DELETE SET NULL,
@@ -387,3 +398,72 @@ class Library:
             """).fetchall()
             return {int(r["track_id"]): (int(r["skipped"]), int(r["completed"]))
                     for r in rows}
+
+    def bind_widget(self, chat_id: int, message_id: int, track_id: int,
+                    *, now: int | None = None, lifetime: int = 604800) -> None:
+        """A sent private-chat widget is bound to an actual existing track."""
+        import time
+        if chat_id <= 0 or message_id <= 0 or lifetime <= 0:
+            raise ValueError("Invalid widget binding")
+        current = int(time.time()) if now is None else now
+        with self.con() as db:
+            if not db.execute("SELECT 1 FROM tracks WHERE id=?", (track_id,)).fetchone():
+                raise ValueError("Track not found")
+            db.execute(
+                """INSERT INTO widget_bindings(chat_id,message_id,track_id,expires_at)
+                   VALUES(?,?,?,?)
+                   ON CONFLICT(chat_id,message_id) DO UPDATE SET
+                     track_id=excluded.track_id, expires_at=excluded.expires_at""",
+                (chat_id, message_id, track_id, current + lifetime),
+            )
+
+    def execute_widget_command(self, chat_id: int, message_id: int,
+                               query_id: str, command, *, now: int | None = None) -> str:
+        """Atomic action and receipt for a trusted, already authenticated query.
+
+        Runtime integration is feature-gated: this function does not receive
+        network events by itself and cannot make HTML widgets available.
+        """
+        import time
+        if not isinstance(query_id, str) or not 1 <= len(query_id) <= 128:
+            raise ValueError("Invalid query identifier")
+        current = int(time.time()) if now is None else now
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            received = db.execute(
+                "SELECT result FROM widget_receipts WHERE query_id=?", (query_id,)
+            ).fetchone()
+            if received:
+                return received["result"]
+            binding = db.execute(
+                """SELECT track_id FROM widget_bindings
+                   WHERE chat_id=? AND message_id=? AND expires_at>?""",
+                (chat_id, message_id, current),
+            ).fetchone()
+            if binding is None:
+                result = "Карточка недоступна или устарела"
+            else:
+                track_id = int(binding["track_id"])
+                if command.action == "rate" and type(command.score) is int and 1 <= command.score <= 10:
+                    db.execute(
+                        """INSERT INTO track_ratings(track_id,score) VALUES(?,?)
+                           ON CONFLICT(track_id) DO UPDATE SET
+                             score=excluded.score, updated_at=CURRENT_TIMESTAMP""",
+                        (track_id, command.score),
+                    )
+                    result = f"Оценка {command.score}/10 сохранена"
+                elif command.action in {"skip", "complete"}:
+                    db.execute(
+                        """INSERT OR IGNORE INTO playback_events(track_id,event,source,dedupe_key)
+                           VALUES(?,?,'manual',?)""",
+                        (track_id, command.action, "widget:" + query_id),
+                    )
+                    result = ("⏭ Пропуск отмечен вручную" if command.action == "skip"
+                              else "✅ Дослушивание отмечено вручную")
+                else:
+                    result = "Недопустимое действие"
+            db.execute(
+                "INSERT INTO widget_receipts(query_id,result) VALUES(?,?)",
+                (query_id, result),
+            )
+            return result
