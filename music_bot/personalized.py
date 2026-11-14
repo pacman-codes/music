@@ -13,6 +13,7 @@ from music_bot.catalog import (
     CatalogError, CatalogTrack, MusicCatalog, normalize, normalized_identity,
 )
 from music_bot.recommend import fatigue_suppressed
+from music_bot.discovery_ranking import fuse_artist_radio
 from music_bot.storage import Library
 
 
@@ -36,7 +37,8 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
     playback = db.playback_stats()
     artist_scores: dict[str, float] = defaultdict(float)
     representative: dict[str, str] = {}
-    for t in db.all_tracks(1000):
+    tracks = db.all_tracks(10000)
+    for t in tracks:
         if t.id in dislikes:
             continue
         artist = t.artist.strip()
@@ -60,6 +62,28 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
             continue
         representative.setdefault(key, artist)
         artist_scores[key] += weight
+    if not artist_scores:
+        # Cold start: uploading/saving a file is weak evidence of interest,
+        # never a fabricated listen or an explicit "like". Only use this
+        # fallback when no strong positive ratings/favorites are available.
+        excluded = strongly_negative_artists(
+            tracks, likes, dislikes, ratings, playback
+        )
+        weak_counts: dict[str, int] = defaultdict(int)
+        for track in tracks:
+            key = normalize(track.artist.strip())
+            if (not key or key in {"неизвестный исполнитель", "unknown artist"}
+                    or key in excluded or track.id in dislikes
+                    or ratings.get(track.id, 10) <= 4
+                    or fatigue_suppressed(*playback.get(track.id, (0, 0)))):
+                continue
+            weak_counts[key] += 1
+            representative.setdefault(key, track.artist.strip())
+        # Limit the preference inferred from a large imported discography.
+        artist_scores = {
+            key: min(5, occurrences) * 0.10
+            for key, occurrences in weak_counts.items()
+        }
     return [
         ArtistSeed(representative[key], round(weight, 2))
         for key, weight in sorted(
@@ -68,11 +92,38 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
     ]
 
 
+def strongly_negative_artists(tracks, liked_ids, disliked_ids, ratings, playback):
+    """Conservatively exclude an artist only with repeated explicit negatives.
+
+    One disliked song does not mean the whole artist is disliked. Any clear
+    positive rating/favorite for that artist prevents the artist-level ban.
+    """
+    negative: dict[str, set[int]] = defaultdict(set)
+    positive: set[str] = set()
+    for track in tracks:
+        artist = normalize(track.artist.strip())
+        if not artist:
+            continue
+        rating = ratings.get(track.id)
+        if rating is not None and rating >= 8:
+            positive.add(artist)
+        elif track.id in liked_ids and (rating is None or rating >= 5):
+            positive.add(artist)
+        if (track.id in disliked_ids or
+                (rating is not None and rating <= 3) or
+                fatigue_suppressed(*playback.get(track.id, (0, 0)))):
+            negative[artist].add(track.id)
+    return {
+        artist for artist, song_ids in negative.items()
+        if len(song_ids) >= 2 and artist not in positive
+    }
+
+
 async def personalized_discovery(
     db: Library, catalog: MusicCatalog, *, difficulty: str = "medium",
     limit: int = 15, max_seeds: int = 3,
 ) -> tuple[list[str], list[CatalogTrack]]:
-    """Collect LB radio from top-rated artist seeds, fairly interleaved.
+    """Collect LB radio from top-rated artist seeds, rank-fused and diversified.
 
     Partial catalog outages may reduce choices without breaking the entire
     feed. On total outage raise CatalogError. No user token is required.
@@ -86,13 +137,18 @@ async def personalized_discovery(
         return [], []
 
     known_ids = db.confirmed_recording_ids()
-    own_tracks = db.all_tracks(1000)
+    own_tracks = db.all_tracks(10000)
     own_names = {normalized_identity(t.title, t.artist) for t in own_tracks}
+    likes, dislikes = db.liked_ids(), db.disliked_ids()
+    ratings, feedback = db.ratings(), db.playback_stats()
     suppressed_names = {
         normalized_identity(t.title, t.artist)
-        for t in own_tracks if t.id in db.disliked_ids()
-        or fatigue_suppressed(*db.playback_stats().get(t.id, (0, 0)))
+        for t in own_tracks if t.id in dislikes
+        or fatigue_suppressed(*feedback.get(t.id, (0, 0)))
     }
+    excluded_artists = strongly_negative_artists(
+        own_tracks, likes, dislikes, ratings, feedback
+    )
     pools: list[list[CatalogTrack]] = []
     used_seeds: list[str] = []
     errors = 0
@@ -111,27 +167,14 @@ async def personalized_discovery(
             if song.mbid not in known_ids and not song.variant
             and normalized_identity(song.title, song.artist) not in own_names
             and normalized_identity(song.title, song.artist) not in suppressed_names
+            and normalize(song.artist) not in excluded_artists
         ]
         pools.append(clean)
 
     if errors == len(seeds):
         raise CatalogError("Не удалось связаться с музыкальными каталогами")
 
-    result: list[CatalogTrack] = []
-    seen_names: set[tuple[str, str]] = set()
-    seen_ids: set[str] = set()
-    cursor = 0
-    # Per-seed round robin, no permanently assigned artist bias.
-    while len(result) < limit and any(pools):
-        pool = pools[cursor % len(pools)]
-        cursor += 1
-        if not pool:
-            continue
-        song = pool.pop(0)
-        identity = normalized_identity(song.title, song.artist)
-        if song.mbid in seen_ids or identity in seen_names:
-            continue
-        seen_ids.add(song.mbid)
-        seen_names.add(identity)
-        result.append(song)
-    return used_seeds, result
+    # An item suggested by multiple different preferred artists is usually
+    # a stronger bridge than a recommendation from only one seed. Reciprocal
+    # rank fusion joins their rankings, then softens artist repetition.
+    return used_seeds, fuse_artist_radio(pools, limit=limit)
