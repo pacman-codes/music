@@ -206,13 +206,29 @@ class YouTubeIngestService:
             track = self.db.get_track(video["track_id"])
             if track is not None:
                 return {"track_id": track.id, "reused": True}
-        async with temporary_youtube_mp3(video_id) as file:
-            file_id, unique = await self.publisher(
-                file, video["title"], video["channel"],
-            )
-            if not file_id or not unique:
-                raise YouTubeError("Telegram не подтвердил аудиофайл")
-            track = self.db.add_track(file_id, unique, video["title"],
-                                      video["channel"])
-            self.db.link_youtube_video(video_id, track.id)
-            return {"track_id": track.id, "reused": False}
+        lease = self.db.acquire_media_import("youtube", video_id)
+        if lease is None:
+            # The bot and Mini App may be importing the same video concurrently.
+            current = self.db.get_youtube_video(video_id)
+            linked = current.get("track_id") if current else None
+            if linked is not None and self.db.get_track(linked) is not None:
+                return {"track_id": linked, "reused": True}
+            raise YouTubeError("Это видео уже загружается. Повтори позже.")
+        try:
+            video = self.db.get_youtube_video(video_id)
+            linked = video.get("track_id") if video else None
+            if linked is not None and self.db.get_track(linked) is not None:
+                return {"track_id": linked, "reused": True}
+            async with temporary_youtube_mp3(video_id) as file:
+                file_id, unique = await self.publisher(
+                    file, video["title"], video["channel"],
+                )
+                if not file_id or not unique:
+                    raise YouTubeError("Telegram не подтвердил аудиофайл")
+                track = self.db.add_track(
+                    file_id, unique, video["title"], video["channel"],
+                )
+                self.db.link_youtube_video(video_id, track.id)
+                return {"track_id": track.id, "reused": False}
+        finally:
+            self.db.release_media_import("youtube", video_id, lease)

@@ -154,16 +154,34 @@ class AudioIngestService:
         existing = candidate.get("track_id")
         if existing is not None and self.db.get_track(existing) is not None:
             return {"track_id": existing, "reused": True, "sent": False}
-        # Never store the URL or hand it to Telegram directly: file is checked
-        # and uploaded as native Telegram audio via Bot API by the publisher.
-        async with temporary_audio(url, self.hosts, client=self.client) as path:
-            file_id, file_unique_id = await self.publisher(
-                path, candidate["title"], candidate["artist"],
-            )
-            if not file_id or not file_unique_id:
-                raise MediaImportError("Telegram не вернул идентификатор аудио")
-            track = self.db.add_track(
-                file_id, file_unique_id, candidate["title"], candidate["artist"],
-            )
-            self.db.link_candidate_track(mbid, track.id)
-            return {"track_id": track.id, "reused": False, "sent": True}
+        validate_direct_audio_url(url, self.hosts)
+        lease = self.db.acquire_media_import("musicbrainz", mbid)
+        if lease is None:
+            # Another process (bot or Mini App) already started this upload.
+            candidate = self.db.get_candidate(mbid)
+            linked = candidate.get("track_id") if candidate else None
+            if linked is not None and self.db.get_track(linked) is not None:
+                return {"track_id": linked, "reused": True, "sent": False}
+            raise MediaImportError("Этот трек уже загружается. Повтори позже.")
+        try:
+            # Recheck under the lease: a different process may have completed
+            # in the gap between the initial lookup and reservation.
+            candidate = self.db.get_candidate(mbid)
+            linked = candidate.get("track_id") if candidate else None
+            if linked is not None and self.db.get_track(linked) is not None:
+                return {"track_id": linked, "reused": True, "sent": False}
+            # Never store the URL or hand it to Telegram directly.
+            async with temporary_audio(url, self.hosts, client=self.client) as path:
+                file_id, file_unique_id = await self.publisher(
+                    path, candidate["title"], candidate["artist"],
+                )
+                if not file_id or not file_unique_id:
+                    raise MediaImportError("Telegram не вернул идентификатор аудио")
+                track = self.db.add_track(
+                    file_id, file_unique_id,
+                    candidate["title"], candidate["artist"],
+                )
+                self.db.link_candidate_track(mbid, track.id)
+                return {"track_id": track.id, "reused": False, "sent": True}
+        finally:
+            self.db.release_media_import("musicbrainz", mbid, lease)
