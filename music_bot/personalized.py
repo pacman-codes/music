@@ -37,7 +37,8 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
     playback = db.playback_stats()
     artist_scores: dict[str, float] = defaultdict(float)
     representative: dict[str, str] = {}
-    for t in db.all_tracks(1000):
+    tracks = db.all_tracks(10000)
+    for t in tracks:
         if t.id in dislikes:
             continue
         artist = t.artist.strip()
@@ -61,6 +62,28 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
             continue
         representative.setdefault(key, artist)
         artist_scores[key] += weight
+    if not artist_scores:
+        # Cold start: uploading/saving a file is weak evidence of interest,
+        # never a fabricated listen or an explicit "like". Only use this
+        # fallback when no strong positive ratings/favorites are available.
+        excluded = strongly_negative_artists(
+            tracks, likes, dislikes, ratings, playback
+        )
+        weak_counts: dict[str, int] = defaultdict(int)
+        for track in tracks:
+            key = normalize(track.artist.strip())
+            if (not key or key in {"неизвестный исполнитель", "unknown artist"}
+                    or key in excluded or track.id in dislikes
+                    or ratings.get(track.id, 10) <= 4
+                    or fatigue_suppressed(*playback.get(track.id, (0, 0)))):
+                continue
+            weak_counts[key] += 1
+            representative.setdefault(key, track.artist.strip())
+        # Limit the preference inferred from a large imported discography.
+        artist_scores = {
+            key: min(5, occurrences) * 0.10
+            for key, occurrences in weak_counts.items()
+        }
     return [
         ArtistSeed(representative[key], round(weight, 2))
         for key, weight in sorted(
