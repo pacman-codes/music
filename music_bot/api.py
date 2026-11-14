@@ -20,6 +20,7 @@ from music_bot.importer import AudioIngestService, MediaImportError
 from music_bot.main import deliver_queue
 from music_bot.personalized import personalized_discovery
 from music_bot.selection import select_wave_batch
+from music_bot.source_matching import suggest_sources
 from music_bot.storage import Library
 from music_bot.webapp_auth import InvalidInitData, verify_init_data
 from music_bot.youtube import (
@@ -352,6 +353,35 @@ def create_app(config: Settings | None = None,
         if not valid_mbid(mbid):
             raise HTTPException(422, detail="Некорректный MBID")
         return {"removed": db.wishlist_remove(mbid.lower())}
+
+    @app.get("/api/discovery/{mbid}/youtube-suggestions", dependencies=[auth])
+    async def youtube_suggestions_for_recording(mbid: str):
+        if not settings.youtube_search_enabled:
+            raise HTTPException(409, detail="YouTube-поиск отключён")
+        if not valid_mbid(mbid):
+            raise HTTPException(422, detail="Некорректный MusicBrainz ID")
+        recording = db.get_candidate(mbid.lower())
+        if recording is None:
+            raise HTTPException(404, detail="Сначала найди запись в каталоге")
+        try:
+            candidates = await yt_source.search(
+                f"{recording['artist']} {recording['title']}"[:90],
+                limit=8,
+            )
+        except (ValueError, YouTubeError) as exc:
+            raise HTTPException(
+                502, detail="Пока не удалось получить предложения YouTube"
+            ) from exc
+        db.remember_youtube_videos(candidates)
+        matches = suggest_sources(recording, candidates, limit=6)
+        return {
+            "recording": {
+                "mbid": recording["mbid"], "title": recording["title"],
+                "artist": recording["artist"],
+            },
+            "suggestions": [s.public() for s in matches],
+            "auto_imported": False,
+        }
 
     @app.get("/api/youtube/status", dependencies=[auth])
     async def youtube_status():
