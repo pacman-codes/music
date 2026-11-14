@@ -31,6 +31,7 @@ HELP = """🎵 music — личный плеер
 Отправь аудио, чтобы добавить трек в библиотеку.
 /library — последние треки
 /search Текст — поиск в своей библиотеке
+/play ID — слушать конкретную песню в Telegram
 /find Название — внешний поиск MusicBrainz
 /radio Исполнитель — похожая музыка ListenBrainz
 /radiotrack ID — радио по конкретной песне
@@ -130,6 +131,7 @@ def home_keyboard(webapp_url: str | None = None) -> InlineKeyboardMarkup:
 
 def track_keyboard(track_id: int) -> InlineKeyboardMarkup:
     return keyboard([
+        [button("▶ Слушать", f"play:{track_id}")],
         [button("⭐ Оценить 1–10", f"rateopen:{track_id}"),
          button("❤️ Нравится", f"like:{track_id}")],
         [button("➕ В плейлист", f"chooseadd:{track_id}"),
@@ -191,6 +193,25 @@ def parse_more_callback(data: str) -> tuple[int, int] | None:
         return None
     queue_id, cursor = int(parts[1]), int(parts[2])
     return (queue_id, cursor) if queue_id > 0 and cursor > 0 else None
+
+
+async def send_single_track(bot: Bot, db: Library, chat_id: int,
+                            track_id: int) -> Track:
+    """Send one existing Telegram file_id, without downloading it again.
+
+    Success means Telegram accepted the message, NOT that the user listened.
+    """
+    track = db.get_track(track_id)
+    if track is None:
+        raise ValueError("Track not found")
+    await bot.send_audio(
+        chat_id, audio=track.file_id,
+        title=track.title[:64], performer=track.artist[:64],
+        caption=f"#{track.id} · {track.artist} — {track.title}"[:950],
+        reply_markup=track_keyboard(track.id),
+    )
+    db.record_single_send(track.id)
+    return track
 
 
 async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
@@ -362,6 +383,34 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             f"Сохранено #{track.id}: {track.artist} — {track.title}"[:3500],
             reply_markup=track_keyboard(track.id),
         )
+
+    @router.message(Command("play"))
+    async def play_command(message: Message, bot: Bot):
+        parsed = arguments(message, 1)
+        if parsed is None:
+            await message.answer("Пример: /play 12")
+            return
+        try:
+            await send_single_track(bot, db, message.chat.id, parsed[0])
+        except ValueError:
+            await message.answer("Трек не найден. Открой /library.")
+        except TelegramAPIError:
+            await message.answer("Telegram не смог отправить песню. Попробуй позже.")
+
+    @router.callback_query(F.data.startswith("play:"))
+    async def play_button(callback: CallbackQuery, bot: Bot):
+        raw = (callback.data or "").partition(":")[2]
+        message = callback_message(callback)
+        if not raw.isdigit() or int(raw) <= 0 or message is None:
+            await callback.answer("Неверный трек", show_alert=True)
+            return
+        await callback.answer()
+        try:
+            await send_single_track(bot, db, message.chat.id, int(raw))
+        except ValueError:
+            await message.answer("Трек не найден.")
+        except TelegramAPIError:
+            await message.answer("Telegram не смог отправить песню.")
 
     @router.callback_query(F.data.startswith("rateopen:"))
     async def rating_picker(callback: CallbackQuery):

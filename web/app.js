@@ -89,6 +89,11 @@ function renderTracks(items) {
     }, t.liked ? "heart liked" : "heart"));
 
     const actions = element("div", "track-actions");
+    actions.append(action("▶ Слушать", async () => {
+      await post("/api/tracks/" + t.id + "/play");
+      toast("Песня отправлена в Telegram ▶");
+      tg?.HapticFeedback?.notificationOccurred("success");
+    }));
     const rating = element("select", "track-rating");
     rating.setAttribute("aria-label", "Оценка от 1 до 10 для " + t.title);
     const empty = element("option", "", "⭐ —");

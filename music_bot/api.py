@@ -19,7 +19,7 @@ from music_bot.anime import AniListCatalog, AniListError
 from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normalize, normalized_identity, valid_mbid
 from music_bot.config import Settings, load_settings
 from music_bot.importer import AudioIngestService, MediaImportError
-from music_bot.main import deliver_queue
+from music_bot.main import deliver_queue, send_single_track
 from music_bot.personalized import personalized_discovery
 from music_bot.selection import select_wave_batch
 from music_bot.screen import TmdbCatalog, TmdbError
@@ -195,6 +195,21 @@ def create_app(config: Settings | None = None,
             body["match_confirmed"] = body["local_track_id"] is not None
             output.append(body)
         return output
+
+    @app.post("/api/tracks/{track_id}/play", dependencies=[auth])
+    async def play_single_track(track_id: int):
+        if db.get_track(track_id) is None:
+            raise HTTPException(404, detail="Трек не найден")
+        try:
+            async with Bot(token=settings.token) as bot:
+                track = await send_single_track(
+                    bot, db, settings.owner_id, track_id,
+                )
+        except TelegramAPIError as exc:
+            raise HTTPException(
+                502, detail="Telegram не смог отправить эту песню"
+            ) from exc
+        return {"sent": True, "track_id": track.id, "native_player": True}
 
     @app.get("/api/tracks/{track_id}/recording", dependencies=[auth])
     async def track_recording(track_id: int):
