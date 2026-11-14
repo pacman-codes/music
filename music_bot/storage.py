@@ -122,6 +122,13 @@ class Library:
             CREATE TABLE IF NOT EXISTS tracks(
               id INTEGER PRIMARY KEY, file_id TEXT NOT NULL,
               file_unique_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, artist TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS audio_fingerprints (
+              track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+              fingerprint_sha256 TEXT NOT NULL,
+              duration_sec INTEGER NOT NULL CHECK(duration_sec>0),
+              checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE INDEX IF NOT EXISTS fingerprint_hash_index
+              ON audio_fingerprints(fingerprint_sha256,duration_sec);
             CREATE TABLE IF NOT EXISTS track_recording_links(
               track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
               mbid TEXT NOT NULL REFERENCES catalog_candidates(mbid) ON DELETE CASCADE,
@@ -214,6 +221,41 @@ class Library:
                        (file_id, unique_id, title[:250], artist[:250]))
             row = db.execute("SELECT * FROM tracks WHERE file_unique_id=?", (unique_id,)).fetchone()
             return self.track(row)
+
+    def save_audio_fingerprint(self, track_id: int, digest: str,
+                               duration_sec: int) -> list[int]:
+        """Store only SHA256 of fingerprint; report exact same-audio candidates.
+
+        Never merge tracks automatically. Different encodings/lengths can
+        still produce distinct hashes despite sounding identical.
+        """
+        import re
+        if (not isinstance(digest, str) or
+                re.fullmatch(r"[0-9a-f]{64}",digest) is None or
+                type(duration_sec) is not int or not 1<=duration_sec<=86400):
+            raise ValueError("Invalid audio fingerprint")
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM tracks WHERE id=?",
+                          (track_id,)).fetchone() is None:
+                raise ValueError("Track not found")
+            duplicates = [int(r[0]) for r in db.execute(
+                """SELECT track_id FROM audio_fingerprints
+                   WHERE fingerprint_sha256=?
+                     AND abs(duration_sec-?)<=2 AND track_id<>?
+                   ORDER BY track_id LIMIT 20""",
+                (digest,duration_sec,track_id),
+            )]
+            db.execute(
+                """INSERT INTO audio_fingerprints
+                   (track_id,fingerprint_sha256,duration_sec)
+                   VALUES(?,?,?) ON CONFLICT(track_id) DO UPDATE SET
+                   fingerprint_sha256=excluded.fingerprint_sha256,
+                   duration_sec=excluded.duration_sec,
+                   checked_at=CURRENT_TIMESTAMP""",
+                (track_id,digest,duration_sec),
+            )
+            return duplicates
 
     def get_track(self, track_id: int) -> Track | None:
         with self.con() as db:

@@ -14,6 +14,7 @@ class Settings:
     youtube_search_enabled: bool = False
     youtube_download_enabled: bool = False
     tmdb_read_token: str | None = None
+    acoustid_client_key: str | None = None
 
 def load_settings() -> Settings:
     load_dotenv()
@@ -42,4 +43,5 @@ def load_settings() -> Settings:
         token, owner_id, Path(os.getenv("MUSIC_DB_PATH", "data/music.db")), url,
         hosts, search, download,
         os.getenv("TMDB_READ_TOKEN", "").strip() or None,
+        os.getenv("ACOUSTID_CLIENT_KEY", "").strip() or None,
     )
