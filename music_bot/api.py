@@ -30,6 +30,7 @@ from music_bot.selection import select_wave_batch
 from music_bot.screen import TmdbCatalog, TmdbError
 from music_bot.source_matching import suggest_sources
 from music_bot.storage import Library
+from music_bot.verdicts import LABELS, STATUSES, valid_status, yandex_search_url
 from music_bot.webapp_auth import InvalidInitData, verify_init_data
 from music_bot.youtube import (
     YouTubeError, YouTubeSource, YouTubeIngestService, validate_video_id,
@@ -72,6 +73,10 @@ class PlaylistAdd(BaseModel):
 
 class RatingRequest(BaseModel):
     score: int = Field(ge=1, le=10, strict=True)
+
+
+class VerdictRequest(BaseModel):
+    status: Literal["maybe", "add", "never", "later", "interesting"]
 
 
 class PlaybackReport(BaseModel):
@@ -682,6 +687,71 @@ def create_app(config: Settings | None = None,
                 return await ingest.import_recording(mbid.lower(), payload.url)
             except MediaImportError as exc:
                 raise HTTPException(422, detail=str(exc)) from exc
+
+    @app.get("/api/decisions", dependencies=[auth])
+    async def decision_categories():
+        counts = db.verdict_counts()
+        return [
+            {"status": status, "label": LABELS[status], "count": counts[status]}
+            for status in STATUSES
+        ]
+
+    @app.get("/api/decisions/{status}", dependencies=[auth])
+    async def decision_tracks(
+        status: str, offset: int = Query(default=0, ge=0, le=10000),
+        limit: int = Query(default=30, ge=1, le=100),
+    ):
+        if not valid_status(status):
+            raise HTTPException(404, detail="Unknown decision category")
+        all_items = db.verdict_items(status)
+        rows = all_items[offset:offset + limit]
+        return {
+            "status": status, "label": LABELS[status],
+            "total": len(all_items), "offset": offset, "limit": limit,
+            "items": [
+                {
+                    **item,
+                    "playable": item["track_id"] is not None,
+                    "yandex_search_url": yandex_search_url(item["artist"], item["title"]),
+                }
+                for item in rows
+            ],
+        }
+
+    @app.post("/api/decisions/local/{track_id}", dependencies=[auth])
+    async def decide_local(track_id: int, payload: VerdictRequest):
+        try:
+            db.set_track_verdict(track_id, payload.status)
+        except ValueError as exc:
+            raise HTTPException(404, detail=str(exc)) from exc
+        return {"track_id": track_id, "status": payload.status}
+
+    @app.post("/api/decisions/catalog/{mbid}", dependencies=[auth])
+    async def decide_catalog(mbid: str, payload: VerdictRequest):
+        if not valid_mbid(mbid):
+            raise HTTPException(422, detail="Invalid recording MBID")
+        try:
+            db.set_catalog_verdict(mbid.lower(), payload.status)
+        except ValueError as exc:
+            raise HTTPException(404, detail=str(exc)) from exc
+        return {"mbid": mbid.lower(), "status": payload.status}
+
+    @app.post("/api/decisions/{status}/play", dependencies=[auth])
+    async def play_decision_list(status: str):
+        if not valid_status(status):
+            raise HTTPException(404, detail="Unknown decision category")
+        items = db.verdict_items(status)
+        playable_ids = list(dict.fromkeys(
+            row["track_id"] for row in items if row["track_id"] is not None
+        ))
+        if not playable_ids:
+            raise HTTPException(409, detail="Нет загруженных аудиофайлов")
+        queue_id = db.create_queue(playable_ids, LABELS[status], "decision")
+        async with Bot(token=settings.token) as bot:
+            await deliver_queue(bot, db, settings.owner_id, queue_id, send_lock)
+        if db.peek_queue(queue_id).cursor == 0:
+            raise HTTPException(502, detail="Telegram media delivery failed")
+        return {"queue_id": queue_id, "sent": min(10, len(playable_ids))}
 
     @app.get("/api/playlists", dependencies=[auth])
     async def playlists():
