@@ -114,6 +114,13 @@ function renderTracks(items) {
         byId("catalog-heading").scrollIntoView({behavior:"smooth"});
       },"secondary-action"));
     }
+    if (t.recording) {
+      actions.append(action("🏷 Обновить теги", async()=>{
+        const result=await post("/api/tracks/"+t.id+"/apply-recording-tags");
+        toast("Локальные теги обновлены. Telegram-файл не менялся.");
+        await refreshTracks();
+      },"secondary-action"));
+    }
     const rating = element("select", "track-rating");
     rating.setAttribute("aria-label", "Оценка от 1 до 10 для " + t.title);
     const empty = element("option", "", "⭐ —");

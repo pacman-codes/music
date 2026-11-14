@@ -43,6 +43,7 @@ HELP = """🎵 music — личный плеер
 /wrapped 30d|365d|all — музыкальная статистика
 /identify ID — подобрать MusicBrainz ID для локального файла
 /fingerprint ID — распознать аудио через AcoustID (если включён)
+/tag ID — обновить локальные теги после подтверждения MusicBrainz
 /unmatch ID — убрать ошибочную ручную привязку
 /saved — отложенные находки (пока без аудио)
 /import MBID URL — разрешённый прямой MP3/M4A → Telegram
@@ -931,6 +932,22 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             return
         await message.answer(
             "Фильтры применятся к следующей новой порции радио. /queue"
+        )
+
+    @router.message(Command("tag"))
+    async def tag_cmd(message: Message):
+        ids=arguments(message,1)
+        if ids is None:
+            await message.answer("Пример: /tag 12. Сначала подтверди MBID.")
+            return
+        try:
+            track=db.apply_confirmed_recording_tags(ids[0])
+        except ValueError as exc:
+            await message.answer(str(exc))
+            return
+        await message.answer(
+            f"🏷 Локальные теги обновлены: {track.artist} — {track.title}. "
+            "Сам файл Telegram не изменялся."
         )
 
     @router.message(Command("wrapped"))

@@ -244,6 +244,16 @@ def create_app(config: Settings | None = None,
             ) from exc
         return {"sent": True, "track_id": track.id, "native_player": True}
 
+    @app.post("/api/tracks/{track_id}/apply-recording-tags", dependencies=[auth])
+    async def apply_recording_tags(track_id: int):
+        try:
+            t = db.apply_confirmed_recording_tags(track_id)
+        except ValueError as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+        return {"track_id":t.id, "title":t.title,"artist":t.artist,
+                "updated_local_metadata":True,
+                "embedded_telegram_tags_changed":False}
+
     @app.get("/api/fingerprint/status", dependencies=[auth])
     async def fingerprint_status():
         return {"enabled": bool(settings.acoustid_client_key)}
