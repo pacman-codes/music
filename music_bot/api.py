@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Literal
@@ -63,9 +64,18 @@ def create_app(config: Settings | None = None,
     settings = config or load_settings()
     db = Library(settings.db_path)
     catalog_client = catalog or MusicCatalog(settings.db_path)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        try:
+            yield
+        finally:
+            if catalog is None:
+                await catalog_client.close()
+
     app = FastAPI(
         title="music private Mini App",
         docs_url=None, redoc_url=None, openapi_url=None,
+        lifespan=lifespan,
     )
     static = Path(__file__).resolve().parent.parent / "web"
     app.mount("/assets", StaticFiles(directory=static), name="assets")
@@ -88,11 +98,6 @@ def create_app(config: Settings | None = None,
     )
     yt_source = youtube_source or YouTubeSource()
     yt_ingest = youtube_ingest or YouTubeIngestService(db, publish_audio)
-
-    @app.on_event("shutdown")
-    async def close_catalog():
-        if catalog is None:
-            await catalog_client.close()
 
     def owner(x_telegram_init_data: Annotated[str | None, Header()] = None):
         try:
