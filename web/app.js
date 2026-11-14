@@ -151,6 +151,37 @@ function renderTracks(items) {
       }
     });
     actions.append(rating);
+    const decision = element("select", "decision-select");
+    decision.setAttribute("aria-label", "Реакция на " + t.title);
+    const noDecision = element("option", "", "🧭 Решение");
+    noDecision.value = "";
+    decision.append(noDecision);
+    for (const [status, label] of Object.entries({
+      maybe:"🤔 Может добавлю", add:"❤️ Добавлю",
+      never:"🚫 Никогда", later:"⏳ Не сейчас",
+      interesting:"🧠 Интересно, не буду слушать",
+    })) {
+      const opt = element("option", "", label);
+      opt.value = status;
+      decision.append(opt);
+    }
+    decision.value = t.decision || "";
+    decision.addEventListener("change", async () => {
+      if (!decision.value) return;
+      decision.disabled = true;
+      try {
+        await post("/api/decisions/local/" + t.id, {status: decision.value});
+        toast("Реакция сохранена");
+        await refreshTracks();
+        if (window.refreshDecisions) await window.refreshDecisions();
+      } catch (error) {
+        decision.value = t.decision || "";
+        toast(error.message);
+      } finally {
+        decision.disabled = false;
+      }
+    });
+    actions.append(decision);
     actions.append(action("⏭ Пропустил", async () => {
       await post("/api/report/" + t.id, {event: "skip"});
       toast("Пропуск отмечен вручную");
@@ -290,6 +321,38 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
         else await externalSearch(byId("catalog-query").value.trim() || item.title);
       }, "secondary-action"));
     }
+    const verdict = element("select", "decision-select");
+    verdict.setAttribute("aria-label", "Решение для " + item.title);
+    const unset = element("option", "", "🧭 Выбрать реакцию");
+    unset.value = "";
+    verdict.append(unset);
+    for (const [status, label] of Object.entries({
+      maybe:"🤔 Может добавлю", add:"❤️ Добавлю",
+      never:"🚫 Никогда", later:"⏳ Не сейчас",
+      interesting:"🧠 Интересно, не буду слушать",
+    })) {
+      const opt = element("option", "", label);
+      opt.value = status;
+      verdict.append(opt);
+    }
+    verdict.value = item.decision || "";
+    verdict.addEventListener("change", async () => {
+      if (!verdict.value) return;
+      verdict.disabled = true;
+      try {
+        await post("/api/decisions/catalog/" + encodeURIComponent(item.mbid),
+                   {status: verdict.value});
+        item.decision = verdict.value;
+        toast("Реакция сохранена");
+        if (window.refreshDecisions) await window.refreshDecisions();
+      } catch (error) {
+        toast(error.message);
+        verdict.value = item.decision || "";
+      } finally {
+        verdict.disabled = false;
+      }
+    });
+    controls.append(verdict);
     controls.append(action(
       item.in_wishlist || fromWishlist ? "📌 Убрать" : "📌 Отложить",
       async () => {
