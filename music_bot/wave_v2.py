@@ -19,7 +19,7 @@ PRESETS: dict[str, tuple[float, float, float]] = {
 CATEGORIES = ("familiar", "similar", "new")
 
 
-def classify(tracks, liked_ids, ratings, playback):
+def classify(tracks, liked_ids, ratings, playback, related_ids=frozenset()):
     """Return category buckets without turning a low rating into a dislike."""
     positive_artists = {
         t.artist.strip().casefold()
@@ -34,7 +34,7 @@ def classify(tracks, liked_ids, ratings, playback):
         loved = t.id in liked_ids or ratings.get(t.id, 0) >= 8
         if loved:
             category = "familiar"
-        elif t.artist.strip().casefold() in positive_artists:
+        elif t.artist.strip().casefold() in positive_artists or t.id in related_ids:
             category = "similar"
         else:
             category = "new"
@@ -71,7 +71,8 @@ def allocate_mix(size: int, capacities: dict[str, int], preset: str) -> dict[str
 
 def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
             playback=None, recent_ids=frozenset(), count=10,
-            preset="balanced", seed=None):
+            preset="balanced", seed=None, exposure=None,
+            playlist_counts=None, related_ids=frozenset()):
     """Personalized native playback batch, no hypothetical audio candidates."""
     if preset not in PRESETS:
         raise ValueError("Unknown Wave 2.0 preset")
@@ -86,14 +87,25 @@ def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
     ]
     if not eligible:
         return []
-    groups = classify(eligible, liked_ids, ratings, playback)
+    groups = classify(eligible, liked_ids, ratings, playback, related_ids)
     limits = allocate_mix(count, {key: len(value) for key, value in groups.items()}, preset)
     rng = random.Random(seed)
-    schedule = [name for name in CATEGORIES for _ in range(limits[name])]
-    rng.shuffle(schedule)
+    # Interleave quota buckets without long same-category runs when possible.
+    remaining = dict(limits)
+    schedule = []
+    while any(remaining.values()):
+        possible = [name for name in CATEGORIES if remaining[name] > 0]
+        alternative = [name for name in possible
+                       if not schedule or name != schedule[-1]]
+        if alternative:
+            possible = alternative
+        choice = rng.choices(possible, weights=[remaining[n] for n in possible], k=1)[0]
+        schedule.append(choice)
+        remaining[choice] -= 1
     favorites = Counter(t.artist.strip().casefold() for t in eligible
                         if t.id in liked_ids or ratings.get(t.id, 0) >= 8)
     seen_artists = Counter()
+    recent_artists: list[str] = []
     result = []
     for name in schedule:
         pool = groups[name]
@@ -101,12 +113,16 @@ def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
             track_weight(
                 t, liked_ids, favorites, seen_artists,
                 recent_ids=recent_ids, ratings=ratings, playback=playback,
-                mode="balanced",
+                mode="balanced", exposure=exposure,
+                playlist_counts=playlist_counts, related_ids=related_ids,
+                recent_artists=recent_artists,
             )
             for t in pool
         ]
         index = rng.choices(range(len(pool)), weights=scores, k=1)[0]
         track = pool.pop(index)
-        seen_artists[track.artist.strip().casefold()] += 1
+        artist = track.artist.strip().casefold()
+        seen_artists[artist] += 1
+        recent_artists.append(artist)
         result.append(track)
     return result
