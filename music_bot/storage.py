@@ -802,6 +802,52 @@ class Library:
                 (video_id,track_id),
             )
 
+    def associate_youtube_recording(self, video_id: str, mbid: str) -> int:
+        """Bind an explicitly selected YouTube audio to its catalog recording.
+
+        This must never be called merely because title/artist text looks
+        similar. Both catalog-to-file and track-to-catalog links are written
+        in one transaction, rejecting conflicting identities.
+        """
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            candidate = db.execute(
+                "SELECT mbid FROM catalog_candidates WHERE mbid=?", (mbid,)
+            ).fetchone()
+            video = db.execute(
+                """SELECT a.track_id FROM youtube_audio_assets a
+                   WHERE a.video_id=?""", (video_id,)
+            ).fetchone()
+            if candidate is None or video is None:
+                raise ValueError("Catalog recording or uploaded video missing")
+            track_id = int(video["track_id"])
+            prior_identity = db.execute(
+                "SELECT mbid FROM track_recording_links WHERE track_id=?",
+                (track_id,)
+            ).fetchone()
+            prior_asset = db.execute(
+                "SELECT track_id FROM catalog_audio_assets WHERE mbid=?",
+                (mbid,)
+            ).fetchone()
+            if prior_identity is not None and prior_identity["mbid"] != mbid:
+                raise ValueError("This audio is already linked to another recording")
+            if prior_asset is not None and int(prior_asset["track_id"]) != track_id:
+                raise ValueError("This recording already has another Telegram audio")
+            db.execute(
+                """INSERT INTO catalog_audio_assets(mbid,track_id) VALUES(?,?)
+                   ON CONFLICT(mbid) DO UPDATE SET
+                   track_id=excluded.track_id,linked_at=CURRENT_TIMESTAMP""",
+                (mbid, track_id),
+            )
+            db.execute(
+                """INSERT INTO track_recording_links(track_id,mbid,provenance)
+                   VALUES(?,?,'import')
+                   ON CONFLICT(track_id) DO UPDATE SET
+                   provenance='import',linked_at=CURRENT_TIMESTAMP""",
+                (track_id, mbid),
+            )
+            return track_id
+
     def remember_anime(self, entries) -> None:
         """Only AniList catalog metadata, never video streaming links."""
         with self.con() as db:
