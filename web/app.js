@@ -64,37 +64,90 @@ function renderPlaylists(items) {
   }
 }
 function renderTracks(items) {
-  const host=byId("tracks");
+  const host = byId("tracks");
   host.replaceChildren();
   show("count", String(items.length));
-  if (!items.length) host.append(element("div","empty","Треков пока нет. Отправь музыку боту."));
+  if (!items.length) {
+    host.append(element("div", "empty", "Треков пока нет. Отправь музыку боту."));
+  }
   for (const t of items) {
-    const row=element("div","item");
-    const info=element("div","info");
-    info.append(element("div","name",t.title),element("div","sub",t.artist));
-    row.append(info,action(t.liked?"♥":"♡", async()=>{
+    const row = element("div", "item track-card");
+    const head = element("div", "track-head");
+    const info = element("div", "info");
+    info.append(element("div", "name", t.title),
+                element("div", "sub", t.artist));
+    head.append(info, action(t.liked ? "♥" : "♡", async () => {
       if (t.liked) {
-        await api("/api/like/"+t.id,{method:"DELETE"});
+        await api("/api/like/" + t.id, {method: "DELETE"});
       } else {
-        await post("/api/like/"+t.id);
+        await post("/api/like/" + t.id);
       }
       await refreshTracks();
-    }, t.liked?"heart liked":"heart"));
-    row.append(action("＋", async()=>{
-      const list=(await api("/api/playlists")).filter(p=>p.kind==="custom");
+    }, t.liked ? "heart liked" : "heart"));
+
+    const actions = element("div", "track-actions");
+    const rating = element("select", "track-rating");
+    rating.setAttribute("aria-label", "Оценка от 1 до 10 для " + t.title);
+    const empty = element("option", "", "⭐ —");
+    empty.value = "";
+    rating.append(empty);
+    for (let score=1; score<=10; score++) {
+      const option = element("option", "", "⭐ " + score);
+      option.value = String(score);
+      rating.append(option);
+    }
+    rating.value = t.rating == null ? "" : String(t.rating);
+    rating.addEventListener("change", async () => {
+      rating.disabled = true;
+      try {
+        if (rating.value === "") {
+          await api("/api/rating/" + t.id, {method: "DELETE"});
+          toast("Оценка убрана");
+        } else {
+          await post("/api/rating/" + t.id, {score: Number(rating.value)});
+          toast("Оценка сохранена: " + rating.value + "/10");
+        }
+        await refreshTracks();
+      } catch (error) {
+        rating.value = t.rating == null ? "" : String(t.rating);
+        toast(error.message);
+      } finally {
+        rating.disabled = false;
+      }
+    });
+    actions.append(rating);
+    actions.append(action("⏭ Пропустил", async () => {
+      await post("/api/report/" + t.id, {event: "skip"});
+      toast("Пропуск отмечен вручную");
+      await refreshTracks();
+    }, "secondary-action"));
+    actions.append(action("✅ Дослушал", async () => {
+      await post("/api/report/" + t.id, {event: "complete"});
+      toast("Дослушивание отмечено вручную");
+      await refreshTracks();
+    }, "secondary-action"));
+    actions.append(action("＋ Плейлист", async () => {
+      const list = (await api("/api/playlists")).filter(p => p.kind === "custom");
       if (!list.length) { toast("Сначала создай плейлист"); return; }
-      const choice=window.prompt("Выбери номер плейлиста:\n"+
-        list.map(p=>p.id+" — "+p.name).join("\n"));
+      const choice = window.prompt("Выбери номер плейлиста:\n" +
+        list.map(p => p.id + " — " + p.name).join("\n"));
       if (!choice) return;
-      const target=list.find(p=>String(p.id)===choice.trim());
+      const target = list.find(p => String(p.id) === choice.trim());
       if (!target) throw new Error("Неверный номер плейлиста");
-      await post("/api/playlists/"+target.id+"/add",{track_id:t.id});
-      toast("Добавлено в «"+target.name+"»");
+      await post("/api/playlists/" + target.id + "/add", {track_id: t.id});
+      toast("Добавлено в «" + target.name + "»");
       await refreshPlaylists();
-    }));
+    }, "secondary-action"));
+    row.append(head, actions);
+    if (t.reported_skips || t.reported_completions) {
+      row.append(element("div", "track-feedback",
+        "Ручные отметки за 30 дней: ⏭ " + t.reported_skips +
+        " · ✅ " + t.reported_completions));
+    }
     host.append(row);
   }
 }
+
 async function refreshPlaylists(){ renderPlaylists(await api("/api/playlists")); }
 async function refreshTracks() {
   const q=byId("query").value.trim();
