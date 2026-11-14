@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import signal
 import sys
 import tempfile
 import time
@@ -99,6 +101,7 @@ async def run_ytdlp(args: list[str], *, timeout: float,
             sys.executable, "-m", "yt_dlp", *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
     except OSError as exc:
         raise YouTubeError("yt-dlp не установлен на сервере") from exc
@@ -119,7 +122,12 @@ async def run_ytdlp(args: list[str], *, timeout: float,
         stdout, _stderr = task.result()
     except (YouTubeError, asyncio.CancelledError):
         if process.returncode is None:
-            process.kill()
+            # ffmpeg is a yt-dlp child; kill the whole session on Linux,
+            # not only yt-dlp, to avoid orphaned transcoding on small VPS.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         await task
         raise
     if process.returncode:
