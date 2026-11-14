@@ -24,6 +24,7 @@ from music_bot.fingerprints import (
 )
 from music_bot.main import deliver_queue, send_single_track
 from music_bot.personalized import personalized_discovery
+from music_bot.weekly import weekly_discovery
 from music_bot.selection import select_wave_batch
 from music_bot.screen import TmdbCatalog, TmdbError
 from music_bot.source_matching import suggest_sources
@@ -360,6 +361,21 @@ def create_app(config: Settings | None = None,
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         db.remember_candidates(matches)
         return {"results": catalog_result(matches), "type": "metadata_only"}
+
+    @app.get("/api/discovery/weekly", dependencies=[auth])
+    async def weekly_recommendations():
+        result = await weekly_discovery(db, catalog_client, limit=10)
+        candidates = [
+            CatalogTrack(
+                t["mbid"], t["title"], t["artist"],
+                t.get("artist_mbid"), t.get("duration_ms"),
+                t.get("variant", False),
+            )
+            for t in result["tracks"]
+        ]
+        db.remember_candidates(candidates)
+        result["tracks"] = catalog_result(candidates)
+        return result
 
     @app.get("/api/discovery/for-you", dependencies=[auth])
     async def catalog_for_you(

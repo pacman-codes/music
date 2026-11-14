@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normalize, valid_mbid
 from music_bot.personalized import personalized_discovery
+from music_bot.weekly import weekly_discovery
 from music_bot.storage import Library
 
 
@@ -224,6 +225,42 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
         await callback.answer(
             f"Связано с {record['artist']} — {record['title']}"[:180],
             show_alert=True,
+        )
+
+    @router.message(Command("weekly"))
+    async def weekly(message: Message):
+        result = await weekly_discovery(db, catalog, limit=8)
+        rows = [
+            CatalogTrack(t["mbid"], t["title"], t["artist"],
+                         t.get("artist_mbid"), t.get("duration_ms"),
+                         t.get("variant", False))
+            for t in result["tracks"]
+        ]
+        db.remember_candidates(rows)
+        lines = [f"✨ Находки недели {result['year']} / {result['week']}"]
+        if result["seed_artists"]:
+            lines.append("По твоему вкусу: "+", ".join(result["seed_artists"]))
+        if result["releases"]:
+            lines.append("💿 Новые релизы (только метаданные):")
+            lines.extend(
+                f"• {item['artist']} — {item['name']} ({item['release_date']})"
+                for item in result["releases"][:8]
+            )
+        if rows:
+            lines.append("🎧 Персональные песни (пока без файла):")
+            lines.extend(
+                f"• {t.artist} — {t.title} [{t.mbid}]"
+                for t in rows[:8]
+            )
+        if not result["releases"] and not rows:
+            lines.append("Пока нет новых находок. Добавь оценки и избранное.")
+        if result["warnings"]:
+            lines.append("Некоторые музыкальные источники сейчас не отвечают.")
+        await message.answer(
+            "\n".join(lines)[:3900],
+            reply_markup=(catalog_keyboard(
+                rows, linked=db.resolved_catalog_tracks(),
+            ) if rows else None),
         )
 
     @router.message(Command("recommend"))

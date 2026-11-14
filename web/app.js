@@ -496,6 +496,29 @@ if (tg && initData) {
     try { await externalRadio(); }
     catch(error) { show("catalog-status", "Радио недоступно"); toast(error.message); }
   });
+  byId("weekly-discover").addEventListener("click", async () => {
+    try {
+      show("catalog-status", "Собираю находки недели…");
+      const payload=await api("/api/discovery/weekly");
+      show("catalog-status", "Находки недели "+payload.year+"/"+payload.week+
+        " · любимые: "+(payload.seed_artists.join(", ")||"ещё неизвестны"));
+      const host=byId("weekly-releases");
+      host.replaceChildren();
+      for(const r of payload.releases){
+        const card=element("div","item track-card");
+        card.append(element("div","name","💿 "+r.artist+" — "+r.name));
+        card.append(element("div","sub",r.release_type+" · "+r.release_date+
+          (r.favorite_artist?" · Из любимых":" · Новое")));
+        host.append(card);
+      }
+      if(!payload.releases.length){
+        host.append(element("div","empty","Новые релизы пока не найдены"));
+      }
+      renderExternalCatalog(payload.tracks);
+      byId("catalog-heading").scrollIntoView({behavior:"smooth"});
+      if(payload.warnings.length) toast("Часть музыкальных источников недоступна");
+    }catch(error){toast(error.message);}
+  });
   byId("personal-discover").addEventListener("click", async () => {
     try { await personalDiscover(); }
     catch(error) { show("catalog-status","Не удалось собрать персональные открытия"); toast(error.message); }
