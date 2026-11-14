@@ -24,9 +24,11 @@ not already found in the local catalog/audio library are returned.
 
 ## For You
 
-`/recommend` or «✨ Для меня» selects at most three top artists based on
-positive ratings (5–10), explicit liked favorites, and manually reported
-completion vs skip events. A favorite rated <=4 or subject to repeated skips
+`/recommend` or «✨ Для меня» selects at most three preferred artists based on
+positive ratings, explicit favorites, and manually reported completion vs skip
+feedback. **Cold start:** if no positive ratings/favorites exist, saved tracks
+provide a deliberately weak artist-frequency seed, without claiming that
+an upload was ever played or liked. A favorite rated <=4 or subject to repeated skips
 does not become a positive seed. User preferences do NOT remove songs from
 the liked playlist.
 
