@@ -1,59 +1,16 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.so
-
-# Virtual environments
-venv/
-.venv/
-env/
-
-# Environment variables
 .env
 .env.*
 !.env.example
-
-# Logs
-*.log
-bot.log
-
-# SQLite / DB dumps / local data
-*.sqlite3
-*.db
-*.sql
-
-# Editor / swap / temp
-*.swp
-*.swo
-*~
-.DS_Store
-.idea/
-.vscode/
-
-# Python tooling caches
+.venv/
+__pycache__/
+*.py[cod]
 .pytest_cache/
-.mypy_cache/
 .ruff_cache/
-.coverage
-htmlcov/
-
-# Build / packaging
-build/
-dist/
-*.egg-info/
-
-# Local junk files
-.datetime.swp
-.from.swp
-.html.swp
-.import.swp
-
-# backups
-*.bak
-*.bak2
-
-# accidental nested copy
-dev/
-
+data/
+*.db
+*.db-*
+*.sqlite*
+downloads/
+*.mp3
+*.mp4
+*.mkv

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "personal-telegram-music"
+version = "0.1.0"
+description = "Private Telegram media library and music wave"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["aiogram>=3.13,<4", "python-dotenv>=1,<2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+include = ["music_bot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
