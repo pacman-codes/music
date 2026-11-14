@@ -137,3 +137,43 @@ def test_direct_import_duplicate_unique_file_keeps_original_identity(tmp_path):
             assert db.get_candidate(B)["track_id"] is None
 
     asyncio.run(scenario())
+
+
+def test_manual_recording_is_unique_across_telegram_files(db):
+    candidates(db)
+    first = db.add_track("file-one", "uid-one", "Roads", "Portishead")
+    second = db.add_track("file-two", "uid-two", "Roads", "Portishead")
+    db.confirm_recording_match(first.id, A)
+    with pytest.raises(ValueError, match="already belongs"):
+        db.confirm_recording_match(second.id, A)
+    with pytest.raises(ValueError, match="associated with another"):
+        db.link_candidate_track(A, second.id)
+    assert db.resolved_catalog_tracks() == {A: first.id}
+    assert db.recording_for_track(second.id) is None
+    # Owner may still correct their *own* manually linked track.
+    db.confirm_recording_match(first.id, B)
+    assert db.resolved_catalog_tracks() == {B: first.id}
+    assert db.recording_for_track(first.id)["mbid"] == B
+
+
+def test_direct_import_reuses_owner_confirmed_audio_without_downloading(db):
+    import asyncio
+    from music_bot.importer import AudioIngestService
+
+    candidates(db)
+    first = db.add_track("tg-file", "tg-unique", "Roads", "Portishead")
+    db.confirm_recording_match(first.id, A)
+
+    async def forbidden_publisher(*_args):
+        raise AssertionError("Confirmed Telegram file should not be re-uploaded")
+
+    async def scenario():
+        result = await AudioIngestService(
+            db, ("audio.example.org",), forbidden_publisher,
+        ).import_recording(A, "https://audio.example.org/roads.mp3")
+        assert result == {
+            "track_id": first.id, "reused": True, "sent": False,
+        }
+
+    asyncio.run(scenario())
+    assert db.resolved_catalog_tracks() == {A: first.id}
