@@ -23,13 +23,17 @@ from music_bot.youtube import (
 )
 
 
-def youtube_keyboard(videos, download_enabled: bool):
+def youtube_keyboard(videos, download_enabled: bool,
+                     recording_mbid: str | None = None):
     if not download_enabled:
         return None
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f"🎧 Скачать: {video.title[:38]}",
-            callback_data=f"ytget:{video.video_id}",
+            callback_data=(
+                f"ytget:{video.video_id}:{recording_mbid}"
+                if recording_mbid else f"ytget:{video.video_id}"
+            ),
         )] for video in videos[:8]
     ])
 
@@ -104,11 +108,14 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
         text+="\nВыбери подходящую запись; автоимпорт не выполняется."
         await message.answer(
             text[:3800],
-            reply_markup=youtube_keyboard([item.video for item in ranked],
-                                          download_enabled),
+            reply_markup=youtube_keyboard(
+                [item.video for item in ranked],
+                download_enabled, recording["mbid"],
+            ),
         )
 
-    async def fetch(bot: Bot, video_id: str, chat_id: int):
+    async def fetch(bot: Bot, video_id: str, chat_id: int,
+                    recording_mbid: str | None = None):
         if not download_enabled:
             await bot.send_message(chat_id, "Загрузка YouTube отключена в .env.")
             return
@@ -123,7 +130,9 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
         async with download_lock:
             try:
                 ingest=YouTubeIngestService(db, publish)
-                result=await ingest.import_video(video_id)
+                result=await ingest.import_video(
+                    video_id, recording_mbid=recording_mbid,
+                )
                 if result["reused"]:
                     track=db.get_track(result["track_id"])
                     if track:
@@ -155,11 +164,19 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
 
     @router.callback_query(F.data.startswith("ytget:"))
     async def download_button(callback: CallbackQuery, bot: Bot):
-        raw=(callback.data or "").partition(":")[2]
+        parts = (callback.data or "").split(":")
+        if (len(parts) not in (2, 3) or parts[0] != "ytget"):
+            await callback.answer("Неверная кнопка", show_alert=True)
+            return
+        raw = parts[1]
+        mbid = parts[2].lower() if len(parts) == 3 else None
         try:
             validate_video_id(raw)
+            if mbid is not None and not valid_mbid(mbid):
+                raise YouTubeError("Bad MBID")
         except YouTubeError:
-            await callback.answer("Неверный YouTube ID",show_alert=True)
+            await callback.answer("Неверный YouTube/MusicBrainz ID",
+                                  show_alert=True)
             return
         await callback.answer("Запрос на загрузку принят")
-        await fetch(bot,raw,owner_id)
+        await fetch(bot, raw, owner_id, recording_mbid=mbid)
