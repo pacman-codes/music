@@ -70,6 +70,12 @@ HELP = """🎵 music — личный плеер
 /playplaylist ID — слушать подборку
 /wave — Волна 2.0 (знакомое, похожее и новое)
 /mix balanced|familiar|explore — настроить Волну
+/queue — показать будущие песни
+/next ID — поставить песню следующей
+/append ID — добавить в конец очереди
+/qmove ОТ КУДА — переставить неотправленный трек
+/qremove ПОЗИЦИЯ — убрать из очереди
+/qfilter rating 7|liked on|today on — фильтры радио
 /continue — продолжить последнюю очередь после сбоя кнопок
 /discover — открытия среди сохранённых треков
 
@@ -806,6 +812,119 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             await message.answer("Пример: /playplaylist 2")
             return
         await start_playlist(bot, message.chat.id, ids[0])
+
+    @router.message(Command("queue"))
+    async def queue_cmd(message: Message):
+        qid = db.latest_queue_id()
+        if qid is None:
+            await message.answer("Очереди нет. Запусти /wave или плейлист.")
+            return
+        state = db.queue_snapshot(qid, limit=15)
+        text = (
+            f"⏭ Очередь #{qid} · {state['label']}\n"
+            f"Отправлено: {state['cursor']}; ожидает: {state['pending_total']}.\n"
+        )
+        text += "\n".join(
+            f"{item['position']+1}. {item['artist']} — {item['title']}"[:180]
+            for item in state["upcoming"]
+        )
+        if state["is_dynamic"]:
+            filters = db.get_queue_filters(qid)
+            text += (
+                f"\nФильтры: оценка от {filters['min_rating']}, "
+                f"избранное={filters['liked_only']}, "
+                f"не отправлялось сегодня={filters['no_repeat_today']}."
+            )
+        text += "\n/next ID · /append ID · /qmove 11 13 · /qremove 13 · /continue"
+        await message.answer(text[:3900])
+
+    @router.message(Command("next", "append"))
+    async def queue_add_cmd(message: Message):
+        args = arguments(message, 1)
+        if args is None:
+            await message.answer("Пример: /next 12 или /append 12")
+            return
+        qid = db.latest_queue_id()
+        if qid is None:
+            await message.answer("Сначала запусти Волну или плейлист.")
+            return
+        kind = (message.text or "").split()[0].split("@")[0][1:]
+        try:
+            result = db.edit_queue(qid, kind, track_id=args[0])
+        except ValueError as exc:
+            await message.answer(str(exc))
+            return
+        await message.answer(
+            f"⏭ Добавлено в очередь #{qid}. Ожидает {result['pending_total']}. "
+            "Продолжение: /continue"
+        )
+
+    @router.message(Command("qmove"))
+    async def queue_move_cmd(message: Message):
+        args = arguments(message, 2)
+        if args is None or min(args) < 1:
+            await message.answer("Пример: /qmove 11 13 (номера из /queue)")
+            return
+        qid = db.latest_queue_id()
+        if qid is None:
+            await message.answer("Очереди нет.")
+            return
+        try:
+            db.edit_queue(qid, "move", position=args[0]-1, to_position=args[1]-1)
+        except ValueError as exc:
+            await message.answer(str(exc))
+            return
+        await message.answer("✅ Порядок сохранён. /queue")
+
+    @router.message(Command("qremove"))
+    async def queue_remove_cmd(message: Message):
+        args = arguments(message, 1)
+        if args is None or args[0] < 1:
+            await message.answer("Пример: /qremove 11")
+            return
+        qid = db.latest_queue_id()
+        if qid is None:
+            await message.answer("Очереди нет.")
+            return
+        try:
+            db.edit_queue(qid, "remove", position=args[0]-1)
+        except ValueError as exc:
+            await message.answer(str(exc))
+            return
+        await message.answer("✅ Песня убрана из будущей очереди. /queue")
+
+    @router.message(Command("qfilter"))
+    async def queue_filter_cmd(message: Message):
+        qid = db.latest_queue_id()
+        if qid is None:
+            await message.answer("Сначала запусти /wave.")
+            return
+        words = (message.text or "").split()
+        if len(words) != 3:
+            await message.answer(
+                "/qfilter rating 7 · /qfilter liked on|off · "
+                "/qfilter today on|off"
+            )
+            return
+        try:
+            active = db.get_queue_filters(qid)
+            field, value = words[1].lower(), words[2].lower()
+            if field == "rating":
+                active["min_rating"] = int(value)
+            elif field in {"liked", "today"} and value in {"on","off"}:
+                active["liked_only" if field == "liked" else "no_repeat_today"] = value == "on"
+            else:
+                raise ValueError("Unknown filter")
+            db.set_queue_filters(qid, **active)
+        except (ValueError, TypeError) as exc:
+            await message.answer(
+                "Неверный фильтр. /qfilter rating 7 · "
+                "/qfilter liked on · /qfilter today on"
+            )
+            return
+        await message.answer(
+            "Фильтры применятся к следующей новой порции радио. /queue"
+        )
 
     @router.message(Command("mix"))
     async def mix_cmd(message: Message):
