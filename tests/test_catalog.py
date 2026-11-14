@@ -171,3 +171,16 @@ def test_cache_respects_expiry(tmp_path):
     assert cache.get("foo", now=110) is None
     with pytest.raises(ValueError):
         cache.put("bar", {}, 1000000000)
+
+
+def test_cross_process_musicbrainz_rate_limit_reserves_distinct_slots(tmp_path):
+    """Two independent API clients sharing the DB cannot burst >1 MB req/1.1s."""
+    path=tmp_path/"cache.sqlite"
+    bot=CatalogCache(path)
+    mini_app=CatalogCache(path)
+    assert bot.reserve_request_slot("mb", now=100.0) == pytest.approx(0.0)
+    assert mini_app.reserve_request_slot("mb", now=100.0) == pytest.approx(1.1)
+    assert bot.reserve_request_slot("mb", now=100.0) == pytest.approx(2.2)
+    assert mini_app.reserve_request_slot("mb", now=106.0) == pytest.approx(0.0)
+    with pytest.raises(ValueError):
+        bot.reserve_request_slot("lb", now=100.0)
