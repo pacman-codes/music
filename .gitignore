@@ -14,3 +14,8 @@ downloads/
 *.mp3
 *.mp4
 *.mkv
+
+# Private music-taste exports (not source files)
+profile-exports/
+music-profile-*.json
+music-profile-*.md

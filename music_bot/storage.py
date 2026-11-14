@@ -121,7 +121,8 @@ class Library:
               linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS tracks(
               id INTEGER PRIMARY KEY, file_id TEXT NOT NULL,
-              file_unique_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, artist TEXT NOT NULL);
+              file_unique_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, artist TEXT NOT NULL,
+              added_at TEXT);
             CREATE TABLE IF NOT EXISTS audio_fingerprints (
               track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
               fingerprint_sha256 TEXT NOT NULL,
@@ -201,6 +202,11 @@ class Library:
             CREATE INDEX IF NOT EXISTS sent_history_order ON sent_history(id DESC);
             CREATE INDEX IF NOT EXISTS queue_item_order ON queue_items(queue_id, position);
             """)
+            # Legacy rows do not have an original upload timestamp. Keep NULL
+            # rather than inventing one at migration time.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(tracks)")}
+            if "added_at" not in columns:
+                db.execute("ALTER TABLE tracks ADD COLUMN added_at TEXT")
             db.execute("INSERT OR IGNORE INTO playlists(name,kind) VALUES('Мне нравится','liked')")
             # Existing imported audio rows predate recording-identity links.
             db.execute(
@@ -218,8 +224,8 @@ class Library:
         if not file_id or not unique_id:
             raise ValueError("Missing Telegram file identifiers")
         with self.con() as db:
-            db.execute("""INSERT INTO tracks(file_id,file_unique_id,title,artist)
-                          VALUES(?,?,?,?)
+            db.execute("""INSERT INTO tracks(file_id,file_unique_id,title,artist,added_at)
+                          VALUES(?,?,?,?,CURRENT_TIMESTAMP)
                           ON CONFLICT(file_unique_id) DO UPDATE SET file_id=excluded.file_id""",
                        (file_id, unique_id, title[:250], artist[:250]))
             row = db.execute("SELECT * FROM tracks WHERE file_unique_id=?", (unique_id,)).fetchone()
