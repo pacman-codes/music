@@ -234,11 +234,12 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
     @router.message(Command("weekly"))
     async def weekly(message: Message):
         result = await weekly_discovery(db, catalog, limit=8)
+        decided = db.catalog_verdicts()
         rows = [
             CatalogTrack(t["mbid"], t["title"], t["artist"],
                          t.get("artist_mbid"), t.get("duration_ms"),
                          t.get("variant", False))
-            for t in result["tracks"]
+            for t in result["tracks"] if t["mbid"] not in decided
         ]
         db.remember_candidates(rows)
         lines = [f"✨ Находки недели {result['year']} / {result['week']}"]
