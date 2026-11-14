@@ -379,6 +379,14 @@ class Library:
             )
             return queue_id
 
+    def latest_queue_id(self) -> int | None:
+        """Return the latest persisted listening queue (owner-only bot)."""
+        with self.con() as db:
+            row = db.execute(
+                "SELECT id FROM queues ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return int(row["id"]) if row is not None else None
+
     def queue_kind(self, queue_id: int) -> str | None:
         with self.con() as db:
             row = db.execute("SELECT source_kind FROM queues WHERE id=?", (queue_id,)).fetchone()
