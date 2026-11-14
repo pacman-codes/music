@@ -5,7 +5,7 @@ No Telegram-native skip/completion events are available.
 """
 from __future__ import annotations
 
-from music_bot.recommend import wave
+from music_bot.recommend import fatigue_suppressed, wave
 from music_bot.wave_v2 import wave_v2
 from music_bot.storage import Library, Track
 
@@ -46,12 +46,12 @@ def select_wave_batch(db: Library, mode: str, count: int = 10,
     ratings = db.ratings()
     playback = db.playback_stats()
     # Existing preferences and playlists give free, zero-click taste signals.
-    seeds = {tid for tid in liked_ids | {tid for tid, rating in ratings.items() if rating >= 8}
-             if tid not in disliked_ids and not (
-                 playback.get(tid, (0, 0))[0] >= 3
-                 and playback.get(tid, (0, 0))[0] >=
-                 2 * playback.get(tid, (0, 0))[1] + 3
-             )}
+    seeds = {
+        tid for tid in (liked_ids | {tid for tid, value in ratings.items() if value >= 8})
+        if tid not in disliked_ids and not fatigue_suppressed(
+            *playback.get(tid, (0, 0))
+        )
+    }
     signals = db.recommendation_signals(seeds)
     prefs = {
         "liked_ids": liked_ids,
