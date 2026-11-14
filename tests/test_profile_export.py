@@ -111,6 +111,9 @@ def test_compare_profiles_detects_adds_and_changed_preferences(tmp_path):
     a = db.add_track("one", "u1", "A", "Artist")
     previous = export_profile(db)
     b = db.add_track("two", "u2", "B", "Other Artist")
+    custom = db.create_playlist("New favorites")
+    db.add_to(custom, a.id)
+    db.add_to(custom, b.id)
     db.set_rating(a.id, 9)
     db.like(a.id)
     current = export_profile(db)
@@ -119,6 +122,11 @@ def test_compare_profiles_detects_adds_and_changed_preferences(tmp_path):
     assert delta["rating_changes"] == [{"id": a.id, "before": None, "after": 9}]
     assert delta["newly_liked_track_ids"] == [a.id]
     assert delta["removed_track_ids"] == []
+    assert delta["playlist_additions"] == [{
+        "playlist_id": custom,
+        "playlist_name": "New favorites",
+        "added_track_ids": [a.id, b.id],
+    }]
     with pytest.raises(ValueError):
         compare_profiles({"schema_version": 2}, current)
 
