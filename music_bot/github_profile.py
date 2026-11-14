@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import base64
 import re
-from datetime import datetime
 from typing import Any
 
 import httpx
@@ -67,7 +66,8 @@ async def sync_private_profile(
             info = metadata.json()
         except ValueError:
             raise ProfileSyncError("GitHub вернул некорректные сведения о репозитории.") from None
-        if info.get("private") is not True or info.get("full_name", "").casefold() != repo.casefold():
+        name = info.get("full_name") if isinstance(info, dict) else None
+        if info.get("private") is not True or not isinstance(name, str) or name.casefold() != repo.casefold():
             raise ProfileSyncError("GitHub не подтвердил приватность указанного репозитория.")
         if info.get("archived"):
             raise ProfileSyncError("Репозиторий архивирован и недоступен для записи.")
@@ -78,7 +78,7 @@ async def sync_private_profile(
                 data = existing.json()
             except ValueError:
                 raise ProfileSyncError("Не удалось проверить текущий файл GitHub.") from None
-            sha = data.get("sha")
+            sha = data.get("sha") if isinstance(data, dict) else None
             if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
                 raise ProfileSyncError("Не удалось получить версию GitHub-файла.")
         elif existing.status_code == 404:
@@ -104,8 +104,8 @@ async def sync_private_profile(
         if not isinstance(commit_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
             raise ProfileSyncError("Не удалось подтвердить GitHub-коммит.")
         return {"repo": repo, "path": PATH, "commit_sha": commit_sha}
-    except httpx.HTTPError as exc:
-        raise ProfileSyncError("Ошибка подключения к GitHub; личные данные не публиковались в этом запросе.") from None
+    except httpx.HTTPError:
+        raise ProfileSyncError("Ошибка соединения с GitHub; результат загрузки неизвестен.") from None
     finally:
         if owned:
             await http.aclose()
