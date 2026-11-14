@@ -171,8 +171,11 @@ def create_app(config: Settings | None = None) -> FastAPI:
             title = "Открытия" if mode == "discover" else "Моя волна"
         if not selected:
             raise HTTPException(409, detail="There are no tracks yet")
+        # Radio kinds use the same internal mode names as the polling bot.
+        # 'wave' is a public API alias, not a stored static queue type.
+        source_kind = ("balanced" if request.kind == "wave" else request.kind)
         queue_id = db.create_queue(
-            [t.id for t in selected], title, request.kind,
+            [t.id for t in selected], title, source_kind,
         )
         # App sends a real Telegram audio group into the owner's bot chat.
         # This is not browser audio playback.
