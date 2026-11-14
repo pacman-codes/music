@@ -1,30 +1,51 @@
-"""Private polling Telegram bot."""
+"""Owner-only Telegram bot: library, playlists and native audio queues."""
+from __future__ import annotations
+
 import asyncio
 import logging
 import sqlite3
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaAudio
+from aiogram.types import (
+    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaAudio, Message,
+)
 
 from music_bot.config import load_settings
-from music_bot.storage import Library
 from music_bot.recommend import wave
+from music_bot.storage import Library, Track
 
-HELP = """🎵 music
-Пришли аудиофайл для добавления в библиотеку.
-/library — все треки
-/liked — понравившиеся
-/like ID /dislike ID — оценка
-/playliked — слушать понравившиеся
-/newplaylist Название — создать
-/playlists — список
+logger = logging.getLogger(__name__)
+
+HELP = """🎵 music — личный плеер
+
+Отправь аудио, чтобы добавить трек в библиотеку.
+/library — последние треки
+/search Текст — поиск в своей библиотеке
+/liked — избранное
+/like ID /unlike ID /dislike ID — оценки
+/playliked — играть понравившиеся
+/newplaylist Название — создать подборку
+/playlists — список подборок
+/playlist ID — треки подборки
+/renameplaylist ID Новое название — переименовать
+/deleteplaylist ID — удалить (с подтверждением)
 /addto ПЛЕЙЛИСТ_ID ТРЕК_ID — добавить
-/playplaylist ID — слушать
-/wave — твоя Волна"""
+/removefrom ПЛЕЙЛИСТ_ID ТРЕК_ID — убрать
+/move ПЛЕЙЛИСТ_ID ТРЕК_ID ПОЗИЦИЯ — переставить
+/playplaylist ID — слушать подборку
+/wave — обычная Волна
+/discover — открытия среди сохранённых треков
+
+Нативный Telegram-плеер играет присланные аудиофайлы.
+Бот не видит события реального прослушивания и пропусков."""
+
 
 class OwnerOnly(BaseMiddleware):
-    def __init__(self, owner_id):
+    """Reject foreign accounts and group/channel conversations before dispatch."""
+
+    def __init__(self, owner_id: int):
         self.owner_id = owner_id
 
     async def __call__(self, handler, event, data):
@@ -36,150 +57,477 @@ class OwnerOnly(BaseMiddleware):
             return None
         return await handler(event, data)
 
-def arguments(message, n):
-    p = (message.text or "").split()
-    if len(p) != n + 1:
+
+def arguments(message: Message, number: int):
+    parts = (message.text or "").split()
+    if len(parts) != number + 1:
         return None
     try:
-        nums = tuple(int(v) for v in p[1:])
+        ids = tuple(int(v) for v in parts[1:])
     except ValueError:
         return None
-    return nums if all(v > 0 for v in nums) else None
+    return ids if all(v > 0 for v in ids) else None
 
-async def play(message, bot, tracks):
-    if not tracks:
-        await message.answer("Плейлист пуст.")
-    elif len(tracks) == 1:
-        t = tracks[0]
-        await bot.send_audio(message.chat.id, audio=t.file_id,
-                             caption=f"#{t.id} {t.artist} — {t.title}")
-    else:
-        await bot.send_media_group(
-            message.chat.id,
-            media=[InputMediaAudio(media=t.file_id, caption=f"#{t.id} {t.artist} — {t.title}")
-                   for t in tracks[:10]])
 
-def create_router(db, owner_id):
+def button(text: str, data: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, callback_data=data)
+
+
+def keyboard(rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def home_keyboard() -> InlineKeyboardMarkup:
+    return keyboard([
+        [button("🌊 Моя волна", "nav:wave"),
+         button("🆕 Открытия", "nav:discover")],
+        [button("❤️ Понравившиеся", "nav:liked"),
+         button("📂 Плейлисты", "nav:playlists")],
+        [button("🎵 Библиотека", "nav:library")],
+    ])
+
+
+def track_keyboard(track_id: int) -> InlineKeyboardMarkup:
+    return keyboard([
+        [button("❤️ Нравится", f"like:{track_id}"),
+         button("👎 Не предлагать", f"dislike:{track_id}")],
+        [button("➕ В плейлист", f"chooseadd:{track_id}")],
+    ])
+
+
+def format_tracks(tracks: list[Track] | tuple[Track, ...], prefix="") -> str:
+    lines = [prefix] if prefix else []
+    for t in tracks:
+        line = f"#{t.id} · {t.artist} — {t.title}"
+        if sum(len(x) + 1 for x in lines) + len(line) > 3500:
+            lines.append("…")
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def callback_message(callback: CallbackQuery) -> Message | None:
+    return callback.message if isinstance(callback.message, Message) else None
+
+
+async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
+                        send_lock: asyncio.Lock) -> None:
+    """Serialize sends and only advance a queue after Telegram accepts its batch."""
+    async with send_lock:
+        try:
+            batch = db.peek_queue(queue_id, size=10)
+        except ValueError:
+            await bot.send_message(chat_id, "Очередь не найдена. Создай новую /wave.")
+            return
+        if not batch.tracks:
+            await bot.send_message(chat_id, "Подборка закончилась. 🌊 /wave — новая.")
+            return
+        try:
+            if len(batch.tracks) == 1:
+                t = batch.tracks[0]
+                await bot.send_audio(
+                    chat_id, audio=t.file_id,
+                    caption=f"#{t.id} · {t.artist} — {t.title}"[:950],
+                )
+            else:
+                await bot.send_media_group(
+                    chat_id,
+                    media=[
+                        InputMediaAudio(
+                            media=t.file_id,
+                            caption=f"#{t.id} · {t.artist} — {t.title}"[:950],
+                        )
+                        for t in batch.tracks
+                    ],
+                )
+        except TelegramAPIError:
+            # A transport timeout may mean Telegram received a message but
+            # did not acknowledge it. Do not advance blindly.
+            logger.warning("Telegram media upload/send failed for queue %s", queue_id)
+            await bot.send_message(
+                chat_id,
+                "Не получилось отправить аудио. Очередь не продвинута; попробуй ещё раз.",
+            )
+            return
+
+        if not db.mark_queue_sent(batch):
+            logger.warning("Queue %s advanced concurrently; media already sent", queue_id)
+            await bot.send_message(chat_id, "Очередь изменилась, создай новую /wave.")
+            return
+
+        if batch.remaining_after:
+            more = keyboard([[button("▶️ Ещё 10", f"more:{queue_id}")],
+                             [button("🌊 Новая волна", "nav:wave")]])
+            await bot.send_message(
+                chat_id,
+                f"🎧 {batch.label}: отправлено {len(batch.tracks)}, "
+                f"осталось {batch.remaining_after}.",
+                reply_markup=more,
+            )
+        else:
+            await bot.send_message(
+                chat_id, "✅ Подборка закончилась.", reply_markup=home_keyboard()
+            )
+
+
+def create_router(db: Library, owner_id: int) -> Router:
     router = Router()
     router.message.middleware(OwnerOnly(owner_id))
     router.callback_query.middleware(OwnerOnly(owner_id))
+    send_lock = asyncio.Lock()
+
+    async def start_wave(bot: Bot, chat_id: int, mode: str = "balanced") -> None:
+        names = {"balanced": "Моя волна", "discover": "Открытия", "favorites": "Любимое"}
+        tracks = wave(
+            db.all_tracks(), db.liked_ids(), db.disliked_ids(),
+            recent_ids=db.recent_ids(60), count=60, mode=mode,
+        )
+        if not tracks:
+            await bot.send_message(
+                chat_id,
+                "Для подборки пока нет треков. Пришли аудио или попробуй другой режим.",
+            )
+            return
+        queue_id = db.create_queue([t.id for t in tracks], names[mode], mode)
+        await deliver_queue(bot, db, chat_id, queue_id, send_lock)
+
+    async def start_playlist(bot: Bot, chat_id: int, playlist_id: int) -> None:
+        playlist = db.get_playlist(playlist_id)
+        if not playlist:
+            await bot.send_message(chat_id, "Плейлист не найден.")
+            return
+        tracks = db.playlist_tracks(playlist_id)
+        if not tracks:
+            await bot.send_message(chat_id, "Плейлист пуст.")
+            return
+        queue_id = db.create_queue(
+            [t.id for t in tracks], playlist["name"], "playlist",
+        )
+        await deliver_queue(bot, db, chat_id, queue_id, send_lock)
+
+    async def show_playlists(message: Message) -> None:
+        playlists = db.playlists()
+        text = "\n".join(
+            f"#{p['id']} · {p['name']} ({p['count']})" for p in playlists[:30]
+        )
+        rows = [
+            [button(f"▶️ {p['name'][:40]}", f"playlist:{p['id']}")]
+            for p in playlists[:20]
+        ]
+        await message.answer("📂 Плейлисты:\n" + text, reply_markup=keyboard(rows))
+
+    async def show_library(message: Message) -> None:
+        tracks = db.all_tracks(20)
+        await message.answer(
+            format_tracks(tracks, "🎵 Библиотека:") if tracks
+            else "Библиотека пуста. Пришли аудио."
+        )
+
+    async def show_liked(message: Message) -> None:
+        tracks = db.playlist_tracks(db.liked_id(), 30)
+        rows = [[button("▶️ Слушать понравившиеся", f"playlist:{db.liked_id()}")]]
+        await message.answer(
+            format_tracks(tracks, "❤️ Мне нравится:") if tracks
+            else "Список понравившихся пока пуст.",
+            reply_markup=keyboard(rows) if tracks else None,
+        )
 
     @router.message(Command("start", "help"))
-    async def start(message):
-        await message.answer(HELP)
+    async def start(message: Message):
+        await message.answer(HELP, reply_markup=home_keyboard())
 
     @router.message(F.audio)
-    async def audio(message):
+    async def audio(message: Message):
         a = message.audio
-        t = db.add_track(a.file_id, a.file_unique_id,
-                         a.title or a.file_name or "Без названия",
-                         a.performer or "Неизвестный исполнитель")
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="❤️ Нравится", callback_data=f"like:{t.id}")]])
-        await message.answer(f"Сохранено #{t.id}: {t.artist} — {t.title}", reply_markup=kb)
+        track = db.add_track(
+            a.file_id, a.file_unique_id,
+            a.title or a.file_name or "Без названия",
+            a.performer or "Неизвестный исполнитель",
+        )
+        await message.answer(
+            f"Сохранено #{track.id}: {track.artist} — {track.title}"[:3500],
+            reply_markup=track_keyboard(track.id),
+        )
 
     @router.callback_query(F.data.startswith("like:"))
-    async def like_button(callback):
+    async def like_button(callback: CallbackQuery):
         try:
-            db.like(int((callback.data or "").split(":", 1)[1]))
-        except (ValueError, IndexError):
-            await callback.answer("Ошибка", show_alert=True)
+            track_id = int(callback.data.split(":", 1)[1])
+            db.like(track_id)
+        except ValueError:
+            await callback.answer("Трек не найден", show_alert=True)
             return
-        await callback.answer("Добавлено ❤️")
+        await callback.answer("Добавлено в понравившиеся ❤️")
+
+    @router.callback_query(F.data.startswith("dislike:"))
+    async def dislike_button(callback: CallbackQuery):
+        try:
+            db.dislike(int(callback.data.split(":", 1)[1]))
+        except ValueError:
+            await callback.answer("Трек не найден", show_alert=True)
+            return
+        await callback.answer("Больше не буду предлагать 👎")
+
+    @router.callback_query(F.data.startswith("chooseadd:"))
+    async def choose_add(callback: CallbackQuery):
+        try:
+            track_id = int(callback.data.split(":", 1)[1])
+        except ValueError:
+            await callback.answer("Неверная кнопка", show_alert=True)
+            return
+        custom = [p for p in db.playlists() if p["kind"] == "custom"][:20]
+        message = callback_message(callback)
+        await callback.answer()
+        if message is None:
+            return
+        if not custom:
+            await message.answer("Сначала создай подборку: /newplaylist Название")
+            return
+        rows = [
+            [button(f"➕ {p['name'][:40]}", f"doadd:{p['id']}:{track_id}")]
+            for p in custom
+        ]
+        await message.answer("В какой плейлист добавить?", reply_markup=keyboard(rows))
+
+    @router.callback_query(F.data.startswith("doadd:"))
+    async def do_add(callback: CallbackQuery):
+        try:
+            _, playlist_id, track_id = callback.data.split(":")
+            added = db.add_to(int(playlist_id), int(track_id))
+        except (ValueError, TypeError):
+            await callback.answer("Плейлист или трек не найден", show_alert=True)
+            return
+        await callback.answer("Добавлено ✅" if added else "Уже в плейлисте")
+
+    @router.callback_query(F.data.startswith("more:"))
+    async def more(callback: CallbackQuery, bot: Bot):
+        message = callback_message(callback)
+        await callback.answer()
+        if message is None:
+            return
+        try:
+            queue_id = int(callback.data.split(":", 1)[1])
+        except ValueError:
+            await message.answer("Неверный номер очереди")
+            return
+        await deliver_queue(bot, db, message.chat.id, queue_id, send_lock)
+
+    @router.callback_query(F.data.startswith("playlist:"))
+    async def play_playlist_button(callback: CallbackQuery, bot: Bot):
+        message = callback_message(callback)
+        await callback.answer()
+        if message:
+            try:
+                playlist_id = int(callback.data.split(":", 1)[1])
+            except ValueError:
+                await message.answer("Неверный плейлист")
+                return
+            await start_playlist(bot, message.chat.id, playlist_id)
+
+    @router.callback_query(F.data.startswith("nav:"))
+    async def nav(callback: CallbackQuery, bot: Bot):
+        message = callback_message(callback)
+        await callback.answer()
+        if message is None:
+            return
+        action = callback.data.split(":", 1)[1]
+        if action == "wave":
+            await start_wave(bot, message.chat.id)
+        elif action == "discover":
+            await start_wave(bot, message.chat.id, "discover")
+        elif action == "liked":
+            await show_liked(message)
+        elif action == "playlists":
+            await show_playlists(message)
+        elif action == "library":
+            await show_library(message)
 
     @router.message(Command("library"))
-    async def library(message):
-        ts = db.all_tracks(20)
-        await message.answer("\n".join(f"#{t.id} {t.artist} — {t.title}" for t in ts)
-                             if ts else "Библиотека пуста. Пришли аудио.")
+    async def library_cmd(message: Message):
+        await show_library(message)
+
+    @router.message(Command("search"))
+    async def search_cmd(message: Message):
+        query = (message.text or "").partition(" ")[2].strip()
+        if not query:
+            await message.answer("Пример: /search Linkin Park")
+            return
+        tracks = db.search_tracks(query)
+        await message.answer(
+            format_tracks(tracks, "🔎 Результаты:") if tracks else "Ничего не найдено."
+        )
 
     @router.message(Command("liked"))
-    async def liked(message):
-        ts = db.playlist_tracks(db.liked_id(), 50)
-        await message.answer("\n".join(f"#{t.id} {t.artist} — {t.title}" for t in ts)
-                             if ts else "Пока ничего не понравилось.")
+    async def liked_cmd(message: Message):
+        await show_liked(message)
 
-    @router.message(Command("like"))
-    async def like(message):
+    @router.message(Command("like", "unlike", "dislike"))
+    async def feedback_cmd(message: Message):
         ids = arguments(message, 1)
         if not ids:
-            await message.answer("Пример: /like 12")
+            await message.answer("Нужен номер трека, например /like 12")
             return
+        action = message.text.split()[0].split("@")[0][1:]
         try:
-            added = db.like(ids[0])
-            await message.answer("❤️ Добавлено" if added else "Уже в понравившихся")
+            if action == "like":
+                changed = db.like(ids[0])
+            elif action == "unlike":
+                changed = db.unlike(ids[0])
+            else:
+                db.dislike(ids[0])
+                changed = True
         except ValueError as exc:
             await message.answer(str(exc))
-
-    @router.message(Command("dislike"))
-    async def dislike(message):
-        ids = arguments(message, 1)
-        if not ids:
-            await message.answer("Пример: /dislike 12")
             return
-        try:
-            db.dislike(ids[0])
-            await message.answer("Исключено из Волны.")
-        except ValueError as exc:
-            await message.answer(str(exc))
+        await message.answer("Готово ✅" if changed else "Уже было установлено.")
 
     @router.message(Command("playliked"))
-    async def playliked(message, bot):
-        await play(message, bot, db.playlist_tracks(db.liked_id(), 10))
+    async def playliked(message: Message, bot: Bot):
+        await start_playlist(bot, message.chat.id, db.liked_id())
 
     @router.message(Command("newplaylist"))
-    async def new_playlist(message):
+    async def new_playlist(message: Message):
         name = (message.text or "").partition(" ")[2].strip()
         try:
-            pid = db.create_playlist(name)
+            playlist_id = db.create_playlist(name)
         except (ValueError, sqlite3.IntegrityError):
-            await message.answer("Название пустое, слишком длинное или уже занято.")
+            await message.answer("Название пустое, длиннее 80 символов или занято.")
             return
-        await message.answer(f"Создан плейлист #{pid}: {name}")
+        await message.answer(f"📂 Создан плейлист #{playlist_id}: {name}")
 
     @router.message(Command("playlists"))
-    async def playlists(message):
-        await message.answer("\n".join(
-            f"#{p['id']} {p['name']} ({p['count']})" for p in db.playlists()))
+    async def playlists_cmd(message: Message):
+        await show_playlists(message)
 
-    @router.message(Command("addto"))
-    async def addto(message):
-        ids = arguments(message, 2)
+    @router.message(Command("playlist"))
+    async def playlist_cmd(message: Message):
+        ids = arguments(message, 1)
         if not ids:
-            await message.answer("Пример: /addto 2 12")
+            await message.answer("Пример: /playlist 2")
+            return
+        info = db.get_playlist(ids[0])
+        if not info:
+            await message.answer("Плейлист не найден")
+            return
+        tracks = db.playlist_tracks(ids[0], 25)
+        await message.answer(
+            format_tracks(tracks, f"📂 {info['name']}:") if tracks
+            else f"Плейлист «{info['name']}» пуст.",
+            reply_markup=keyboard([[button("▶️ Слушать", f"playlist:{ids[0]}")]])
+            if tracks else None,
+        )
+
+    @router.message(Command("renameplaylist"))
+    async def renameplaylist(message: Message):
+        rest = (message.text or "").partition(" ")[2].strip()
+        playlist_id, separator, name = rest.partition(" ")
+        if not separator or not playlist_id.isdecimal():
+            await message.answer("Пример: /renameplaylist 2 Новый плейлист")
             return
         try:
-            added = db.add_to(*ids)
-            await message.answer("Добавлено" if added else "Уже есть")
+            db.rename_playlist(int(playlist_id), name)
+        except (ValueError, sqlite3.IntegrityError):
+            await message.answer("Не удалось переименовать. Проверь ID и название.")
+            return
+        await message.answer("Плейлист переименован ✅")
+
+    @router.message(Command("deleteplaylist"))
+    async def deleteplaylist(message: Message):
+        ids = arguments(message, 1)
+        if not ids:
+            await message.answer("Пример: /deleteplaylist 2")
+            return
+        info = db.get_playlist(ids[0])
+        if not info or info["kind"] == "liked":
+            await message.answer("Удалять можно только свои плейлисты.")
+            return
+        await message.answer(
+            f"Точно удалить «{info['name']}»? Треки останутся в библиотеке.",
+            reply_markup=keyboard([[
+                button("🗑 Да, удалить", f"confirmdelete:{ids[0]}"),
+                button("Отмена", "canceldelete"),
+            ]]),
+        )
+
+    @router.callback_query(F.data.startswith("confirmdelete:"))
+    async def confirmdelete(callback: CallbackQuery):
+        try:
+            db.delete_playlist(int(callback.data.split(":", 1)[1]))
+        except ValueError:
+            await callback.answer("Плейлист уже удалён или недоступен", show_alert=True)
+            return
+        await callback.answer("Плейлист удалён")
+        message = callback_message(callback)
+        if message:
+            await message.edit_text("🗑 Плейлист удалён, треки сохранены.")
+
+    @router.callback_query(F.data == "canceldelete")
+    async def canceldelete(callback: CallbackQuery):
+        await callback.answer("Отменено")
+        message = callback_message(callback)
+        if message:
+            await message.edit_text("Удаление отменено.")
+
+    @router.message(Command("addto", "removefrom"))
+    async def playlist_membership(message: Message):
+        ids = arguments(message, 2)
+        if not ids:
+            await message.answer("Пример: /addto 2 12 или /removefrom 2 12")
+            return
+        try:
+            action = message.text.split()[0].split("@")[0][1:]
+            changed = (
+                db.add_to(*ids) if action == "addto" else db.remove_from(*ids)
+            )
         except ValueError as exc:
             await message.answer(str(exc))
+            return
+        await message.answer("Готово ✅" if changed else "Изменений нет.")
+
+    @router.message(Command("move"))
+    async def move_cmd(message: Message):
+        ids = arguments(message, 3)
+        if not ids:
+            await message.answer("Пример: /move 2 12 1")
+            return
+        try:
+            db.move_track(*ids)
+        except ValueError as exc:
+            await message.answer(str(exc))
+            return
+        await message.answer("Порядок обновлён ✅")
 
     @router.message(Command("playplaylist"))
-    async def playplaylist(message, bot):
+    async def playplaylist_cmd(message: Message, bot: Bot):
         ids = arguments(message, 1)
         if not ids:
             await message.answer("Пример: /playplaylist 2")
             return
-        await play(message, bot, db.playlist_tracks(ids[0], 10))
+        await start_playlist(bot, message.chat.id, ids[0])
 
-    @router.message(Command("wave"))
-    async def wave_cmd(message, bot):
-        ts = wave(db.all_tracks(), db.liked_ids(), db.disliked_ids())
-        await play(message, bot, ts)
+    @router.message(Command("wave", "discover"))
+    async def wave_cmd(message: Message, bot: Bot):
+        action = message.text.split()[0].split("@")[0][1:]
+        await start_wave(
+            bot, message.chat.id,
+            "discover" if action == "discover" else "balanced",
+        )
 
     return router
 
+
 async def main():
     logging.basicConfig(level=logging.INFO)
-    cfg = load_settings()
-    db = Library(cfg.db_path)
-    bot = Bot(token=cfg.token)
+    config = load_settings()
+    db = Library(config.db_path)
+    bot = Bot(token=config.token)
     dp = Dispatcher()
-    dp.include_router(create_router(db, cfg.owner_id))
+    dp.include_router(create_router(db, config.owner_id))
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await bot.session.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
