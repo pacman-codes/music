@@ -86,3 +86,54 @@ def test_link_removed_when_track_deleted(db):
         conn.execute("DELETE FROM tracks WHERE id=?", (t.id,))
     assert db.recording_for_track(t.id) is None
     assert db.resolved_catalog_tracks() == {}
+
+
+def test_imported_recording_identity_never_silently_reassigned(db):
+    candidates(db)
+    first = db.add_track("tg-first", "same-audio", "Roads", "Portishead")
+    second = db.add_track("tg-second", "different-audio", "Roads", "Portishead")
+    db.link_candidate_track(A, first.id)
+    db.link_candidate_track(A, first.id)  # same link is idempotent
+    with pytest.raises(ValueError, match="another recording"):
+        db.link_candidate_track(B, first.id)
+    with pytest.raises(ValueError, match="different Telegram audio"):
+        db.link_candidate_track(A, second.id)
+    assert db.resolved_catalog_tracks() == {A: first.id}
+    assert db.recording_for_track(first.id)["mbid"] == A
+    assert db.recording_for_track(second.id) is None
+    assert db.get_candidate(B)["track_id"] is None
+
+
+def test_direct_import_duplicate_unique_file_keeps_original_identity(tmp_path):
+    import asyncio
+    import httpx
+
+    from music_bot.importer import AudioIngestService, MediaImportError
+
+    db = Library(tmp_path / "music.db")
+    candidates(db)
+
+    def data(_request):
+        return httpx.Response(
+            200, headers={"content-type": "audio/mpeg"},
+            content=b"ID3" + b"\x00" * 200,
+        )
+
+    async def same_telegram_file(_path, _title, _artist):
+        # Telegram returns the same unique-file ID for equal media bytes.
+        return "existing-telegram-id", "same-audio-id"
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(data)) as http:
+            service = AudioIngestService(
+                db, ("audio.example.org",), same_telegram_file, client=http,
+            )
+            url = "https://audio.example.org/music.mp3"
+            first = await service.import_recording(A, url)
+            assert first["track_id"] in db.linked_candidate_tracks().values()
+            with pytest.raises(MediaImportError, match="уже связан"):
+                await service.import_recording(B, url)
+            assert db.recording_for_track(first["track_id"])["mbid"] == A
+            assert db.get_candidate(B)["track_id"] is None
+
+    asyncio.run(scenario())
