@@ -38,9 +38,7 @@ This is separate from the local playable /wave.
   seed derived solely from a frequently skipped song, without unliking it.
 - At most three favorite artists are selected; similar recording metadata
   comes from ListenBrainz and is resolved by MusicBrainz.
-- Records are interleaved across seed artists, duplicate recordings and
-  previously owned titles filtered out. Partial provider failures degrade
-  gracefully.
+- Cross-seed candidate lists are merged by reciprocal-rank fusion, not a naive round-robin. A song repeatedly suggested by independently favored artists rises in rank. Soft artist diversity, deduplication and owned-title filtering reduce monotony. Only repeated explicit negative ratings/dislikes without positive signals can suppress an artist. Partial provider failures degrade gracefully.
 - Only a confirmed MusicBrainz MBID is used as a definite identity. A textual
   match is a suggestion, not proof.
 - No track is auto-sent in Telegram until a real Telegram audio file exists.
