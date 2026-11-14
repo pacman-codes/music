@@ -16,8 +16,13 @@ November 2026 reports disclosed QuickJS runtime memory-safety/RCE bugs.
 Telegram reported fixes, including server mitigation and newer clients.
 Private bots reduce attacker access but do NOT themselves patch Telegram clients.
 
-Feature remains OFF until aiogram supports 10.4 and official patched
-mobile/desktop clients are verified. Native inline keyboard and Mini App
+**Critical rollout blocker as of Nov 14, 2026:** https://github.com/tdlib/telegram-bot-api/issues/947
+reports `INPUT_MEDIA_WIDGET_NOT_ALLOWED` from `sendWidget` even in private chats.
+A Telegram contributor stated on Nov 13 that *general bots currently are not
+allowed to use widgets even in private chats*. This overrides the generic
+availability table in https://core.telegram.org/bots/widgets for our bot.
+The feature remains OFF until Telegram re-enables ordinary production bots,
+aiogram supports 10.4, and official patched mobile/desktop clients are verified. Native inline keyboard and Mini App
 must remain functional fallbacks.
 
 ## Protocol to implement before enabling
