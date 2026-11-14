@@ -33,7 +33,8 @@ def test_fusion_deduplicates_versions_and_is_deterministic():
     pools = [[first, alternative], [duplicate, alternative]]
     result = fuse_artist_radio(pools)
     assert len(result) == 2
-    assert [t.mbid for t in result] == [C, A]
+    # The same recording identity ranks first in both lists, so it leads.
+    assert [t.mbid for t in result] == [A, C]
     assert [t.mbid for t in result] == [
         t.mbid for t in fuse_artist_radio(pools)
     ]
