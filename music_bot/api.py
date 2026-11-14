@@ -208,9 +208,11 @@ def create_app(config: Settings | None = None,
         ratings = db.ratings()
         stats = db.playback_stats()
         links = db.recording_for_tracks()
+        verdicts = db.track_verdicts()
         return [{
             "id": t.id, "title": t.title, "artist": t.artist,
             "liked": t.id in liked, "rating": ratings.get(t.id),
+            "decision": verdicts.get(t.id),
             "reported_skips": stats.get(t.id, (0, 0))[0],
             "reported_completions": stats.get(t.id, (0, 0))[1],
             "recording": links.get(t.id),
@@ -218,6 +220,7 @@ def create_app(config: Settings | None = None,
 
     def catalog_result(recordings: list[CatalogTrack]) -> list[dict]:
         wanted = db.wishlist_ids()
+        catalog_decisions = db.catalog_verdicts()
         saved = {normalized_identity(t.title, t.artist): t.id
                  for t in db.all_tracks(1000)}
         linked = db.resolved_catalog_tracks()
@@ -225,6 +228,7 @@ def create_app(config: Settings | None = None,
         for t in recordings:
             body = t.public()
             body["in_wishlist"] = t.mbid in wanted
+            body["decision"] = catalog_decisions.get(t.mbid)
             body["local_track_id"] = linked.get(t.mbid)
             body["possible_match_track_id"] = (
                 None if body["local_track_id"] is not None
