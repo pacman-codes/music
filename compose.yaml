@@ -4,6 +4,7 @@ services:
       context: .
       args:
         MUSIC_WITH_YOUTUBE: ${MUSIC_WITH_YOUTUBE:-false}
+        MUSIC_WITH_FINGERPRINT: ${MUSIC_WITH_FINGERPRINT:-false}
     restart: unless-stopped
     env_file: .env
     volumes:
@@ -22,6 +23,7 @@ services:
       context: .
       args:
         MUSIC_WITH_YOUTUBE: ${MUSIC_WITH_YOUTUBE:-false}
+        MUSIC_WITH_FINGERPRINT: ${MUSIC_WITH_FINGERPRINT:-false}
     command: ["uvicorn", "music_bot.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8085"]
     restart: unless-stopped
     env_file: .env

@@ -126,6 +126,12 @@ def preflight(settings: Settings) -> list[Check]:
         "Enabled (only download authorized media; live test required)"
         if settings.youtube_download_enabled else "Disabled by default",
     ))
+    if settings.acoustid_client_key:
+        checks.append(_check(
+            "fpcalc", shutil.which("fpcalc") is not None,
+            "Chromaprint fpcalc installed" if shutil.which("fpcalc") is not None
+            else "Missing fpcalc: build with MUSIC_WITH_FINGERPRINT=true",
+        ))
     checks.append(_check(
         "tmdb", True, "Configured" if settings.tmdb_read_token
         else "Disabled; movie lookup requires its own TMDB token",

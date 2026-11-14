@@ -1,5 +1,6 @@
 FROM python:3.12-slim
 ARG MUSIC_WITH_YOUTUBE=false
+ARG MUSIC_WITH_FINGERPRINT=false
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY pyproject.toml README.md ./
@@ -11,6 +12,11 @@ RUN pip install --no-cache-dir . \
          && apt-get install -y --no-install-recommends ffmpeg \
          && rm -rf /var/lib/apt/lists/* \
          && pip install --no-cache-dir ".[youtube]"; \
+       fi \
+    && if [ "$MUSIC_WITH_FINGERPRINT" = "true" ]; then \
+         apt-get update \
+         && apt-get install -y --no-install-recommends libchromaprint-tools \
+         && rm -rf /var/lib/apt/lists/*; \
        fi \
     && useradd --system --uid 10001 music \
     && mkdir -p /app/data \

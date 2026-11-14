@@ -7,6 +7,7 @@ let toastTimer;
 let directImportEnabled = false;
 let youtubeSearchEnabled = false;
 let youtubeDownloadEnabled = false;
+let fingerprintEnabled = false;
 let lastCatalogView = {rows:[], fromWishlist:false, matchingTrackId:null};
 function toast(message) {
   const node = byId("toast");
@@ -100,6 +101,19 @@ function renderTracks(items) {
       await queueAddNext(t.id);
       toast("Песня поставлена следующей в очереди");
     }, "secondary-action"));
+    if (fingerprintEnabled) {
+      actions.append(action("🧬 Узнать песню", async()=>{
+        show("catalog-status","Снимаю отпечаток и сверяю с AcoustID…");
+        const result=await post("/api/tracks/"+t.id+"/fingerprint");
+        const dup=result.duplicates.length
+          ? (" Возможные дубли: "+result.duplicates.join(", ")+".") : "";
+        show("catalog-status",
+          "AcoustID: "+result.results.length+" кандидатов."+dup+
+          " Подтверди правильную версию вручную.");
+        renderExternalCatalog(result.results,false,t.id);
+        byId("catalog-heading").scrollIntoView({behavior:"smooth"});
+      },"secondary-action"));
+    }
     const rating = element("select", "track-rating");
     rating.setAttribute("aria-label", "Оценка от 1 до 10 для " + t.title);
     const empty = element("option", "", "⭐ —");
@@ -442,6 +456,9 @@ async function refresh() {
   await Promise.all([
     refreshPlaylists(), refreshTracks(),
     refreshImportSettings(), refreshYoutubeSettings(),
+    api("/api/fingerprint/status").then(data=>{
+      fingerprintEnabled=data.enabled===true;
+    }),
     api("/api/wave/preset").then(data=>{
       byId("wave-preset").value=data.preset;
     })
