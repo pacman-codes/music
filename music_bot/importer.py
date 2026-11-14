@@ -151,23 +151,23 @@ class AudioIngestService:
             raise MediaImportError("Сначала найди запись в музыкальном каталоге")
         if not self.hosts:
             raise MediaImportError("Импорт по ссылке не настроен")
-        existing = candidate.get("track_id")
+        existing = self.db.resolved_catalog_tracks().get(mbid)
         if existing is not None and self.db.get_track(existing) is not None:
+            # Owner already confirmed this recording to an uploaded file:
+            # no need to fetch or re-upload the same song.
             return {"track_id": existing, "reused": True, "sent": False}
         validate_direct_audio_url(url, self.hosts)
         lease = self.db.acquire_media_import("musicbrainz", mbid)
         if lease is None:
             # Another process (bot or Mini App) already started this upload.
-            candidate = self.db.get_candidate(mbid)
-            linked = candidate.get("track_id") if candidate else None
+            linked = self.db.resolved_catalog_tracks().get(mbid)
             if linked is not None and self.db.get_track(linked) is not None:
                 return {"track_id": linked, "reused": True, "sent": False}
             raise MediaImportError("Этот трек уже загружается. Повтори позже.")
         try:
             # Recheck under the lease: a different process may have completed
             # in the gap between the initial lookup and reservation.
-            candidate = self.db.get_candidate(mbid)
-            linked = candidate.get("track_id") if candidate else None
+            linked = self.db.resolved_catalog_tracks().get(mbid)
             if linked is not None and self.db.get_track(linked) is not None:
                 return {"track_id": linked, "reused": True, "sent": False}
             capacity_lease = self.db.acquire_media_import("global", "media")

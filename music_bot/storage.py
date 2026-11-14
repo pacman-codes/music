@@ -700,6 +700,15 @@ class Library:
             ).fetchone()
             if other_audio is not None and int(other_audio["track_id"]) != track_id:
                 raise ValueError("Recording already linked to different Telegram audio")
+            # A manually confirmed recording is also a real playable file.
+            # Never overwrite its identity with a second upload.
+            confirmed_elsewhere = db.execute(
+                """SELECT track_id FROM track_recording_links
+                   WHERE mbid=? AND track_id<>? LIMIT 1""",
+                (mbid, track_id),
+            ).fetchone()
+            if confirmed_elsewhere is not None:
+                raise ValueError("Recording already associated with another track")
             db.execute(
                 """INSERT INTO catalog_audio_assets(mbid,track_id) VALUES(?,?)
                    ON CONFLICT(mbid) DO UPDATE SET
@@ -728,6 +737,7 @@ class Library:
         are immutable here. Candidates must already exist in the trusted cache.
         """
         with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
             if not db.execute("SELECT 1 FROM tracks WHERE id=?", (track_id,)).fetchone():
                 raise ValueError("Track not found")
             candidate = db.execute(
@@ -742,6 +752,13 @@ class Library:
             ).fetchone()
             if current is not None and current["provenance"] == "import":
                 raise ValueError("Imported recording links cannot be reassigned manually")
+            another = db.execute(
+                """SELECT track_id FROM track_recording_links
+                   WHERE mbid=? AND track_id<>? LIMIT 1""",
+                (mbid, track_id),
+            ).fetchone()
+            if another is not None:
+                raise ValueError("Recording already belongs to another Telegram track")
             db.execute(
                 """INSERT INTO track_recording_links(track_id,mbid,provenance)
                    VALUES(?,?,'confirmed')
