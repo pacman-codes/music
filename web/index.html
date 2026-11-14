@@ -25,6 +25,31 @@
         <button type="button" id="discover">Открытия</button>
       </div>
     </section>
+    <section class="catalog-section" aria-labelledby="catalog-heading">
+      <div class="heading">
+        <h2 id="catalog-heading">🔎 Новая музыка</h2>
+        <button type="button" id="show-wishlist">📌 Отложено</button>
+      </div>
+      <p class="catalog-hint">Здесь только названия и исполнители из MusicBrainz и ListenBrainz.
+        Чтобы слушать в родном плеере Telegram, аудиофайл нужно добавить в бота отдельно.</p>
+      <form id="catalog-form" class="catalog-form">
+        <input id="catalog-query" name="q" type="search" minlength="2" maxlength="100"
+               placeholder="Песня или исполнитель" autocomplete="off" required>
+        <button type="submit">Найти</button>
+      </form>
+      <div class="catalog-radio">
+        <input id="artist-seed" type="text" maxlength="90"
+               placeholder="Исполнитель (или оставь пустым)">
+        <select id="radio-difficulty" aria-label="Сложность рекомендаций">
+          <option value="easy">Знакомое</option>
+          <option value="medium" selected>Сбалансированно</option>
+          <option value="hard">Неожиданное</option>
+        </select>
+        <button type="button" id="artist-radio">🎸 Похожие исполнители</button>
+      </div>
+      <div class="catalog-caption" id="catalog-status" role="status" aria-live="polite">Попробуй найти музыку или запусти радио.</div>
+      <div id="catalog-results" class="list"></div>
+    </section>
     <section>
       <div class="heading"><h2>Плейлисты</h2><button type="button" id="create">＋ Новый</button></div>
       <div id="playlists" class="list"></div>
