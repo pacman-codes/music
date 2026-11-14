@@ -79,7 +79,7 @@ def test_failed_telegram_send_never_marks_track_delivered(tmp_path):
     try:
         with pytest.raises(TelegramBadRequest):
             asyncio.run(send_single_track(RecordingBot(), db, OWNER, track.id))
-        assert db.recent_ids() == []
+        assert db.recent_ids() == set()
     finally:
         RecordingBot.failure = False
 
@@ -110,7 +110,7 @@ def test_play_endpoint_owner_only_and_playback_failures(tmp_path, monkeypatch):
         finally:
             RecordingBot.failure = False
         assert len(RecordingBot.audio_calls) == 1
-        assert Library(cfg.db_path).recent_ids()[0] == track.id
+        assert Library(cfg.db_path).recent_ids() == {track.id}
 
 
 def test_compact_quick_play_buttons_for_search_and_liked(tmp_path):
