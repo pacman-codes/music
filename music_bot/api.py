@@ -26,6 +26,10 @@ class DirectImportRequest(BaseModel):
     url: str = Field(min_length=12, max_length=2048)
 
 
+class RecordingMatchRequest(BaseModel):
+    mbid: str = Field(min_length=36, max_length=36)
+
+
 class PlaylistCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
 
@@ -117,27 +121,108 @@ def create_app(config: Settings | None = None,
         liked = db.liked_ids()
         ratings = db.ratings()
         stats = db.playback_stats()
+        links = db.recording_for_tracks()
         return [{
             "id": t.id, "title": t.title, "artist": t.artist,
             "liked": t.id in liked, "rating": ratings.get(t.id),
             "reported_skips": stats.get(t.id, (0, 0))[0],
             "reported_completions": stats.get(t.id, (0, 0))[1],
+            "recording": links.get(t.id),
         } for t in found]
 
     def catalog_result(recordings: list[CatalogTrack]) -> list[dict]:
         wanted = db.wishlist_ids()
         saved = {normalized_identity(t.title, t.artist): t.id
                  for t in db.all_tracks(1000)}
-        linked = db.linked_candidate_tracks()
+        linked = db.resolved_catalog_tracks()
         output = []
         for t in recordings:
             body = t.public()
             body["in_wishlist"] = t.mbid in wanted
-            body["local_track_id"] = linked.get(t.mbid) or saved.get(
-                normalized_identity(t.title, t.artist)
+            body["local_track_id"] = linked.get(t.mbid)
+            body["possible_match_track_id"] = (
+                None if body["local_track_id"] is not None
+                else saved.get(normalized_identity(t.title, t.artist))
             )
+            body["match_confirmed"] = body["local_track_id"] is not None
             output.append(body)
         return output
+
+    @app.get("/api/tracks/{track_id}/recording", dependencies=[auth])
+    async def track_recording(track_id: int):
+        if db.get_track(track_id) is None:
+            raise HTTPException(404, detail="Трек не найден")
+        return {"recording": db.recording_for_track(track_id)}
+
+    @app.get("/api/tracks/{track_id}/match-suggestions", dependencies=[auth])
+    async def track_match_suggestions(track_id: int):
+        track = db.get_track(track_id)
+        if track is None:
+            raise HTTPException(404, detail="Трек не найден")
+        term = f"{track.artist} {track.title}"[:100]
+        if len(term.strip()) < 2:
+            return {"results": []}
+        try:
+            results = await catalog_client.search(
+                term, limit=8, allow_variants=True
+            )
+        except (ValueError, CatalogError) as exc:
+            raise HTTPException(502, detail="MusicBrainz сейчас недоступен") from exc
+        db.remember_candidates(results)
+        # Suggestions are NOT automatically linked. Owner confirmation required.
+        return {"results": catalog_result(results)}
+
+    @app.post("/api/tracks/{track_id}/recording", dependencies=[auth])
+    async def confirm_track_recording(track_id: int, payload: RecordingMatchRequest):
+        if not valid_mbid(payload.mbid):
+            raise HTTPException(422, detail="Некорректный MusicBrainz MBID")
+        try:
+            record = db.confirm_recording_match(track_id, payload.mbid.lower())
+        except ValueError as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+        return {"confirmed": True, "recording": record}
+
+    @app.delete("/api/tracks/{track_id}/recording", dependencies=[auth])
+    async def remove_track_recording(track_id: int):
+        if db.get_track(track_id) is None:
+            raise HTTPException(404, detail="Трек не найден")
+        return {"removed": db.unlink_recording_match(track_id)}
+
+    @app.get("/api/tracks/{track_id}/radio", dependencies=[auth])
+    async def track_radio(
+        track_id: int,
+        difficulty: Literal["easy", "medium", "hard"] = "medium",
+        limit: int = Query(default=12, ge=1, le=20),
+    ):
+        track = db.get_track(track_id)
+        if track is None:
+            raise HTTPException(404, detail="Трек не найден")
+        linked = db.recording_for_track(track_id)
+        seed_mbid = linked.get("artist_mbid") if linked else None
+        try:
+            if seed_mbid and valid_mbid(seed_mbid):
+                rows = await catalog_client.artist_radio_by_id(
+                    seed_mbid, difficulty=difficulty, limit=limit
+                )
+            else:
+                rows = await catalog_client.artist_radio(
+                    track.artist, difficulty=difficulty, limit=limit
+                )
+        except (CatalogError, ValueError) as exc:
+            raise HTTPException(502, detail="Радио по треку пока недоступно") from exc
+        db.remember_candidates(rows)
+        already = db.confirmed_recording_ids()
+        own_names = {normalized_identity(t.title, t.artist)
+                     for t in db.all_tracks(1000)}
+        fresh = [r for r in rows if r.mbid not in already and
+                 normalized_identity(r.title, r.artist) not in own_names]
+        return {
+            "seed_track_id": track.id,
+            "seed_track": {"title": track.title, "artist": track.artist},
+            "used_confirmed_artist_id": bool(seed_mbid and valid_mbid(seed_mbid)),
+            "type": "metadata_only",
+            "results": catalog_result(fresh),
+        }
 
     @app.get("/api/discovery/search", dependencies=[auth])
     async def catalog_search(
@@ -198,7 +283,7 @@ def create_app(config: Settings | None = None,
 
     @app.get("/api/discovery/wishlist", dependencies=[auth])
     async def wishlist():
-        linked = db.linked_candidate_tracks()
+        linked = db.resolved_catalog_tracks()
         saved = {normalized_identity(t.title, t.artist): t.id
                  for t in db.all_tracks(1000)}
         return {"results": [
@@ -206,9 +291,12 @@ def create_app(config: Settings | None = None,
                 **track,
                 "playable": False,
                 "in_wishlist": True,
-                "local_track_id": linked.get(track["mbid"]) or saved.get(
-                    normalized_identity(track["title"], track["artist"])
+                "local_track_id": linked.get(track["mbid"]),
+                "possible_match_track_id": (
+                    None if linked.get(track["mbid"]) is not None
+                    else saved.get(normalized_identity(track["title"], track["artist"]))
                 ),
+                "match_confirmed": track["mbid"] in linked,
             }
             for track in db.wishlist(100)
         ]}
