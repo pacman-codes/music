@@ -21,6 +21,9 @@ from music_bot.personalized import personalized_discovery
 from music_bot.selection import select_wave_batch
 from music_bot.storage import Library
 from music_bot.webapp_auth import InvalidInitData, verify_init_data
+from music_bot.youtube import (
+    YouTubeError, YouTubeSource, YouTubeIngestService, validate_video_id,
+)
 
 
 class DirectImportRequest(BaseModel):
@@ -54,7 +57,9 @@ class QueueRequest(BaseModel):
 
 def create_app(config: Settings | None = None,
                catalog: MusicCatalog | None = None,
-               importer: AudioIngestService | None = None) -> FastAPI:
+               importer: AudioIngestService | None = None,
+               youtube_source: YouTubeSource | None = None,
+               youtube_ingest: YouTubeIngestService | None = None) -> FastAPI:
     settings = config or load_settings()
     db = Library(settings.db_path)
     catalog_client = catalog or MusicCatalog(settings.db_path)
@@ -81,6 +86,8 @@ def create_app(config: Settings | None = None,
     ingest = importer or AudioIngestService(
         db, settings.allowed_media_hosts, publish_audio,
     )
+    yt_source = youtube_source or YouTubeSource()
+    yt_ingest = youtube_ingest or YouTubeIngestService(db, publish_audio)
 
     @app.on_event("shutdown")
     async def close_catalog():
@@ -340,6 +347,52 @@ def create_app(config: Settings | None = None,
         if not valid_mbid(mbid):
             raise HTTPException(422, detail="Некорректный MBID")
         return {"removed": db.wishlist_remove(mbid.lower())}
+
+    @app.get("/api/youtube/status", dependencies=[auth])
+    async def youtube_status():
+        return {
+            "search_enabled": settings.youtube_search_enabled,
+            "download_enabled": settings.youtube_download_enabled,
+            "max_duration_seconds": 1200,
+            "max_audio_bytes": 45 * 1024 * 1024,
+        }
+
+    @app.get("/api/youtube/search", dependencies=[auth])
+    async def youtube_search(q: str = Query(min_length=2, max_length=90)):
+        if not settings.youtube_search_enabled:
+            raise HTTPException(409, detail="YouTube-поиск отключён")
+        try:
+            videos = await yt_source.search(q, limit=6)
+        except (YouTubeError, ValueError) as exc:
+            raise HTTPException(502, detail="YouTube-поиск временно недоступен") from exc
+        db.remember_youtube_videos(videos)
+        return {
+            "type": "metadata_only",
+            "results": [{**v.public(),
+                "track_id": (
+                    db.get_youtube_video(v.video_id) or {}
+                ).get("track_id")} for v in videos],
+        }
+
+    @app.post("/api/youtube/import/{video_id}", dependencies=[auth])
+    async def youtube_import(video_id: str):
+        if not settings.youtube_download_enabled:
+            raise HTTPException(409, detail="Загрузка YouTube отключена")
+        try:
+            validate_video_id(video_id)
+        except YouTubeError as exc:
+            raise HTTPException(422, detail="Некорректный YouTube ID") from exc
+        async with import_lock:
+            try:
+                result = await yt_ingest.import_video(video_id)
+            except YouTubeError as exc:
+                raise HTTPException(422, detail=str(exc)) from exc
+            if result["reused"]:
+                track = db.get_track(result["track_id"])
+                if track:
+                    async with Bot(token=settings.token) as bot:
+                        await bot.send_audio(settings.owner_id, audio=track.file_id)
+        return result
 
     @app.get("/api/discovery/import-config", dependencies=[auth])
     async def import_config():
