@@ -11,6 +11,8 @@ class Settings:
     db_path: Path
     webapp_url: str | None = None
     allowed_media_hosts: tuple[str, ...] = ()
+    youtube_search_enabled: bool = False
+    youtube_download_enabled: bool = False
 
 def load_settings() -> Settings:
     load_dotenv()
@@ -31,7 +33,11 @@ def load_settings() -> Settings:
         x.strip().lower() for x in os.getenv("MUSIC_ALLOWED_MEDIA_HOSTS", "").split(",")
         if x.strip()
     )
+    search = os.getenv("MUSIC_ENABLE_YOUTUBE_SEARCH", "").strip().lower() in ("1", "true", "yes")
+    download = os.getenv("MUSIC_ENABLE_YOUTUBE_DOWNLOAD", "").strip().lower() in ("1", "true", "yes")
+    if download and not search:
+        raise RuntimeError("YouTube downloading requires search to be enabled")
     return Settings(
         token, owner_id, Path(os.getenv("MUSIC_DB_PATH", "data/music.db")), url,
-        hosts,
+        hosts, search, download,
     )
