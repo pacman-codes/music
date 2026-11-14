@@ -7,6 +7,7 @@ let toastTimer;
 let directImportEnabled = false;
 let youtubeSearchEnabled = false;
 let youtubeDownloadEnabled = false;
+let lastCatalogView = {rows:[], fromWishlist:false, matchingTrackId:null};
 function toast(message) {
   const node = byId("toast");
   node.textContent = message;
@@ -185,6 +186,7 @@ function renderTracks(items) {
 
 
 function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
+  lastCatalogView = {rows, fromWishlist, matchingTrackId};
   const host = byId("catalog-results");
   host.replaceChildren();
   if (!rows.length) {
@@ -381,6 +383,15 @@ function renderYouTubeResults(videos) {
         if (linkedRecording) {
           toast("Сохранено с подтверждённым MusicBrainz ID ✅");
           await refreshTracks();
+          const {rows, fromWishlist, matchingTrackId} = lastCatalogView;
+          for (const item of rows) {
+            if (item.mbid === linkedRecording) {
+              item.local_track_id = result.track_id;
+              item.match_confirmed = true;
+              item.possible_match_track_id = null;
+            }
+          }
+          renderExternalCatalog(rows, fromWishlist, matchingTrackId);
         }
         renderYouTubeResults(videos);
       }, "secondary-action"));
