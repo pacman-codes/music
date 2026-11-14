@@ -20,7 +20,12 @@ def select_wave_batch(db: Library, mode: str, count: int = 10,
     if not 1 <= count <= 10:
         raise ValueError("Batch size must be 1–10")
     # Don't silently exclude the oldest tracks when the library grows.
-    candidates = db.all_tracks(limit=10000)
+    # User explicitly parked these files. Manual playlist playback still works.
+    suppressed = db.suppressed_verdict_track_ids()
+    candidates = [
+        track for track in db.all_tracks(limit=10000)
+        if track.id not in suppressed
+    ]
     if queue_id is not None:
         filters = db.get_queue_filters(queue_id)
         if filters["liked_only"]:
