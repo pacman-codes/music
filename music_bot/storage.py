@@ -90,6 +90,14 @@ class Library:
               progress INTEGER NOT NULL DEFAULT 0 CHECK (progress>=0),
               score INTEGER CHECK (score BETWEEN 1 AND 10),
               updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS media_import_leases (
+              source_type TEXT NOT NULL,
+              source_key TEXT NOT NULL,
+              lease_token TEXT NOT NULL,
+              expires_at INTEGER NOT NULL,
+              PRIMARY KEY(source_type, source_key));
+            CREATE INDEX IF NOT EXISTS media_import_leases_expiry
+              ON media_import_leases(expires_at);
             CREATE TABLE IF NOT EXISTS youtube_candidates (
               video_id TEXT PRIMARY KEY,
               title TEXT NOT NULL,
@@ -946,4 +954,43 @@ class Library:
             return bool(db.execute(
                 "DELETE FROM screen_watchlist WHERE media_type=? AND tmdb_id=?",
                 (media_type,tmdb_id),
+            ).rowcount)
+
+    def acquire_media_import(self, kind: str, key: str, *, ttl: int = 900,
+                             now: int | None = None) -> str | None:
+        """Cross-process per-recording lease; return owned token or None.
+
+        A crash leaves a bounded lease, not a permanent lock. The token
+        prevents an expired worker from deleting a newer worker's claim.
+        """
+        import secrets
+        import time
+        if kind not in {"youtube", "musicbrainz"}:
+            raise ValueError("Unknown import provider")
+        if not isinstance(key, str) or not 1 <= len(key) <= 128:
+            raise ValueError("Invalid source identifier")
+        if not 1 <= ttl <= 3600:
+            raise ValueError("Invalid import lease TTL")
+        timestamp = int(time.time()) if now is None else now
+        token = secrets.token_urlsafe(16)
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "DELETE FROM media_import_leases WHERE expires_at<=?",
+                (timestamp,),
+            )
+            claim = db.execute(
+                """INSERT OR IGNORE INTO media_import_leases
+                   (source_type,source_key,lease_token,expires_at)
+                   VALUES(?,?,?,?)""",
+                (kind, key, token, timestamp + ttl),
+            )
+            return token if claim.rowcount == 1 else None
+
+    def release_media_import(self, kind: str, key: str, token: str) -> bool:
+        with self.con() as db:
+            return bool(db.execute(
+                """DELETE FROM media_import_leases
+                   WHERE source_type=? AND source_key=? AND lease_token=?""",
+                (kind, key, token),
             ).rowcount)
