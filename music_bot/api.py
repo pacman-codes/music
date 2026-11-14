@@ -35,6 +35,11 @@ class DirectImportRequest(BaseModel):
     url: str = Field(min_length=12, max_length=2048)
 
 
+class YoutubeImportRequest(BaseModel):
+    # Only explicit selection in /ytfor or Mini App may set this identifier.
+    recording_mbid: str | None = Field(default=None, min_length=36, max_length=36)
+
+
 class RecordingMatchRequest(BaseModel):
     mbid: str = Field(min_length=36, max_length=36)
 
@@ -408,7 +413,10 @@ def create_app(config: Settings | None = None,
                 "mbid": recording["mbid"], "title": recording["title"],
                 "artist": recording["artist"],
             },
-            "suggestions": [s.public() for s in matches],
+            "suggestions": [
+                {**suggestion.public(), "recording_mbid": recording["mbid"]}
+                for suggestion in matches
+            ],
             "auto_imported": False,
         }
 
@@ -517,7 +525,9 @@ def create_app(config: Settings | None = None,
         }
 
     @app.post("/api/youtube/import/{video_id}", dependencies=[auth])
-    async def youtube_import(video_id: str):
+    async def youtube_import(
+        video_id: str, payload: YoutubeImportRequest | None = None
+    ):
         if not settings.youtube_download_enabled:
             raise HTTPException(409, detail="Загрузка YouTube отключена")
         try:
@@ -526,7 +536,15 @@ def create_app(config: Settings | None = None,
             raise HTTPException(422, detail="Некорректный YouTube ID") from exc
         async with import_lock:
             try:
-                result = await yt_ingest.import_video(video_id)
+                mbid = payload.recording_mbid if payload is not None else None
+                if mbid is not None and not valid_mbid(mbid):
+                    raise HTTPException(422, detail="Некорректный MusicBrainz ID")
+                if mbid is None:
+                    result = await yt_ingest.import_video(video_id)
+                else:
+                    result = await yt_ingest.import_video(
+                        video_id, recording_mbid=mbid,
+                    )
             except YouTubeError as exc:
                 raise HTTPException(422, detail=str(exc)) from exc
             except MediaImportError as exc:
