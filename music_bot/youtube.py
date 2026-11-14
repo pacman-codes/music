@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
 
+from music_bot.catalog import valid_mbid
 from music_bot.importer import MAX_AUDIO_BYTES, _verify_file_signature
 from music_bot.storage import Library
 
@@ -195,40 +196,75 @@ class YouTubeIngestService:
         self.db = library
         self.publisher = publisher
 
-    async def import_video(self, video_id: str) -> dict:
+    async def import_video(self, video_id: str, *,
+                           recording_mbid: str | None = None) -> dict:
+        """Ingest selected video; optionally bind an *explicitly selected* MBID.
+
+        MusicBrainz search similarity must not silently determine audio identity.
+        Two different YouTube videos targeting the same MBID also share a
+        cross-process lease with direct imports of that recording.
+        """
         video_id = validate_video_id(video_id)
+        mbid = None
+        recording = None
+        if recording_mbid is not None:
+            if not valid_mbid(recording_mbid):
+                raise YouTubeError("Некорректный MusicBrainz ID")
+            mbid = recording_mbid.lower()
+            recording = self.db.get_candidate(mbid)
+            if recording is None:
+                raise YouTubeError("Сначала найди запись в музыкальном каталоге")
+
         video = self.db.get_youtube_video(video_id)
         if video is None:
             raise YouTubeError("Сначала найди ролик через /yt или Mini App")
         if video["duration_sec"] is not None and video["duration_sec"] > MAX_DURATION:
             raise YouTubeError("Видео длиннее 20 минут")
-        if video["track_id"] is not None:
-            track = self.db.get_track(video["track_id"])
-            if track is not None:
-                return {"track_id": track.id, "reused": True}
+
         lease = self.db.acquire_media_import("youtube", video_id)
         if lease is None:
-            # The bot and Mini App may be importing the same video concurrently.
-            current = self.db.get_youtube_video(video_id)
-            linked = current.get("track_id") if current else None
-            if linked is not None and self.db.get_track(linked) is not None:
-                return {"track_id": linked, "reused": True}
             raise YouTubeError("Это видео уже загружается. Повтори позже.")
+        mbid_lease = None
         try:
+            if mbid is not None:
+                mbid_lease = self.db.acquire_media_import("musicbrainz", mbid)
+                if mbid_lease is None:
+                    raise YouTubeError("Эта запись уже загружается. Повтори позже.")
+
             video = self.db.get_youtube_video(video_id)
             linked = video.get("track_id") if video else None
-            if linked is not None and self.db.get_track(linked) is not None:
-                return {"track_id": linked, "reused": True}
+            if linked is not None:
+                track = self.db.get_track(linked)
+                if track is not None:
+                    if mbid:
+                        try:
+                            self.db.associate_youtube_recording(video_id, mbid)
+                        except ValueError as exc:
+                            raise YouTubeError(str(exc)) from exc
+                    return {"track_id": track.id, "reused": True}
+
+            if mbid is not None:
+                # Do not upload a duplicate asset merely because a second
+                # YouTube result was chosen for an already playable recording.
+                already = self.db.resolved_catalog_tracks().get(mbid)
+                if already is not None and self.db.get_track(already) is not None:
+                    raise YouTubeError("Эта запись уже сохранена в Telegram")
+
+            title = recording["title"] if recording else video["title"]
+            artist = recording["artist"] if recording else video["channel"]
             async with temporary_youtube_mp3(video_id) as file:
-                file_id, unique = await self.publisher(
-                    file, video["title"], video["channel"],
-                )
+                file_id, unique = await self.publisher(file, title, artist)
                 if not file_id or not unique:
                     raise YouTubeError("Telegram не подтвердил аудиофайл")
-                track = self.db.add_track(
-                    file_id, unique, video["title"], video["channel"],
-                )
+                track = self.db.add_track(file_id, unique, title, artist)
                 self.db.link_youtube_video(video_id, track.id)
+                if mbid:
+                    try:
+                        self.db.associate_youtube_recording(video_id, mbid)
+                    except ValueError as exc:
+                        raise YouTubeError(str(exc)) from exc
                 return {"track_id": track.id, "reused": False}
         finally:
+            if mbid_lease is not None:
+                self.db.release_media_import("musicbrainz", mbid, mbid_lease)
             self.db.release_media_import("youtube", video_id, lease)
