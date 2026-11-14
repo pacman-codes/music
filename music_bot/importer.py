@@ -5,6 +5,7 @@ allowlisted HTTPS hosts under operator control. Temporary files are deleted.
 """
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import re
 import tempfile
@@ -89,38 +90,43 @@ async def temporary_audio(
         trust_env=False,
     )
     try:
-        with tempfile.TemporaryDirectory(prefix="music-import-") as tmp:
-            target = Path(tmp) / f"audio{extension}"
-            try:
-                async with http.stream(
-                    "GET", url, follow_redirects=False,
-                    headers={"Accept": "audio/mpeg,audio/mp4,application/octet-stream"},
-                ) as response:
-                    if response.status_code != 200:
-                        raise MediaImportError("Источник не выдал аудиофайл")
-                    mime = response.headers.get("content-type", "").split(";", 1)[0].lower()
-                    if mime not in SUPPORTED_MIME:
-                        raise MediaImportError("Источник возвращает не аудиофайл")
-                    declared = response.headers.get("content-length", "")
-                    if declared:
-                        try:
-                            if int(declared) > limit:
-                                raise MediaImportError("Аудио превышает лимит 45 МБ")
-                        except ValueError as exc:
-                            raise MediaImportError("Неверный размер аудиофайла") from exc
-                    actual = 0
-                    with target.open("wb") as out:
-                        async for chunk in response.aiter_bytes(65536):
-                            actual += len(chunk)
-                            if actual > limit:
-                                raise MediaImportError("Аудио превышает лимит 45 МБ")
-                            out.write(chunk)
-                    if actual == 0:
-                        raise MediaImportError("Источник прислал пустой аудиофайл")
-                    _verify_file_signature(target, extension)
-            except httpx.HTTPError as exc:
-                raise MediaImportError("Не удалось получить аудиофайл") from exc
-            yield target
+        # Bound the entire transfer; read timeout alone does not stop a source
+        # sending a tiny chunk every few seconds forever.
+        async with asyncio.timeout(90):
+            with tempfile.TemporaryDirectory(prefix="music-import-") as tmp:
+                target = Path(tmp) / f"audio{extension}"
+                try:
+                    async with http.stream(
+                        "GET", url, follow_redirects=False,
+                        headers={"Accept": "audio/mpeg,audio/mp4,application/octet-stream"},
+                    ) as response:
+                        if response.status_code != 200:
+                            raise MediaImportError("Источник не выдал аудиофайл")
+                        mime = response.headers.get("content-type", "").split(";", 1)[0].lower()
+                        if mime not in SUPPORTED_MIME:
+                            raise MediaImportError("Источник возвращает не аудиофайл")
+                        declared = response.headers.get("content-length", "")
+                        if declared:
+                            try:
+                                if int(declared) > limit:
+                                    raise MediaImportError("Аудио превышает лимит 45 МБ")
+                            except ValueError as exc:
+                                raise MediaImportError("Неверный размер аудиофайла") from exc
+                        actual = 0
+                        with target.open("wb") as out:
+                            async for chunk in response.aiter_bytes(65536):
+                                actual += len(chunk)
+                                if actual > limit:
+                                    raise MediaImportError("Аудио превышает лимит 45 МБ")
+                                out.write(chunk)
+                        if actual == 0:
+                            raise MediaImportError("Источник прислал пустой аудиофайл")
+                        _verify_file_signature(target, extension)
+                except httpx.HTTPError as exc:
+                    raise MediaImportError("Не удалось получить аудиофайл") from exc
+                yield target
+    except TimeoutError as exc:
+        raise MediaImportError("Превышено время загрузки аудиофайла") from exc
     finally:
         if own_client:
             await http.aclose()
