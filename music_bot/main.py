@@ -13,7 +13,7 @@ from aiogram.types import (
 )
 
 from music_bot.config import load_settings
-from music_bot.recommend import wave
+from music_bot.selection import DYNAMIC_MODES, select_wave_batch
 from music_bot.storage import Library, Track
 
 logger = logging.getLogger(__name__)
@@ -157,6 +157,14 @@ async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
     async with send_lock:
         try:
             batch = db.peek_queue(queue_id, size=10)
+            mode = db.queue_kind(queue_id)
+            if not batch.tracks and mode in DYNAMIC_MODES:
+                fresh = select_wave_batch(db, mode)
+                if fresh and db.extend_exhausted_queue(queue_id, [t.id for t in fresh]):
+                    batch = db.peek_queue(queue_id, size=10)
+                elif fresh:
+                    # Another worker may have just refilled the same queue.
+                    batch = db.peek_queue(queue_id, size=10)
         except ValueError:
             await bot.send_message(chat_id, "Очередь не найдена. Создай новую /wave.")
             return
@@ -200,7 +208,10 @@ async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
         # deliberately a separate message: media groups do not support markup
         # on individual audio messages.
         count = len(batch.tracks)
+        dynamic = db.queue_kind(queue_id) in DYNAMIC_MODES
         notice = (
+            f"🎧 {batch.label}: отправлено {count}. Следующие треки подберу заново."
+            if dynamic else
             f"🎧 {batch.label}: отправлено {count}, осталось {batch.remaining_after}."
             if batch.remaining_after else
             f"✅ {batch.label}: последние {count} треков отправлены."
@@ -212,7 +223,7 @@ async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
         await bot.send_message(
             chat_id, notice,
             reply_markup=queue_feedback_keyboard(
-                batch.tracks, queue_id, bool(batch.remaining_after)
+                batch.tracks, queue_id, dynamic or bool(batch.remaining_after)
             ),
         )
 
@@ -225,11 +236,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None) -> 
 
     async def start_wave(bot: Bot, chat_id: int, mode: str = "balanced") -> None:
         names = {"balanced": "Моя волна", "discover": "Открытия", "favorites": "Любимое"}
-        tracks = wave(
-            db.all_tracks(), db.liked_ids(), db.disliked_ids(),
-            recent_ids=db.recent_ids(60), count=60, mode=mode,
-            ratings=db.ratings(), playback=db.playback_stats(),
-        )
+        tracks = select_wave_batch(db, mode, count=10)
         if not tracks:
             await bot.send_message(
                 chat_id,

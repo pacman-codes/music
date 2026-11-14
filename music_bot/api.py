@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from music_bot.config import Settings, load_settings
 from music_bot.main import deliver_queue
-from music_bot.recommend import wave
+from music_bot.selection import select_wave_batch
 from music_bot.storage import Library
 from music_bot.webapp_auth import InvalidInitData, verify_init_data
 
@@ -167,11 +167,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             title = "Мне нравится"
         else:
             mode = "discover" if request.kind == "discover" else "balanced"
-            selected = wave(
-                db.all_tracks(), db.liked_ids(), db.disliked_ids(),
-                recent_ids=db.recent_ids(60), count=60, mode=mode,
-                ratings=db.ratings(), playback=db.playback_stats(),
-            )
+            selected = select_wave_batch(db, mode, count=10)
             title = "Открытия" if mode == "discover" else "Моя волна"
         if not selected:
             raise HTTPException(409, detail="There are no tracks yet")
