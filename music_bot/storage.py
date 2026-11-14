@@ -386,10 +386,18 @@ class Library:
     def like(self, track_id):
         with self.con() as db:
             db.execute("DELETE FROM dislikes WHERE track_id=?", (track_id,))
-        return self.add_to(self.liked_id(), track_id)
+        added = self.add_to(self.liked_id(), track_id)
+        self.set_track_verdict(track_id, "add")
+        return added
 
     def unlike(self, track_id):
-        return self.remove_from(self.liked_id(), track_id)
+        removed = self.remove_from(self.liked_id(), track_id)
+        with self.con() as db:
+            db.execute(
+                "DELETE FROM track_verdicts WHERE track_id=? AND status='add'",
+                (track_id,),
+            )
+        return removed
 
     def playlist_tracks(self, playlist_id, limit=1000):
         with self.con() as db:
@@ -447,6 +455,7 @@ class Library:
                 "DELETE FROM playlist_tracks WHERE playlist_id=? AND track_id=?",
                 (self.liked_id(), track_id),
             )
+        self.set_track_verdict(track_id, "never")
 
     def disliked_ids(self):
         with self.con() as db:
