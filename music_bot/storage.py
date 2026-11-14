@@ -44,6 +44,13 @@ class Library:
     def init(self):
         with self.con() as db:
             db.executescript("""
+            CREATE TABLE IF NOT EXISTS catalog_candidates (
+              mbid TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL,
+              artist_mbid TEXT, duration_ms INTEGER, variant INTEGER NOT NULL DEFAULT 0,
+              last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS discovery_wishlist (
+              mbid TEXT PRIMARY KEY REFERENCES catalog_candidates(mbid) ON DELETE CASCADE,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS tracks(
               id INTEGER PRIMARY KEY, file_id TEXT NOT NULL,
               file_unique_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, artist TEXT NOT NULL);
@@ -507,3 +514,54 @@ class Library:
                 (query_id, result),
             )
             return result
+
+    def remember_candidates(self, candidates) -> None:
+        """Catalog metadata only: no Telegram file_id, no playable asset implied."""
+        with self.con() as db:
+            for t in candidates:
+                db.execute(
+                    """INSERT INTO catalog_candidates
+                       (mbid,title,artist,artist_mbid,duration_ms,variant)
+                       VALUES(?,?,?,?,?,?)
+                       ON CONFLICT(mbid) DO UPDATE SET
+                         title=excluded.title,artist=excluded.artist,
+                         artist_mbid=excluded.artist_mbid,
+                         duration_ms=excluded.duration_ms,variant=excluded.variant,
+                         last_seen_at=CURRENT_TIMESTAMP""",
+                    (t.mbid, t.title, t.artist, t.artist_mbid,
+                     t.duration_ms, int(t.variant)),
+                )
+
+    def wishlist_add(self, mbid: str) -> bool:
+        """Only allow saving a recording already resolved by trusted catalog API."""
+        with self.con() as db:
+            exists = db.execute(
+                "SELECT 1 FROM catalog_candidates WHERE mbid=?", (mbid,)
+            ).fetchone()
+            if not exists:
+                raise ValueError("Recording not found in discovered catalog")
+            return bool(db.execute(
+                "INSERT OR IGNORE INTO discovery_wishlist(mbid) VALUES(?)", (mbid,)
+            ).rowcount)
+
+    def wishlist_remove(self, mbid: str) -> bool:
+        with self.con() as db:
+            return bool(db.execute(
+                "DELETE FROM discovery_wishlist WHERE mbid=?", (mbid,)
+            ).rowcount)
+
+    def wishlist(self, limit: int = 100) -> list[dict]:
+        with self.con() as db:
+            return [dict(r) for r in db.execute(
+                """SELECT c.mbid,c.title,c.artist,c.artist_mbid,c.duration_ms,
+                          c.variant,w.created_at
+                   FROM discovery_wishlist w
+                   JOIN catalog_candidates c ON c.mbid=w.mbid
+                   ORDER BY w.created_at DESC, w.mbid LIMIT ?""", (limit,)
+            )]
+
+    def wishlist_ids(self) -> set[str]:
+        with self.con() as db:
+            return {str(r[0]) for r in db.execute(
+                "SELECT mbid FROM discovery_wishlist"
+            )}
