@@ -13,15 +13,21 @@ from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normaliz
 from music_bot.storage import Library
 
 
-def catalog_keyboard(rows: list[CatalogTrack]) -> InlineKeyboardMarkup:
+def catalog_keyboard(rows: list[CatalogTrack], *,
+                     match_track_id: int | None = None) -> InlineKeyboardMarkup:
     """A fixed action set, no external content in callback_data."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
+    controls = []
+    for track in rows[:8]:
+        if match_track_id is not None:
+            controls.append([InlineKeyboardButton(
+                text=f"🔗 Подтвердить: {track.title[:35]}",
+                callback_data=f"match:{match_track_id}:{track.mbid}",
+            )])
+        controls.append([InlineKeyboardButton(
             text=f"📌 {track.artist[:14]} — {track.title[:25]}",
             callback_data=f"wish:{track.mbid}",
-        )]
-        for track in rows[:8]
-    ])
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=controls)
 
 
 def default_artist(db: Library) -> str | None:
@@ -93,6 +99,116 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
         await message.answer(
             format_catalog(rows, f"🎸 Похожие на {name}"),
             reply_markup=catalog_keyboard(rows),
+        )
+
+    @router.message(Command("identify"))
+    async def identify(message: Message):
+        raw = (message.text or "").split()
+        if len(raw) != 2 or not raw[1].isdigit() or int(raw[1]) <= 0:
+            await message.answer("Пример: /identify 12 — найти MusicBrainz-запись")
+            return
+        track = db.get_track(int(raw[1]))
+        if track is None:
+            await message.answer("Такого трека нет в библиотеке.")
+            return
+        existing = db.recording_for_track(track.id)
+        if existing is not None:
+            await message.answer(
+                f"#{track.id} связан с MusicBrainz: {existing['mbid']} "
+                f"({existing['provenance']}). Для ручного совпадения — "
+                f"/unmatch {track.id}."
+            )
+            return
+        try:
+            rows = await catalog.search(
+                f"{track.artist} {track.title}"[:100],
+                limit=8, allow_variants=True,
+            )
+        except (CatalogError, ValueError):
+            await message.answer("MusicBrainz пока не отвечает.")
+            return
+        if not rows:
+            await message.answer("Не нашёл подходящих записей. Попробуй /find.")
+            return
+        db.remember_candidates(rows)
+        await message.answer(
+            format_catalog(rows, f"🔗 Определи запись для #{track.id}: "
+                                 f"{track.artist} — {track.title}") +
+            "\nПодтверди только точное совпадение: live/remix могут отличаться.",
+            reply_markup=catalog_keyboard(rows, match_track_id=track.id),
+        )
+
+    @router.message(Command("unmatch"))
+    async def unmatch(message: Message):
+        raw = (message.text or "").split()
+        if len(raw) != 2 or not raw[1].isdigit() or int(raw[1]) <= 0:
+            await message.answer("Пример: /unmatch 12")
+            return
+        changed = db.unlink_recording_match(int(raw[1]))
+        await message.answer(
+            "Ручная привязка убрана." if changed else
+            "Нет ручной привязки. Связь после импорта не удаляется этой командой."
+        )
+
+    @router.message(Command("radiotrack"))
+    async def radiotrack(message: Message):
+        raw = (message.text or "").split()
+        if len(raw) != 2 or not raw[1].isdigit() or int(raw[1]) <= 0:
+            await message.answer("Пример: /radiotrack 12")
+            return
+        track = db.get_track(int(raw[1]))
+        if track is None:
+            await message.answer("Трек не найден.")
+            return
+        linked = db.recording_for_track(track.id)
+        artist_id = linked.get("artist_mbid") if linked else None
+        try:
+            if artist_id and valid_mbid(artist_id):
+                rows = await catalog.artist_radio_by_id(
+                    artist_id, difficulty="medium", limit=10,
+                )
+            else:
+                rows = await catalog.artist_radio(
+                    track.artist, difficulty="medium", limit=10,
+                )
+        except (CatalogError, ValueError):
+            await message.answer("Радио по треку сейчас недоступно.")
+            return
+        local = db.confirmed_recording_ids()
+        local_names = {
+            (normalize(t.artist), normalize(t.title))
+            for t in db.all_tracks(1000)
+        }
+        fresh = [r for r in rows if r.mbid not in local and
+                 (normalize(r.artist), normalize(r.title)) not in local_names]
+        if not fresh:
+            await message.answer("Новых записей по этому треку пока не нашлось.")
+            return
+        db.remember_candidates(fresh)
+        await message.answer(
+            format_catalog(fresh, f"🎸 Радио по #{track.id}: {track.title}"),
+            reply_markup=catalog_keyboard(fresh),
+        )
+
+    @router.callback_query(F.data.startswith("match:"))
+    async def match_button(callback: CallbackQuery):
+        parts = (callback.data or "").split(":")
+        if len(parts) != 3 or not parts[1].isdigit() or int(parts[1]) <= 0:
+            await callback.answer("Неверный трек", show_alert=True)
+            return
+        tid = int(parts[1])
+        mbid = parts[2].lower()
+        if not valid_mbid(mbid):
+            await callback.answer("Неверная запись", show_alert=True)
+            return
+        try:
+            record = db.confirm_recording_match(tid, mbid)
+        except ValueError as exc:
+            await callback.answer(str(exc)[:140], show_alert=True)
+            return
+        await callback.answer(
+            f"Связано с {record['artist']} — {record['title']}"[:180],
+            show_alert=True,
         )
 
     @router.message(Command("saved"))
