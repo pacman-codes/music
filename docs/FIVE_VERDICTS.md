@@ -35,6 +35,23 @@ The same external song is not repeatedly presented by personalized discovery
 once assessed. After the owner confirms a MusicBrainz↔Telegram identity,
 subsequent verdict changes synchronize across the local and catalog views.
 
+## Telegram Mini App
+
+The **🧭 Пять реакций** section appears above ordinary playlists. It allows
+opening any of the five lists, browsing pages, changing decisions, sending
+available tracks to the native Telegram audio queue, and following Yandex
+Music search links for catalog-only discoveries.
+
+The normal library and external-discovery cards also show optional five-way
+decision selectors; the old 1–10 score selector remains optional. Endpoints
+`GET /api/decisions`, `GET /api/decisions/{status}`,
+`POST /api/decisions/local/{id}`, `POST /api/decisions/catalog/{mbid}`,
+and `POST /api/decisions/{status}/play` all require the existing Telegram
+initData authorization for the exact numeric owner.
+
+Existing explicit local likes are migrated as `add`; old dislikes as
+`never`. Preexisting 1–10 ratings are not turned into any decision.
+
 ## Listening restrictions
 
 A song uploaded to *this exact* Telegram bot has a reusable Telegram file_id:
