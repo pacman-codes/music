@@ -13,7 +13,7 @@ def signed():
     fields={"auth_date":str(int(time.time())),
             "user":json.dumps({"id":OWNER},separators=(",",":"))}
     secret=hmac.new(b"WebAppData",TOKEN.encode(),hashlib.sha256).digest()
-    check="\\n".join(f"{k}={v}" for k,v in sorted(fields.items()))
+    check="\n".join(f"{k}={v}" for k,v in sorted(fields.items()))
     fields["hash"]=hmac.new(secret,check.encode(),hashlib.sha256).hexdigest()
     return urlencode(fields)
 
