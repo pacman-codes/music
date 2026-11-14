@@ -682,10 +682,24 @@ class Library:
     def link_candidate_track(self, mbid: str, track_id: int) -> None:
         """The successful Telegram upload path binds both asset and recording identity."""
         with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
             if not db.execute("SELECT 1 FROM catalog_candidates WHERE mbid=?", (mbid,)).fetchone():
                 raise ValueError("Unknown catalog recording")
             if not db.execute("SELECT 1 FROM tracks WHERE id=?", (track_id,)).fetchone():
                 raise ValueError("Unknown Telegram audio track")
+            other_recording = db.execute(
+                "SELECT mbid FROM track_recording_links WHERE track_id=?",
+                (track_id,),
+            ).fetchone()
+            if (other_recording is not None and
+                    other_recording["mbid"] != mbid):
+                raise ValueError("Telegram audio already linked to another recording")
+            other_audio = db.execute(
+                "SELECT track_id FROM catalog_audio_assets WHERE mbid=?",
+                (mbid,),
+            ).fetchone()
+            if other_audio is not None and int(other_audio["track_id"]) != track_id:
+                raise ValueError("Recording already linked to different Telegram audio")
             db.execute(
                 """INSERT INTO catalog_audio_assets(mbid,track_id) VALUES(?,?)
                    ON CONFLICT(mbid) DO UPDATE SET

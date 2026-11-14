@@ -187,7 +187,16 @@ class AudioIngestService:
                         file_id, file_unique_id,
                         candidate["title"], candidate["artist"],
                     )
-                    self.db.link_candidate_track(mbid, track.id)
+                    try:
+                        self.db.link_candidate_track(mbid, track.id)
+                    except ValueError as exc:
+                        # Telegram already accepted the audio, but this
+                        # duplicate unique-file ID belongs to another known
+                        # recording. Keep the original identity unchanged.
+                        raise MediaImportError(
+                            "Этот Telegram-файл уже связан с другой записью; "
+                            "проверь оригинал/ремикс вручную."
+                        ) from exc
                     return {"track_id": track.id, "reused": False, "sent": True}
             finally:
                 self.db.release_media_import("global", "media", capacity_lease)
