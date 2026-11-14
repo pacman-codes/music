@@ -10,6 +10,7 @@ class Settings:
     owner_id: int
     db_path: Path
     webapp_url: str | None = None
+    allowed_media_hosts: tuple[str, ...] = ()
 
 def load_settings() -> Settings:
     load_dotenv()
@@ -26,4 +27,11 @@ def load_settings() -> Settings:
     url = os.getenv("WEBAPP_URL", "").strip() or None
     if url and (not url.startswith("https://") or len(url) > 200):
         raise RuntimeError("WEBAPP_URL must be a public HTTPS URL")
-    return Settings(token, owner_id, Path(os.getenv("MUSIC_DB_PATH", "data/music.db")), url)
+    hosts = tuple(
+        x.strip().lower() for x in os.getenv("MUSIC_ALLOWED_MEDIA_HOSTS", "").split(",")
+        if x.strip()
+    )
+    return Settings(
+        token, owner_id, Path(os.getenv("MUSIC_DB_PATH", "data/music.db")), url,
+        hosts,
+    )
