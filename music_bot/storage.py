@@ -459,6 +459,18 @@ class Library:
             )
             return True
 
+    def record_single_send(self, track_id: int) -> None:
+        """Record a confirmed Telegram delivery, not a real playback event."""
+        with self.con() as db:
+            if not db.execute(
+                "SELECT 1 FROM tracks WHERE id=?", (track_id,)
+            ).fetchone():
+                raise ValueError("Track not found")
+            db.execute(
+                "INSERT INTO sent_history(queue_id,track_id) VALUES(NULL,?)",
+                (track_id,),
+            )
+
     def set_rating(self, track_id: int, score: int) -> None:
         """Record an explicit 1–10 score. Rating does not modify favorites."""
         if type(score) is not int or not 1 <= score <= 10:
