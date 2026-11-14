@@ -162,7 +162,8 @@ def callback_message(callback: CallbackQuery) -> Message | None:
 
 
 def queue_feedback_keyboard(tracks: tuple[Track, ...], queue_id: int,
-                            has_more: bool) -> InlineKeyboardMarkup:
+                            has_more: bool, *, next_cursor: int | None = None
+                            ) -> InlineKeyboardMarkup:
     """Compact, native Telegram control surface for this specific audio batch.
 
     sendMediaGroup cannot attach an inline keyboard to each audio message.
@@ -174,18 +175,40 @@ def queue_feedback_keyboard(tracks: tuple[Track, ...], queue_id: int,
     ]
     rows = [choices[offset:offset + 2] for offset in range(0, len(choices), 2)]
     if has_more:
-        rows.append([button("▶️ Ещё 10", f"more:{queue_id}")])
+        if next_cursor is None or next_cursor <= 0:
+            raise ValueError("Continuation button requires its expected cursor")
+        rows.append([button("▶️ Ещё 10", f"more:{queue_id}:{next_cursor}")])
     rows.append([button("🌊 Новая волна", "nav:wave"),
                  button("📂 Плейлисты", "nav:playlists")])
     return keyboard(rows)
 
 
+def parse_more_callback(data: str) -> tuple[int, int] | None:
+    """Bind an old Telegram button to the exact queue position it was issued for."""
+    parts = data.split(":")
+    if (len(parts) != 3 or parts[0] != "more" or
+            not parts[1].isdigit() or not parts[2].isdigit()):
+        return None
+    queue_id, cursor = int(parts[1]), int(parts[2])
+    return (queue_id, cursor) if queue_id > 0 and cursor > 0 else None
+
+
 async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
-                        send_lock: asyncio.Lock) -> None:
+                        send_lock: asyncio.Lock, *,
+                        expected_cursor: int | None = None) -> None:
     """Serialize sends and only advance a queue after Telegram accepts its batch."""
     async with send_lock:
         try:
             batch = db.peek_queue(queue_id, size=10)
+            # A stale/duplicate "Ещё 10" must not advance the radio again.
+            # A command starting a *new* queue intentionally has no expected cursor.
+            if expected_cursor is not None and batch.cursor != expected_cursor:
+                await bot.send_message(
+                    chat_id,
+                    "Эта кнопка «Ещё 10» уже использована. Нажми кнопку под "
+                    "последней порцией музыки.",
+                )
+                return
             mode = db.queue_kind(queue_id)
             if not batch.tracks and mode in DYNAMIC_MODES:
                 fresh = select_wave_batch(db, mode)
@@ -252,7 +275,8 @@ async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
         await bot.send_message(
             chat_id, notice,
             reply_markup=queue_feedback_keyboard(
-                batch.tracks, queue_id, dynamic or bool(batch.remaining_after)
+                batch.tracks, queue_id, dynamic or bool(batch.remaining_after),
+                next_cursor=batch.cursor + len(batch.tracks),
             ),
         )
 
@@ -447,12 +471,17 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         await callback.answer()
         if message is None:
             return
-        try:
-            queue_id = int(callback.data.split(":", 1)[1])
-        except ValueError:
-            await message.answer("Неверный номер очереди")
+        parsed = parse_more_callback(callback.data or "")
+        if parsed is None:
+            await message.answer(
+                "Кнопка устарела. Запусти /wave или выбери последнюю порцию."
+            )
             return
-        await deliver_queue(bot, db, message.chat.id, queue_id, send_lock)
+        queue_id, expected_cursor = parsed
+        await deliver_queue(
+            bot, db, message.chat.id, queue_id, send_lock,
+            expected_cursor=expected_cursor,
+        )
 
     @router.callback_query(F.data.startswith("playlist:"))
     async def play_playlist_button(callback: CallbackQuery, bot: Bot):

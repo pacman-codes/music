@@ -1,7 +1,7 @@
 """Single companion keyboard for each native Telegram audio batch."""
 import asyncio
 
-from music_bot.main import deliver_queue, queue_feedback_keyboard
+from music_bot.main import deliver_queue, queue_feedback_keyboard, parse_more_callback
 from music_bot.storage import Library
 class FakeBot:
     def __init__(self):
@@ -41,7 +41,7 @@ def test_batch_keyboard_has_ten_track_choices_and_more(tmp_path):
         ratings = [x.callback_data for x in buttons if x.callback_data.startswith("rateopen:")]
         assert len(ratings) == 10
         assert {x.split(":")[1] for x in ratings} == first_batch_ids
-        assert any(b.callback_data == f"more:{queue_id}" for b in buttons)
+        assert any(b.callback_data == f"more:{queue_id}:10" for b in buttons)
         await deliver_queue(bot, db, 123, queue_id, asyncio.Lock())
         last_buttons = controls(bot.messages[-1][1]["reply_markup"])
         assert len([b for b in last_buttons if b.callback_data.startswith("rateopen:")]) == 3
@@ -59,3 +59,49 @@ def test_track_access_and_long_title_truncation(tmp_path):
     items = controls(markup)
     assert items[0].callback_data == f"rateopen:{t.id}"
     assert len(items[0].text) < 35
+
+
+def test_continuation_callback_requires_queue_cursor(tmp_path):
+    assert parse_more_callback("more:5:10") == (5, 10)
+    for invalid in ("more:5", "more:5:0", "more:0:10",
+                    "more:5:wrong", "more:5:10:20", "more:1:-5"):
+        assert parse_more_callback(invalid) is None
+
+    db = Library(tmp_path / "db.sqlite")
+    songs = [db.add_track(f"file_{i}", f"u_{i}", f"Title {i}", "Artist")
+             for i in range(23)]
+    queue_id = db.create_queue([t.id for t in songs], "Playlist", "playlist")
+    bot = FakeBot()
+
+    async def check():
+        lock = asyncio.Lock()
+        await deliver_queue(bot, db, 42, queue_id, lock)
+        first = bot.messages[-1][1]["reply_markup"]
+        first_button = next(
+            b for b in controls(first) if b.callback_data.startswith("more:")
+        )
+        assert parse_more_callback(first_button.callback_data) == (queue_id, 10)
+
+        await deliver_queue(
+            bot, db, 42, queue_id, lock, expected_cursor=10,
+        )
+        assert len(bot.groups) == 2
+        cursor = db.peek_queue(queue_id).cursor
+        assert cursor == 20
+        # Double-click or pressing the old card must not send the third batch.
+        await deliver_queue(
+            bot, db, 42, queue_id, lock, expected_cursor=10,
+        )
+        assert db.peek_queue(queue_id).cursor == 20
+        assert len(bot.groups) == 2
+        last = bot.messages[-2][1]["reply_markup"]
+        next_button = next(
+            b for b in controls(last) if b.callback_data.startswith("more:")
+        )
+        assert parse_more_callback(next_button.callback_data) == (queue_id, 20)
+        await deliver_queue(
+            bot, db, 42, queue_id, lock, expected_cursor=20,
+        )
+        assert len(bot.groups) == 3
+    asyncio.run(check())
+

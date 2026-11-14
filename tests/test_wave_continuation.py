@@ -41,7 +41,7 @@ def test_wave_recomputes_next_batch_from_new_feedback(tmp_path):
         await deliver_queue(bot, db, 101, q, asyncio.Lock())
         first_card = bot.messages[-1][1]["reply_markup"]
         assert any(
-            b.callback_data == f"more:{q}"
+            b.callback_data == f"more:{q}:10"
             for row in first_card.inline_keyboard for b in row
         )
         disliked_by_skips = initial[0].id
