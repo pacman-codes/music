@@ -225,6 +225,34 @@ class Library:
             row = db.execute("SELECT * FROM tracks WHERE file_unique_id=?", (unique_id,)).fetchone()
             return self.track(row)
 
+    def apply_confirmed_recording_tags(self, track_id: int) -> Track:
+        """Promote confirmed MusicBrainz metadata into the local library.
+
+        Does not rewrite Telegram audio bytes, embedded MP3/M4A ID3 tags,
+        or the file_id. Works only after explicit owner confirmation/import.
+        """
+        if type(track_id) is not int or track_id <= 0:
+            raise ValueError("Invalid track ID")
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            record = db.execute(
+                """SELECT c.title,c.artist FROM track_recording_links l
+                   JOIN catalog_candidates c ON c.mbid=l.mbid
+                   WHERE l.track_id=?""", (track_id,),
+            ).fetchone()
+            if record is None:
+                raise ValueError("Confirm the MusicBrainz recording first")
+            db.execute(
+                "UPDATE tracks SET title=?,artist=? WHERE id=?",
+                (record["title"][:250],record["artist"][:250],track_id),
+            )
+            row = db.execute(
+                "SELECT * FROM tracks WHERE id=?", (track_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Track not found")
+            return self.track(row)
+
     def save_audio_fingerprint(self, track_id: int, digest: str,
                                duration_sec: int) -> list[int]:
         """Store only SHA256 of fingerprint; report exact same-audio candidates.
