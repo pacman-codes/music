@@ -1047,7 +1047,7 @@ class Library:
         """
         import secrets
         import time
-        if kind not in {"youtube", "musicbrainz", "global"}:
+        if kind not in {"youtube", "musicbrainz", "global", "queue"}:
             raise ValueError("Unknown import provider")
         if not isinstance(key, str) or not 1 <= len(key) <= 128:
             raise ValueError("Invalid source identifier")

@@ -69,6 +69,7 @@ HELP = """🎵 music — личный плеер
 /move ПЛЕЙЛИСТ_ID ТРЕК_ID ПОЗИЦИЯ — переставить
 /playplaylist ID — слушать подборку
 /wave — обычная Волна
+/continue — продолжить последнюю очередь после сбоя кнопок
 /discover — открытия среди сохранённых треков
 
 Нативный Telegram-плеер играет присланные аудиофайлы.
@@ -117,7 +118,8 @@ def home_keyboard(webapp_url: str | None = None) -> InlineKeyboardMarkup:
          button("🆕 Открытия", "nav:discover")],
         [button("❤️ Понравившиеся", "nav:liked"),
          button("📂 Плейлисты", "nav:playlists")],
-        [button("🎵 Библиотека", "nav:library")],
+        [button("🎵 Библиотека", "nav:library"),
+         button("▶ Продолжить", "nav:continue")],
     ]
     if webapp_url:
         rows.insert(0, [
@@ -228,88 +230,103 @@ async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
                         expected_cursor: int | None = None) -> None:
     """Serialize sends and only advance a queue after Telegram accepts its batch."""
     async with send_lock:
+        token = db.acquire_media_import("queue", str(queue_id), ttl=180)
+        if token is None:
+            # Telegram bot and Mini App run in independent processes.
+            # Keep a single in-flight delivery per listening queue.
+            await bot.send_message(chat_id, "Эта очередь уже отправляется. Подожди ответа.")
+            return
         try:
-            batch = db.peek_queue(queue_id, size=10)
-            # A stale/duplicate "Ещё 10" must not advance the radio again.
-            # A command starting a *new* queue intentionally has no expected cursor.
-            if expected_cursor is not None and batch.cursor != expected_cursor:
+            try:
+                batch = db.peek_queue(queue_id, size=10)
+                # A stale/duplicate "Ещё 10" must not advance the radio again.
+                # A command starting a *new* queue intentionally has no expected cursor.
+                if expected_cursor is not None and batch.cursor != expected_cursor:
+                    await bot.send_message(
+                        chat_id,
+                        "Эта кнопка «Ещё 10» уже использована. Нажми кнопку под "
+                        "последней порцией музыки.",
+                    )
+                    return
+                mode = db.queue_kind(queue_id)
+                if not batch.tracks and mode in DYNAMIC_MODES:
+                    fresh = select_wave_batch(db, mode)
+                    if fresh and db.extend_exhausted_queue(queue_id, [t.id for t in fresh]):
+                        batch = db.peek_queue(queue_id, size=10)
+                    elif fresh:
+                        # Another worker may have just refilled the same queue.
+                        batch = db.peek_queue(queue_id, size=10)
+            except ValueError:
+                await bot.send_message(chat_id, "Очередь не найдена. Создай новую /wave.")
+                return
+            if not batch.tracks:
+                await bot.send_message(chat_id, "Подборка закончилась. 🌊 /wave — новая.")
+                return
+            try:
+                if len(batch.tracks) == 1:
+                    t = batch.tracks[0]
+                    await bot.send_audio(
+                        chat_id, audio=t.file_id,
+                        caption=f"#{t.id} · {t.artist} — {t.title}"[:950],
+                    )
+                else:
+                    await bot.send_media_group(
+                        chat_id,
+                        media=[
+                            InputMediaAudio(
+                                media=t.file_id,
+                                caption=f"#{t.id} · {t.artist} — {t.title}"[:950],
+                            )
+                            for t in batch.tracks
+                        ],
+                    )
+            except TelegramAPIError:
+                # A transport timeout may mean Telegram received a message but
+                # did not acknowledge it. Do not advance blindly.
+                logger.warning("Telegram media upload/send failed for queue %s", queue_id)
                 await bot.send_message(
                     chat_id,
-                    "Эта кнопка «Ещё 10» уже использована. Нажми кнопку под "
-                    "последней порцией музыки.",
+                    "Не получилось отправить аудио. Очередь не продвинута; попробуй ещё раз.",
                 )
                 return
-            mode = db.queue_kind(queue_id)
-            if not batch.tracks and mode in DYNAMIC_MODES:
-                fresh = select_wave_batch(db, mode)
-                if fresh and db.extend_exhausted_queue(queue_id, [t.id for t in fresh]):
-                    batch = db.peek_queue(queue_id, size=10)
-                elif fresh:
-                    # Another worker may have just refilled the same queue.
-                    batch = db.peek_queue(queue_id, size=10)
-        except ValueError:
-            await bot.send_message(chat_id, "Очередь не найдена. Создай новую /wave.")
-            return
-        if not batch.tracks:
-            await bot.send_message(chat_id, "Подборка закончилась. 🌊 /wave — новая.")
-            return
-        try:
-            if len(batch.tracks) == 1:
-                t = batch.tracks[0]
-                await bot.send_audio(
-                    chat_id, audio=t.file_id,
-                    caption=f"#{t.id} · {t.artist} — {t.title}"[:950],
-                )
-            else:
-                await bot.send_media_group(
-                    chat_id,
-                    media=[
-                        InputMediaAudio(
-                            media=t.file_id,
-                            caption=f"#{t.id} · {t.artist} — {t.title}"[:950],
-                        )
-                        for t in batch.tracks
-                    ],
-                )
-        except TelegramAPIError:
-            # A transport timeout may mean Telegram received a message but
-            # did not acknowledge it. Do not advance blindly.
-            logger.warning("Telegram media upload/send failed for queue %s", queue_id)
-            await bot.send_message(
-                chat_id,
-                "Не получилось отправить аудио. Очередь не продвинута; попробуй ещё раз.",
+
+            if not db.mark_queue_sent(batch):
+                logger.warning("Queue %s advanced concurrently; media already sent", queue_id)
+                await bot.send_message(chat_id, "Очередь изменилась, создай новую /wave.")
+                return
+
+            # Show controls after Telegram accepts the audio batch. This is
+            # deliberately a separate message: media groups do not support markup
+            # on individual audio messages.
+            count = len(batch.tracks)
+            dynamic = db.queue_kind(queue_id) in DYNAMIC_MODES
+            notice = (
+                f"🎧 {batch.label}: отправлено {count}. Следующие треки подберу заново."
+                if dynamic else
+                f"🎧 {batch.label}: отправлено {count}, осталось {batch.remaining_after}."
+                if batch.remaining_after else
+                f"✅ {batch.label}: последние {count} треков отправлены."
             )
-            return
+            notice += (
+                "\n⭐ Выбери песню для оценки 1–10. "
+                "Пропуски и дослушивания отмечаются только вручную."
+            )
+            try:
+                await bot.send_message(
+                    chat_id, notice,
+                    reply_markup=queue_feedback_keyboard(
+                        batch.tracks, queue_id, dynamic or bool(batch.remaining_after),
+                        next_cursor=batch.cursor + len(batch.tracks),
+                    ),
+                )
+            except TelegramAPIError:
+                # Audio was delivered and cursor was committed already. A missing
+                # control card must not be reported as failed music delivery.
+                # /continue and the home button recover the listening queue.
+                logger.warning("Queue %s sent but controls failed; use /continue", queue_id)
 
-        if not db.mark_queue_sent(batch):
-            logger.warning("Queue %s advanced concurrently; media already sent", queue_id)
-            await bot.send_message(chat_id, "Очередь изменилась, создай новую /wave.")
-            return
-
-        # Show controls after Telegram accepts the audio batch. This is
-        # deliberately a separate message: media groups do not support markup
-        # on individual audio messages.
-        count = len(batch.tracks)
-        dynamic = db.queue_kind(queue_id) in DYNAMIC_MODES
-        notice = (
-            f"🎧 {batch.label}: отправлено {count}. Следующие треки подберу заново."
-            if dynamic else
-            f"🎧 {batch.label}: отправлено {count}, осталось {batch.remaining_after}."
-            if batch.remaining_after else
-            f"✅ {batch.label}: последние {count} треков отправлены."
-        )
-        notice += (
-            "\n⭐ Выбери песню для оценки 1–10. "
-            "Пропуски и дослушивания отмечаются только вручную."
-        )
-        await bot.send_message(
-            chat_id, notice,
-            reply_markup=queue_feedback_keyboard(
-                batch.tracks, queue_id, dynamic or bool(batch.remaining_after),
-                next_cursor=batch.cursor + len(batch.tracks),
-            ),
-        )
-
+        finally:
+            db.release_media_import("queue", str(queue_id), token)
 
 def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                   catalog: MusicCatalog | None = None,
@@ -574,6 +591,20 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             await show_playlists(message)
         elif action == "library":
             await show_library(message)
+        elif action == "continue":
+            last = db.latest_queue_id()
+            if last is None:
+                await message.answer("Очередей пока нет. Запусти /wave.")
+            else:
+                await deliver_queue(bot, db, message.chat.id, last, send_lock)
+
+    @router.message(Command("continue"))
+    async def continue_cmd(message: Message, bot: Bot):
+        last = db.latest_queue_id()
+        if last is None:
+            await message.answer("Очередей пока нет. Запусти /wave.")
+            return
+        await deliver_queue(bot, db, message.chat.id, last, send_lock)
 
     @router.message(Command("library"))
     async def library_cmd(message: Message):
