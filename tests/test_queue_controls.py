@@ -3,7 +3,19 @@ import asyncio
 
 from music_bot.main import deliver_queue, queue_feedback_keyboard
 from music_bot.storage import Library
-from tests.test_bot import FakeBot
+class FakeBot:
+    def __init__(self):
+        self.groups = []
+        self.messages = []
+
+    async def send_audio(self, *args, **kwargs):
+        pass
+
+    async def send_media_group(self, *args, **kwargs):
+        self.groups.append((args, kwargs))
+
+    async def send_message(self, *args, **kwargs):
+        self.messages.append((args, kwargs))
 
 
 def controls(keyboard):
