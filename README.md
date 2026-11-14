@@ -40,6 +40,7 @@ Python 3.12+; запускать только с собственным токе
 /start, /library, /search текст, /liked, /like ID, /unlike ID, /dislike ID,
 /rate ТРЕК_ID 1-10, /skip ТРЕК_ID, /finished ТРЕК_ID,
 /find Песня /radio Исполнитель /saved,
+/import MBID https://разрешённый-хост/track.mp3,
 /playliked, /newplaylist Название, /playlists, /playlist ID,
 /renameplaylist ID Название, /deleteplaylist ID,
 /addto ПЛ_ID ТРЕК_ID, /removefrom ПЛ_ID ТРЕК_ID, /move ПЛ_ID ТРЕК_ID ПОЗИЦИЯ,
