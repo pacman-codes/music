@@ -185,7 +185,7 @@ def compare_profiles(previous: dict[str, Any], current: dict[str, Any]) -> dict:
                 if tid not in old_lists.get(int(pl["id"]), set())
             ],
         }
-        for pl in current.get("playlists", [])
+        for pl in current.get("playlists", []) if pl.get("kind") == "custom"
     ]
     playlist_additions = [
         item for item in playlist_additions if item["added_track_ids"]
