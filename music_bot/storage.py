@@ -51,6 +51,10 @@ class Library:
             CREATE TABLE IF NOT EXISTS discovery_wishlist (
               mbid TEXT PRIMARY KEY REFERENCES catalog_candidates(mbid) ON DELETE CASCADE,
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS catalog_audio_assets (
+              mbid TEXT PRIMARY KEY REFERENCES catalog_candidates(mbid) ON DELETE CASCADE,
+              track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+              linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS tracks(
               id INTEGER PRIMARY KEY, file_id TEXT NOT NULL,
               file_unique_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, artist TEXT NOT NULL);
@@ -564,4 +568,36 @@ class Library:
         with self.con() as db:
             return {str(r[0]) for r in db.execute(
                 "SELECT mbid FROM discovery_wishlist"
+            )}
+
+    def get_candidate(self, mbid: str) -> dict | None:
+        with self.con() as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                """SELECT c.mbid,c.title,c.artist,c.artist_mbid,c.duration_ms,
+                          c.variant,a.track_id
+                   FROM catalog_candidates c
+                   LEFT JOIN catalog_audio_assets a ON a.mbid=c.mbid
+                   WHERE c.mbid=?""", (mbid,)
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def link_candidate_track(self, mbid: str, track_id: int) -> None:
+        """Only the successful Telegram upload path should call this method."""
+        with self.con() as db:
+            if not db.execute("SELECT 1 FROM catalog_candidates WHERE mbid=?", (mbid,)).fetchone():
+                raise ValueError("Unknown catalog recording")
+            if not db.execute("SELECT 1 FROM tracks WHERE id=?", (track_id,)).fetchone():
+                raise ValueError("Unknown Telegram audio track")
+            db.execute(
+                """INSERT INTO catalog_audio_assets(mbid,track_id) VALUES(?,?)
+                   ON CONFLICT(mbid) DO UPDATE SET
+                     track_id=excluded.track_id, linked_at=CURRENT_TIMESTAMP""",
+                (mbid, track_id),
+            )
+
+    def linked_candidate_tracks(self) -> dict[str, int]:
+        with self.con() as db:
+            return {str(row[0]): int(row[1]) for row in db.execute(
+                "SELECT mbid,track_id FROM catalog_audio_assets"
             )}
