@@ -15,6 +15,8 @@ from aiogram.types import (
     InlineKeyboardMarkup, Message,
 )
 
+from music_bot.catalog import valid_mbid
+from music_bot.source_matching import suggest_sources
 from music_bot.storage import Library
 from music_bot.youtube import (
     YouTubeError, YouTubeIngestService, YouTubeSource, validate_video_id,
@@ -66,6 +68,44 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
         await message.answer(
             text[:3800],
             reply_markup=youtube_keyboard(videos, download_enabled),
+        )
+
+    @router.message(Command("ytfor"))
+    async def youtube_for_recording(message: Message):
+        if not search_enabled:
+            await message.answer("YouTube-поиск выключен в .env.")
+            return
+        parts=(message.text or "").split()
+        if len(parts)!=2 or not valid_mbid(parts[1]):
+            await message.answer("Пример: /ytfor MBID найденной записи MusicBrainz")
+            return
+        recording=db.get_candidate(parts[1].lower())
+        if recording is None:
+            await message.answer("Сначала найди запись через /find.")
+            return
+        try:
+            found=await worker.search(
+                f"{recording['artist']} {recording['title']}"[:90],limit=8,
+            )
+        except (YouTubeError,ValueError):
+            await message.answer("YouTube не дал результатов для этой песни.")
+            return
+        db.remember_youtube_videos(found)
+        ranked=suggest_sources(recording,found,limit=6)
+        if not ranked:
+            await message.answer("Надёжных вариантов не нашлось. Попробуй /yt.")
+            return
+        text=f"▶ Вероятные версии: {recording['artist']} — {recording['title']}\n"
+        text+="\n".join(
+            f"{i}. {item.video.title} ({round(item.score*100)}% совпадение)"
+            + (f" — {', '.join(item.warnings)}" if item.warnings else "")
+            for i,item in enumerate(ranked,1)
+        )
+        text+="\nВыбери подходящую запись; автоимпорт не выполняется."
+        await message.answer(
+            text[:3800],
+            reply_markup=youtube_keyboard([item.video for item in ranked],
+                                          download_enabled),
         )
 
     async def fetch(bot: Bot, video_id: str, chat_id: int):
