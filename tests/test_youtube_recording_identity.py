@@ -87,6 +87,10 @@ def test_raw_youtube_import_stays_unmatched_until_explicit_choice(tmp_path, monk
         linked = await svc.import_video(VIDEO, recording_mbid=MBID)
         assert linked == {"track_id": tid, "reused": True}
         assert db.resolved_catalog_tracks()[MBID] == tid
+        # A plain YouTube import may later be promoted to accurate
+        # MusicBrainz metadata by explicit owner selection.
+        assert db.get_track(tid).title == "Roads"
+        assert db.get_track(tid).artist == "Portishead"
         with pytest.raises(YouTubeError, match="already linked"):
             await svc.import_video(VIDEO, recording_mbid=OTHER)
 
