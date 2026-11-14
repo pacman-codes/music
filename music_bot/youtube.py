@@ -135,7 +135,7 @@ class YouTubeSource:
         if not 2 <= len(term) <= 90 or not 1 <= limit <= MAX_SEARCH:
             raise ValueError("YouTube search needs 2–90 chars and 1–8 hits")
         args = [
-            "--ignore-config", "--no-playlist", "--flat-playlist",
+            "--ignore-config", "--flat-playlist",
             "--dump-single-json", "--skip-download", "--no-warnings",
             "--socket-timeout", "8", "--extractor-retries", "1",
             "--playlist-end", str(limit), "--", f"ytsearch{limit}:{term}",
