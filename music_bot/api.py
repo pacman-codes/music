@@ -25,6 +25,7 @@ from music_bot.fingerprints import (
 from music_bot.main import deliver_queue, send_single_track
 from music_bot.personalized import personalized_discovery
 from music_bot.weekly import weekly_discovery
+from music_bot.wrapped import wrapped_summary
 from music_bot.selection import select_wave_batch
 from music_bot.screen import TmdbCatalog, TmdbError
 from music_bot.source_matching import suggest_sources
@@ -732,6 +733,12 @@ def create_app(config: Settings | None = None,
         except ValueError as exc:
             raise HTTPException(404, detail="Playlist or track not found") from exc
         return {"changed": changed}
+
+    @app.get("/api/stats/wrapped", dependencies=[auth])
+    async def wrapped_report(
+        period: Literal["7d", "30d", "365d", "all"] = "30d",
+    ):
+        return wrapped_summary(db, period)
 
     @app.get("/api/wave/preset", dependencies=[auth])
     async def wave_preset():

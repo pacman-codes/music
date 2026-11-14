@@ -28,3 +28,20 @@
 #queue-filters label { display:inline-flex; align-items:center; gap:8px; font-size:0.85rem }
 #queue-filters input[type="checkbox"] { width:18px; height:18px }
 #queue-items .track-actions { flex-wrap:wrap; }
+
+/* Music Wrapped: display only factual metrics, never fabricated listening time. */
+.wrapped-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.wrapped-tile{border:1px solid var(--tg-theme-section-separator-color,#505062);
+ border-radius:15px;padding:16px 12px;
+ background:linear-gradient(145deg,rgba(96,86,176,.20),rgba(45,45,64,.09))}
+.wrapped-value{font-size:clamp(1.6rem,4vw,2.2rem);font-weight:750;font-variant-numeric:tabular-nums}
+.wrapped-label{font-size:.78rem;color:var(--tg-theme-hint-color,#aaa)}
+.wrapped-panel{grid-column:1/-1;padding:13px 15px;
+ border-radius:15px;border:1px solid var(--tg-theme-section-separator-color,#505062)}
+.wrapped-panel h3{margin:0 0 10px;font-size:1rem}
+.wrapped-list-row{padding:7px 0;border-bottom:1px solid rgba(150,150,150,.18);font-size:.86rem}
+.wrapped-list-row:last-child{border:0}
+.wrapped-chart{display:flex;height:120px;gap:8px;align-items:stretch}
+.wrapped-column{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;min-width:0}
+.wrapped-bar{width:70%;min-height:3px;border-radius:5px 5px 1px 1px;background:var(--tg-theme-button-color,#8a78e8)}
+.wrapped-column small{margin-top:5px;font-size:.65rem}

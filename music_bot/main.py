@@ -24,6 +24,7 @@ from music_bot.telegram_import import install_import_handlers
 from music_bot.telegram_fingerprint import install_fingerprint_handlers
 from music_bot.telegram_youtube import install_youtube_handlers
 from music_bot.selection import DYNAMIC_MODES, select_wave_batch
+from music_bot.wrapped import wrapped_summary
 from music_bot.storage import Library, Track
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ HELP = """🎵 music — личный плеер
 /radiotrack ID — радио по конкретной песне
 /recommend — персональные открытия по твоим высоким оценкам
 /weekly — новые релизы и личные находки недели
+/wrapped 30d|365d|all — музыкальная статистика
 /identify ID — подобрать MusicBrainz ID для локального файла
 /fingerprint ID — распознать аудио через AcoustID (если включён)
 /unmatch ID — убрать ошибочную ручную привязку
@@ -930,6 +932,39 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         await message.answer(
             "Фильтры применятся к следующей новой порции радио. /queue"
         )
+
+    @router.message(Command("wrapped"))
+    async def wrapped_cmd(message: Message):
+        raw=(message.text or "").split()
+        period=raw[1] if len(raw)==2 else "30d"
+        try:
+            info=wrapped_summary(db,period)
+        except ValueError:
+            await message.answer("Пример: /wrapped 7d, /wrapped 30d, /wrapped 365d")
+            return
+        text=(
+            f"📊 Твой Music Wrapped ({period})\n"
+            f"В библиотеке: {info['library_tracks']} песен\n"
+            f"В избранном: {info['favorites_count']}\n"
+            f"Отправлено в Telegram: {info['deliveries']} сообщений с аудио, "
+            f"уникальных треков: {info['distinct_sent_tracks']}\n"
+            f"Твои оценки: {info['rated_count']}, средняя: "
+            f"{info['average_rating'] or '—'}/10\n"
+            f"Ручных пропусков: {info['manual_skips']}, "
+            f"ручных дослушиваний: {info['manual_completions']}\n"
+        )
+        if info["top_artists"]:
+            text+="\nЧаще всего отправлял:\n"
+            text+="\n".join(
+                f"• {x['artist']} — {x['deliveries']} отправок"
+                for x in info["top_artists"][:5]
+            )
+        if info["favorite_artists"]:
+            text+="\nЛюбимые артисты:\n"+", ".join(
+                x["artist"] for x in info["favorite_artists"][:4]
+            )
+        text+="\nℹ️ Telegram не передаёт боту реальные прослушивания."
+        await message.answer(text[:3900])
 
     @router.message(Command("mix"))
     async def mix_cmd(message: Message):

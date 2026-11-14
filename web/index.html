@@ -9,6 +9,7 @@
   <script src="https://telegram.org/js/telegram-web-app.js?65"></script>
   <script src="/assets/app.js" defer></script>
   <script src="/assets/queue.js" defer></script>
+  <script src="/assets/wrapped.js" defer></script>
   <script src="/assets/anime.js" defer></script>
   <script src="/assets/screen.js" defer></script>
 </head>
@@ -92,6 +93,22 @@
       </form>
       <div class="catalog-caption" id="youtube-status" role="status" aria-live="polite"></div>
       <div id="youtube-results" class="list"></div>
+    </section>
+    <section id="wrapped-section">
+      <div class="heading">
+        <h2>📊 Music Wrapped</h2>
+        <div class="actions">
+          <select id="wrapped-period" aria-label="Период музыкальной статистики">
+            <option value="7d">Неделя</option>
+            <option value="30d" selected>30 дней</option>
+            <option value="365d">Год</option>
+            <option value="all">Всё время</option>
+          </select>
+          <button type="button" id="wrapped-refresh">Мой отчёт</button>
+        </div>
+      </div>
+      <p class="catalog-hint">Это статистика отправок, оценок и ручных отметок. Telegram не сообщает фактические прослушивания.</p>
+      <div id="wrapped-content" class="wrapped-grid"></div>
     </section>
     <section id="anime-section">
       <div class="heading"><h2>🎞 Аниме</h2><button type="button" id="anime-watchlist">Мой список</button></div>
