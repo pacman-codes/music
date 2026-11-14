@@ -42,7 +42,15 @@ def prune_temporary_data(database: str | Path, *, dry_run: bool = True) -> dict:
     results = {}
     with db.con() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        existing_tables = {
+            row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
         for label, (table, condition) in plans.items():
+            if table not in existing_tables:
+                results[label] = 0
+                continue
             # All table names and conditions are fixed, not user input.
             count = connection.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE {condition}"
