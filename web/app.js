@@ -203,6 +203,11 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
     const controls = element("div", "track-actions");
     if (item.local_track_id) {
       controls.append(element("span", "catalog-available", "✓ Связано с треком #" + item.local_track_id));
+      controls.append(action("▶ Слушать", async () => {
+        await post("/api/tracks/" + item.local_track_id + "/play");
+        toast("Песня отправлена в Telegram ▶");
+        tg?.HapticFeedback?.notificationOccurred("success");
+      }));
     } else if (item.possible_match_track_id) {
       controls.append(element("span", "catalog-unavailable",
         "Возможно совпадение с #" + item.possible_match_track_id + " — ещё не подтверждено"));

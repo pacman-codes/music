@@ -15,11 +15,20 @@ from music_bot.storage import Library
 
 
 def catalog_keyboard(rows: list[CatalogTrack], *,
-                     match_track_id: int | None = None) -> InlineKeyboardMarkup:
+                     match_track_id: int | None = None,
+                     linked: dict[str, int] | None = None
+                     ) -> InlineKeyboardMarkup:
     """A fixed action set, no external content in callback_data."""
     controls = []
+    linked = linked or {}
     for track in rows[:8]:
-        if match_track_id is not None:
+        playable_id = linked.get(track.mbid)
+        if playable_id is not None:
+            controls.append([InlineKeyboardButton(
+                text=f"▶ Слушать: {track.title[:30]}",
+                callback_data=f"play:{playable_id}",
+            )])
+        if match_track_id is not None and playable_id is None:
             controls.append([InlineKeyboardButton(
                 text=f"🔗 Подтвердить: {track.title[:35]}",
                 callback_data=f"match:{match_track_id}:{track.mbid}",
@@ -71,7 +80,7 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
         db.remember_candidates(rows)
         await message.answer(
             format_catalog(rows, "🔎 Поиск MusicBrainz"),
-            reply_markup=catalog_keyboard(rows),
+            reply_markup=catalog_keyboard(rows, linked=db.resolved_catalog_tracks()),
         )
 
     @router.message(Command("radio"))
@@ -99,7 +108,7 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
         db.remember_candidates(rows)
         await message.answer(
             format_catalog(rows, f"🎸 Похожие на {name}"),
-            reply_markup=catalog_keyboard(rows),
+            reply_markup=catalog_keyboard(rows, linked=db.resolved_catalog_tracks()),
         )
 
     @router.message(Command("identify"))
@@ -136,7 +145,10 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
             format_catalog(rows, f"🔗 Определи запись для #{track.id}: "
                                  f"{track.artist} — {track.title}") +
             "\nПодтверди только точное совпадение: live/remix могут отличаться.",
-            reply_markup=catalog_keyboard(rows, match_track_id=track.id),
+            reply_markup=catalog_keyboard(
+                rows, match_track_id=track.id,
+                linked=db.resolved_catalog_tracks(),
+            ),
         )
 
     @router.message(Command("unmatch"))
@@ -188,7 +200,7 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
         db.remember_candidates(fresh)
         await message.answer(
             format_catalog(fresh, f"🎸 Радио по #{track.id}: {track.title}"),
-            reply_markup=catalog_keyboard(fresh),
+            reply_markup=catalog_keyboard(fresh, linked=db.resolved_catalog_tracks()),
         )
 
     @router.callback_query(F.data.startswith("match:"))
@@ -236,7 +248,7 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
         db.remember_candidates(rows)
         await message.answer(
             format_catalog(rows, "✨ Твои открытия по: " + ", ".join(seeds)),
-            reply_markup=catalog_keyboard(rows),
+            reply_markup=catalog_keyboard(rows, linked=db.resolved_catalog_tracks()),
         )
 
     @router.message(Command("saved"))
@@ -245,17 +257,25 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
         if not entries:
             await message.answer("📌 Список отложенной музыки пуст. Используй /find.")
             return
-        text = "📌 Отложенная музыка — только каталог:\n"
+        text = "📌 Отложенная музыка (▶ если аудио уже загружено):\n"
         text += "\n".join(
             f"{index}. {entry['artist']} — {entry['title']}"[:150]
             for index, entry in enumerate(entries, 1)
         )
-        controls = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
+        linked = db.resolved_catalog_tracks()
+        buttons = []
+        for entry in entries[:8]:
+            track_id = linked.get(entry["mbid"])
+            if track_id is not None:
+                buttons.append([InlineKeyboardButton(
+                    text=f"▶ {entry['title'][:27]}",
+                    callback_data=f"play:{track_id}",
+                )])
+            buttons.append([InlineKeyboardButton(
                 text=f"❌ {entry['title'][:24]}",
                 callback_data=f"unwish:{entry['mbid']}",
-            )] for entry in entries[:8]
-        ])
+            )])
+        controls = InlineKeyboardMarkup(inline_keyboard=buttons)
         await message.answer(text[:3800], reply_markup=controls)
 
     @router.callback_query(F.data.startswith("wish:"))
