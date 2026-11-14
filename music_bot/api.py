@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import FSInputFile
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -110,11 +111,14 @@ def create_app(config: Settings | None = None,
 
     async def publish_audio(path: Path, title: str, artist: str) -> tuple[str, str]:
         # A *real* Telegram audio message ensures native playback.
-        async with Bot(token=settings.token) as bot:
-            message = await bot.send_audio(
-                chat_id=settings.owner_id, audio=FSInputFile(path),
-                title=title[:64], performer=artist[:64],
-            )
+        try:
+            async with Bot(token=settings.token) as bot:
+                message = await bot.send_audio(
+                    chat_id=settings.owner_id, audio=FSInputFile(path),
+                    title=title[:64], performer=artist[:64],
+                )
+        except TelegramAPIError as exc:
+            raise MediaImportError("Telegram не принял аудиофайл, попробуй позже") from exc
         if message.audio is None:
             raise MediaImportError("Telegram не подтвердил аудиофайл")
         return message.audio.file_id, message.audio.file_unique_id
@@ -525,11 +529,18 @@ def create_app(config: Settings | None = None,
                 result = await yt_ingest.import_video(video_id)
             except YouTubeError as exc:
                 raise HTTPException(422, detail=str(exc)) from exc
+            except MediaImportError as exc:
+                raise HTTPException(502, detail=str(exc)) from exc
             if result["reused"]:
                 track = db.get_track(result["track_id"])
                 if track:
-                    async with Bot(token=settings.token) as bot:
-                        await bot.send_audio(settings.owner_id, audio=track.file_id)
+                    try:
+                        async with Bot(token=settings.token) as bot:
+                            await bot.send_audio(settings.owner_id, audio=track.file_id)
+                    except TelegramAPIError as exc:
+                        raise HTTPException(
+                            502, detail="Не удалось повторно отправить аудио в Telegram"
+                        ) from exc
         return result
 
     @app.get("/api/discovery/import-config", dependencies=[auth])

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 
 from aiogram import Bot, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.types import FSInputFile, Message
 
@@ -66,6 +67,11 @@ def install_import_handlers(router: Router, db: Library,
                 result = await ingest.import_recording(mbid, url)
             except MediaImportError as exc:
                 await message.answer(f"Не удалось импортировать: {str(exc)[:180]}")
+                return
+            except TelegramAPIError:
+                await message.answer(
+                    "Telegram не принял аудиофайл; повтори запрос позже."
+                )
                 return
         if result["reused"]:
             track = db.get_track(result["track_id"])
