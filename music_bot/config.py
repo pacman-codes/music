@@ -9,6 +9,7 @@ class Settings:
     token: str
     owner_id: int
     db_path: Path
+    webapp_url: str | None = None
 
 def load_settings() -> Settings:
     load_dotenv()
@@ -22,4 +23,7 @@ def load_settings() -> Settings:
         raise RuntimeError("OWNER_TELEGRAM_ID must be an integer") from exc
     if owner_id <= 0:
         raise RuntimeError("OWNER_TELEGRAM_ID must be positive")
-    return Settings(token, owner_id, Path(os.getenv("MUSIC_DB_PATH", "data/music.db")))
+    url = os.getenv("WEBAPP_URL", "").strip() or None
+    if url and (not url.startswith("https://") or len(url) > 200):
+        raise RuntimeError("WEBAPP_URL must be a public HTTPS URL")
+    return Settings(token, owner_id, Path(os.getenv("MUSIC_DB_PATH", "data/music.db")), url)
