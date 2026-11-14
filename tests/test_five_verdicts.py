@@ -151,3 +151,25 @@ def test_yandex_search_link_does_not_claim_tg_playback():
     assert link.startswith("https://music.yandex.ru/search?text=")
     assert "Nia%20Archives%20Forbidden%20Feelingz" in link
     assert "file_id" not in link
+
+def test_private_profile_exports_all_five_decisions_and_changes(tmp_path):
+    from music_bot.profile_export import export_profile, compare_profiles, profile_json_bytes
+
+    db = Library(tmp_path / "music.db")
+    track = db.add_track("SHOULD_NOT_LEAK", "UNIQUE_SHOULD_NOT_LEAK", "Song", "Artist")
+    mbid = "8a49dba0-253a-4535-b87f-78bb035336ce"
+    db.remember_candidates([CatalogTrack(mbid, "Outside", "Other")])
+    previous = export_profile(db)
+    db.set_track_verdict(track.id, "interesting")
+    db.set_catalog_verdict(mbid, "later")
+    current = export_profile(db)
+    assert current["tracks"][0]["decision"] == "interesting"
+    assert current["catalog_decisions"][0]["decision"] == "later"
+    delta = compare_profiles(previous, current)
+    assert delta["decision_changes"] == [
+        {"id": track.id, "before": None, "after": "interesting"}
+    ]
+    assert delta["catalog_decision_changes"][0]["mbid"] == mbid
+    encoded = profile_json_bytes(current).decode()
+    assert "SHOULD_NOT_LEAK" not in encoded
+    assert "UNIQUE_SHOULD_NOT_LEAK" not in encoded
