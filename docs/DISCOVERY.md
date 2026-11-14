@@ -31,8 +31,7 @@ does not become a positive seed. User preferences do NOT remove songs from
 the liked playlist.
 
 ListenBrainz artist radio returns candidate recording MBIDs. MusicBrainz
-provides their titles and artist metadata. Results are interleaved between
-seed artists, deduplicated, and filtered against owned tracks. External API
+provides their titles and artist metadata. Results from up to three seed artists are combined by reciprocal-rank fusion (RRF): records suggested by different ListenBrainz radio lists receive higher rank, followed by soft artist-diversity reranking. Candidates are deduplicated against owned tracks. We suppress an artist only after at least two distinct explicitly rejected songs with no positive evidence for that artist. External API
 failures can leave fewer choices without interrupting native playback.
 
 **No automatic playback telemetry.** Telegram does not provide exact play/
