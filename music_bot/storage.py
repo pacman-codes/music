@@ -6,6 +6,7 @@ Existing v0.1 databases are upgraded additively with CREATE IF NOT EXISTS.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,12 +35,26 @@ class Library:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.init()
 
+    @contextmanager
     def con(self):
+        """Commit or roll back, and *close* the SQLite descriptor every time.
+
+        sqlite3.Connection used directly as a context manager does not close
+        itself on exit; the old implementation leaked file descriptors during
+        repeated bot/API requests.
+        """
         db = sqlite3.connect(self.path, timeout=10)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA foreign_keys=ON")
-        db.execute("PRAGMA busy_timeout=10000")
-        return db
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA foreign_keys=ON")
+            db.execute("PRAGMA busy_timeout=10000")
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def init(self):
         with self.con() as db:
