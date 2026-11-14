@@ -250,20 +250,28 @@ class YouTubeIngestService:
                 if already is not None and self.db.get_track(already) is not None:
                     raise YouTubeError("Эта запись уже сохранена в Telegram")
 
-            title = recording["title"] if recording else video["title"]
-            artist = recording["artist"] if recording else video["channel"]
-            async with temporary_youtube_mp3(video_id) as file:
-                file_id, unique = await self.publisher(file, title, artist)
-                if not file_id or not unique:
-                    raise YouTubeError("Telegram не подтвердил аудиофайл")
-                track = self.db.add_track(file_id, unique, title, artist)
-                self.db.link_youtube_video(video_id, track.id)
-                if mbid:
-                    try:
-                        self.db.associate_youtube_recording(video_id, mbid)
-                    except ValueError as exc:
-                        raise YouTubeError(str(exc)) from exc
-                return {"track_id": track.id, "reused": False}
+            # The old VPS is intentionally limited to one active transfer
+            # across *all* bot and Mini App media workers.
+            capacity_lease = self.db.acquire_media_import("global", "media")
+            if capacity_lease is None:
+                raise YouTubeError("Сервер сейчас загружает другой файл. Повтори позже.")
+            try:
+                title = recording["title"] if recording else video["title"]
+                artist = recording["artist"] if recording else video["channel"]
+                async with temporary_youtube_mp3(video_id) as file:
+                    file_id, unique = await self.publisher(file, title, artist)
+                    if not file_id or not unique:
+                        raise YouTubeError("Telegram не подтвердил аудиофайл")
+                    track = self.db.add_track(file_id, unique, title, artist)
+                    self.db.link_youtube_video(video_id, track.id)
+                    if mbid:
+                        try:
+                            self.db.associate_youtube_recording(video_id, mbid)
+                        except ValueError as exc:
+                            raise YouTubeError(str(exc)) from exc
+                    return {"track_id": track.id, "reused": False}
+            finally:
+                self.db.release_media_import("global", "media", capacity_lease)
         finally:
             if mbid_lease is not None:
                 self.db.release_media_import("musicbrainz", mbid, mbid_lease)

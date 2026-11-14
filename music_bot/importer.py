@@ -170,18 +170,26 @@ class AudioIngestService:
             linked = candidate.get("track_id") if candidate else None
             if linked is not None and self.db.get_track(linked) is not None:
                 return {"track_id": linked, "reused": True, "sent": False}
-            # Never store the URL or hand it to Telegram directly.
-            async with temporary_audio(url, self.hosts, client=self.client) as path:
-                file_id, file_unique_id = await self.publisher(
-                    path, candidate["title"], candidate["artist"],
+            capacity_lease = self.db.acquire_media_import("global", "media")
+            if capacity_lease is None:
+                raise MediaImportError(
+                    "Сервер сейчас загружает другой файл. Повтори позже."
                 )
-                if not file_id or not file_unique_id:
-                    raise MediaImportError("Telegram не вернул идентификатор аудио")
-                track = self.db.add_track(
-                    file_id, file_unique_id,
-                    candidate["title"], candidate["artist"],
-                )
-                self.db.link_candidate_track(mbid, track.id)
-                return {"track_id": track.id, "reused": False, "sent": True}
+            try:
+                # Never store the URL or hand it to Telegram directly.
+                async with temporary_audio(url, self.hosts, client=self.client) as path:
+                    file_id, file_unique_id = await self.publisher(
+                        path, candidate["title"], candidate["artist"],
+                    )
+                    if not file_id or not file_unique_id:
+                        raise MediaImportError("Telegram не вернул идентификатор аудио")
+                    track = self.db.add_track(
+                        file_id, file_unique_id,
+                        candidate["title"], candidate["artist"],
+                    )
+                    self.db.link_candidate_track(mbid, track.id)
+                    return {"track_id": track.id, "reused": False, "sent": True}
+            finally:
+                self.db.release_media_import("global", "media", capacity_lease)
         finally:
             self.db.release_media_import("musicbrainz", mbid, lease)
