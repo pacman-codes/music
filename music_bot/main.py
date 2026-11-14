@@ -405,7 +405,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             for status in STATUSES
         ]
         rows.extend(
-            [[button(f"▶️ {p['name'][:40]}", f"playlist:{p['id']}")]]
+            [button(f"▶️ {p['name'][:40]}", f"playlist:{p['id']}")]
             for p in playlists[:20]
         )
         await message.answer(
