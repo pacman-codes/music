@@ -173,3 +173,21 @@ def test_private_profile_exports_all_five_decisions_and_changes(tmp_path):
     encoded = profile_json_bytes(current).decode()
     assert "SHOULD_NOT_LEAK" not in encoded
     assert "UNIQUE_SHOULD_NOT_LEAK" not in encoded
+
+def test_migrates_older_likes_and_dislikes_without_changing_new_decisions(tmp_path):
+    path = tmp_path / "music.db"
+    db = Library(path)
+    liked = db.add_track("1", "u1", "Old like", "Artist")
+    rejected = db.add_track("2", "u2", "Old reject", "Artist")
+    neutral = db.add_track("3", "u3", "New neutral", "Artist")
+    db.add_to(db.liked_id(), liked.id)
+    with db.con() as sql:
+        sql.execute("INSERT INTO dislikes(track_id) VALUES(?)", (rejected.id,))
+    db.set_track_verdict(neutral.id, "interesting")
+    upgraded = Library(path)
+    assert upgraded.track_verdicts() == {
+        liked.id: "add",
+        rejected.id: "never",
+        neutral.id: "interesting",
+    }
+    assert Library(path).track_verdicts()[neutral.id] == "interesting"
