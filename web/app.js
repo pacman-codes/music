@@ -127,6 +127,33 @@ function renderTracks(items) {
       toast("Дослушивание отмечено вручную");
       await refreshTracks();
     }, "secondary-action"));
+    actions.append(action("🎸 Радио", async () => {
+      show("catalog-status", "Подбираю музыку по этому треку…");
+      const result=await api("/api/tracks/" + t.id + "/radio");
+      show("catalog-status", "По «" + t.title + "»: " +
+        result.results.length + " новых записей, пока без аудиофайлов");
+      renderExternalCatalog(result.results);
+      byId("catalog-heading").scrollIntoView({behavior:"smooth"});
+    }, "secondary-action"));
+    actions.append(action(t.recording ? "🔗 Связано" : "🔍 Найти запись", async () => {
+      if (t.recording) {
+        if (t.recording.provenance !== "confirmed") {
+          toast("Запись привязана при импорте и не меняется вручную");
+          return;
+        }
+        if (!window.confirm("Убрать подтверждённую связь MusicBrainz с этим треком?")) return;
+        await api("/api/tracks/" + t.id + "/recording", {method:"DELETE"});
+        toast("Связь удалена");
+        await refreshTracks();
+        return;
+      }
+      show("catalog-status", "Ищу возможные записи для «" + t.title + "»…");
+      const found=await api("/api/tracks/" + t.id + "/match-suggestions");
+      renderExternalCatalog(found.results, false, t.id);
+      show("catalog-status", "Выбери точное совпадение для трека #" + t.id +
+        ". Названия могут совпадать у разных версий.");
+      byId("catalog-heading").scrollIntoView({behavior:"smooth"});
+    }, "secondary-action"));
     actions.append(action("＋ Плейлист", async () => {
       const list = (await api("/api/playlists")).filter(p => p.kind === "custom");
       if (!list.length) { toast("Сначала создай плейлист"); return; }
@@ -150,7 +177,7 @@ function renderTracks(items) {
 }
 
 
-function renderExternalCatalog(rows, fromWishlist=false) {
+function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
   const host = byId("catalog-results");
   host.replaceChildren();
   if (!rows.length) {
@@ -166,9 +193,30 @@ function renderExternalCatalog(rows, fromWishlist=false) {
     header.append(info);
     const controls = element("div", "track-actions");
     if (item.local_track_id) {
-      controls.append(element("span", "catalog-available", "✓ Уже в библиотеке"));
+      controls.append(element("span", "catalog-available", "✓ Связано с треком #" + item.local_track_id));
+    } else if (item.possible_match_track_id) {
+      controls.append(element("span", "catalog-unavailable",
+        "Возможно совпадение с #" + item.possible_match_track_id + " — ещё не подтверждено"));
     } else {
       controls.append(element("span", "catalog-unavailable", "Пока без аудио"));
+    }
+    const toMatch = matchingTrackId ?? item.possible_match_track_id;
+    if (toMatch && item.local_track_id == null) {
+      controls.append(action("🔗 Это та запись", async () => {
+        const ok = window.confirm(
+          "Подтвердить, что файл #" + toMatch + " — именно «" +
+          item.artist + " — " + item.title + "»?\n" +
+          "Разные версии и live-записи следует связывать только при уверенности."
+        );
+        if (!ok) return;
+        await post("/api/tracks/" + toMatch + "/recording", {mbid:item.mbid});
+        toast("Совпадение подтверждено");
+        await refreshTracks();
+        item.local_track_id = toMatch;
+        item.match_confirmed = true;
+        item.possible_match_track_id = null;
+        renderExternalCatalog(rows, fromWishlist, matchingTrackId);
+      }, "secondary-action"));
     }
     if (!item.local_track_id && directImportEnabled) {
       controls.append(action("📥 В Telegram", async () => {
