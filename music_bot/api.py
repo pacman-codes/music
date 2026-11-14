@@ -198,8 +198,18 @@ def create_app(config: Settings | None = None,
 
     @app.get("/api/discovery/wishlist", dependencies=[auth])
     async def wishlist():
+        linked = db.linked_candidate_tracks()
+        saved = {normalized_identity(t.title, t.artist): t.id
+                 for t in db.all_tracks(1000)}
         return {"results": [
-            {**track, "playable": False}
+            {
+                **track,
+                "playable": False,
+                "in_wishlist": True,
+                "local_track_id": linked.get(track["mbid"]) or saved.get(
+                    normalized_identity(track["title"], track["artist"])
+                ),
+            }
             for track in db.wishlist(100)
         ]}
 
