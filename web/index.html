@@ -61,6 +61,17 @@
       <div class="catalog-caption" id="youtube-status" role="status" aria-live="polite"></div>
       <div id="youtube-results" class="list"></div>
     </section>
+    <section id="anime-section">
+      <div class="heading"><h2>🎞 Аниме</h2><button type="button" id="anime-watchlist">Мой список</button></div>
+      <p class="catalog-hint">Поиск AniList и прогресс просмотра. Пока это каталог — не видеоплеер.</p>
+      <form id="anime-form" class="catalog-form">
+        <input id="anime-query" type="search" minlength="2" maxlength="100"
+               placeholder="Название аниме" required autocomplete="off">
+        <button type="submit">Найти</button>
+      </form>
+      <div class="catalog-caption" id="anime-status" role="status" aria-live="polite"></div>
+      <div id="anime-results" class="list"></div>
+    </section>
     <section>
       <div class="heading"><h2>Плейлисты</h2><button type="button" id="create">＋ Новый</button></div>
       <div id="playlists" class="list"></div>
