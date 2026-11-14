@@ -153,3 +153,78 @@ def test_direct_mp3_import_shared_lease_and_retry(tmp_path):
             assert first.resolved_catalog_tracks()[MBID] == first_result["track_id"]
 
     asyncio.run(scenario())
+
+
+def test_global_import_capacity_rejects_two_different_videos(tmp_path, monkeypatch):
+    """A small VPS never transcodes two unrelated audio files at once."""
+    second_id = "M7lc1UVf-VE"
+    filename = tmp_path / "music.sqlite"
+    db_bot = Library(filename)
+    db_web = Library(filename)
+    db_bot.remember_youtube_videos([
+        VideoCandidate(VIDEO, "Roads", "Portishead", 300),
+        VideoCandidate(second_id, "Glory Box", "Portishead", 320),
+    ])
+    started, finish = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    @asynccontextmanager
+    async def fake_download(video_id):
+        path = tmp_path / (video_id + ".mp3")
+        path.write_bytes(b"ID3" + b"\x00" * 100)
+        try:
+            yield path
+        finally:
+            path.unlink(missing_ok=True)
+
+    async def publish(path, title, artist):
+        calls.append((title, artist))
+        if len(calls) == 1:
+            started.set()
+            await finish.wait()
+        return f"file-{len(calls)}", f"unique-{len(calls)}"
+
+    monkeypatch.setattr(youtube_module, "temporary_youtube_mp3", fake_download)
+
+    async def scenario():
+        first = YouTubeIngestService(db_bot, publish)
+        second = YouTubeIngestService(db_web, publish)
+        task = asyncio.create_task(first.import_video(VIDEO))
+        await started.wait()
+        with pytest.raises(YouTubeError, match="другой файл"):
+            await second.import_video(second_id)
+        assert len(calls) == 1
+        finish.set()
+        await task
+        result = await second.import_video(second_id)
+        assert result["reused"] is False
+        assert len(calls) == 2
+    asyncio.run(scenario())
+    with db_bot.con() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM media_import_leases"
+        ).fetchone()[0] == 0
+
+
+def test_direct_mp3_upload_obeys_global_capacity_held_by_youtube(tmp_path):
+    filename = tmp_path / "music.sqlite"
+    db = Library(filename)
+    db.remember_candidates([CatalogTrack(MBID, "Roads", "Portishead")])
+    lease = db.acquire_media_import("global", "media")
+    assert lease is not None
+
+    async def forbidden_publish(*args):
+        raise AssertionError("must not publish")
+
+    async def scenario():
+        service = AudioIngestService(
+            Library(filename), ("audio.example.org",), forbidden_publish,
+        )
+        with pytest.raises(MediaImportError, match="другой файл"):
+            await service.import_recording(MBID, URL)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        assert db.release_media_import("global", "media", lease)
+    assert not db.resolved_catalog_tracks()
