@@ -4,6 +4,7 @@ const initData = tg?.initData || "";
 const byId = (id) => document.getElementById(id);
 const show = (id, text) => { byId(id).textContent = text; };
 let toastTimer;
+let directImportEnabled = false;
 function toast(message) {
   const node = byId("toast");
   node.textContent = message;
@@ -169,6 +170,27 @@ function renderExternalCatalog(rows, fromWishlist=false) {
     } else {
       controls.append(element("span", "catalog-unavailable", "Пока без аудио"));
     }
+    if (!item.local_track_id && directImportEnabled) {
+      controls.append(action("📥 В Telegram", async () => {
+        const url = window.prompt(
+          "Прямая HTTPS-ссылка на MP3/M4A из разрешённого источника. " +
+          "Это не YouTube-поиск и не торрент:"
+        );
+        if (!url) return;
+        const result = await post(
+          "/api/discovery/import/" + encodeURIComponent(item.mbid),
+          {url}
+        );
+        if (result.reused) {
+          toast("Песня уже сохранена в Telegram");
+        } else {
+          toast("Аудио загружено в Telegram 🎵");
+        }
+        // Refresh metadata badges; never create fake audio in Mini App.
+        if (fromWishlist) await showExternalWishlist();
+        else await externalSearch(byId("catalog-query").value.trim() || item.title);
+      }, "secondary-action"));
+    }
     controls.append(action(
       item.in_wishlist || fromWishlist ? "📌 Убрать" : "📌 Отложить",
       async () => {
@@ -234,7 +256,13 @@ async function refreshTracks() {
   const q=byId("query").value.trim();
   renderTracks(await api("/api/tracks"+(q?"?q="+encodeURIComponent(q):"")));
 }
-async function refresh() { await Promise.all([refreshPlaylists(),refreshTracks()]); }
+async function refreshImportSettings() {
+  const config = await api("/api/discovery/import-config");
+  directImportEnabled = config.enabled === true;
+}
+async function refresh() {
+  await Promise.all([refreshPlaylists(),refreshTracks(),refreshImportSettings()]);
+}
 if (tg && initData) {
   tg.ready();
   tg.expand();
