@@ -137,6 +137,7 @@ async def personalized_discovery(
         return [], []
 
     known_ids = db.confirmed_recording_ids()
+    decided_mbids = set(db.catalog_verdicts())
     own_tracks = db.all_tracks(10000)
     own_names = {normalized_identity(t.title, t.artist) for t in own_tracks}
     likes, dislikes = db.liked_ids(), db.disliked_ids()
@@ -164,7 +165,8 @@ async def personalized_discovery(
         used_seeds.append(seed.name)
         clean = [
             song for song in found
-            if song.mbid not in known_ids and not song.variant
+            if song.mbid not in known_ids and song.mbid not in decided_mbids
+            and not song.variant
             and normalized_identity(song.title, song.artist) not in own_names
             and normalized_identity(song.title, song.artist) not in suppressed_names
             and normalize(song.artist) not in excluded_artists
