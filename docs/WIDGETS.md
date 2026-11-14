@@ -42,4 +42,12 @@ must remain functional fallbacks.
 10. Disable integration on any renewed widget runtime security advisory.
 
 The aiogram v3 PR for Bot API 10.4 support was pending during implementation.
-Do not send widgets that request callbacks until update delivery is tested.
+The code in `music_bot/widget_bridge.py` and `Library.execute_widget_command` now provides a
+transport-independent, **dormant** validator and server-side per-message track binding.
+It rejects foreign users/chats, inline/shared queries, malformed commands, and duplicate query IDs;
+tests exercise it without Telegram. It is **NOT** wired into polling and sends no widgets.
+
+Before enabling: implement 10.4-compatible polling/update delivery, call `sendWidget`,
+persist the returned message_id with `db.bind_widget`, dispatch `widget_query`,
+and answer with `answerWidgetQuery` within 15 seconds. No sending until
+the general-bot rollout restriction is officially lifted.

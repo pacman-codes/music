@@ -21,7 +21,7 @@ For each song, take at most the last 20 reported events in the preceding 30 days
 - Favorites and artists similar to favorites get positive weights, diverse artists are preferred.
 - Recently *sent* tracks are downweighted to reduce repeats, with no claim that they were listened to.
 
-The Wave uses weighted sampling without replacement. Data updates affect **new** queues; snapshots already sent are not retroactively changed. Thresholds are starting heuristics and must be tuned with real explicit feedback.
+The Wave uses weighted sampling without replacement **inside each batch**. The next 10 are selected only when the owner requests "Ещё 10", using updated ratings and manually reported behavior. Recently sent songs are penalized; the last three are avoided when enough alternatives exist. Repeats across batches are intentional: reliable favorites may return later. Previously sent songs are never removed from Telegram by a new rating. Explicit playlists keep their fixed snapshot order. Thresholds are starting heuristics to tune with actual explicit feedback.
 
 ## Controls
 

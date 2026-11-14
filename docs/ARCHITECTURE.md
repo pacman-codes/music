@@ -6,7 +6,9 @@
 - music_bot.api: FastAPI, HTML/CSS/JS Mini App, SQLite и отправка порций в Telegram.
 - music_bot.webapp_auth: HMAC-SHA-256 подпись Telegram initData, ограничение времени жизни 1 час и OWNER_TELEGRAM_ID.
 - music_bot.storage: единая база SQLite (file_id, треки, лайки, плейлисты, сохранённые очереди, история выданных треков).
-- music_bot.recommend: локальная взвешенная «Волна» (любимое, близкие исполнители, снижение веса недавно отправленных треков).
+- music_bot.recommend: локальное взвешенное ранжирование по оценкам, ручным событиям, избранному.
+- music_bot.selection: пересчёт следующей порции радио по запросу «Ещё 10» с учётом актуальных оценок и недавних отправок.
+- music_bot.widget_bridge: подготовка валидатора будущих widget_query (неактивен, Telegram пока блокирует обычные production-боты).
 - web/: адаптивный интерфейс. Не загружает аудио напрямую и не использует собственный player.
 
 ## Как связаны плеер и интерфейс
@@ -14,9 +16,9 @@
 1. Владелец открывает HTTPS Mini App через кнопку бота.
 2. Клиент передаёт Telegram.WebApp.initData в заголовке X-Telegram-Init-Data.
 3. Backend проверяет криптографическую подпись, auth_date, ID владельца.
-4. API выбирает плейлист/Волну, сохраняет snapshot очереди.
+4. API выбирает плейлист или первые 10 песен «Волны». Плейлист хранит snapshot, радио — только текущую порцию.
 5. Backend отправляет первую порцию по 1–10 Telegram file_id в личный чат ботом.
-6. Следующие порции запускаются кнопкой «Ещё 10» в Telegram.
+6. Следующие порции запускаются кнопкой «Ещё 10» в Telegram: радио пересчитывается по свежим оценкам, а пользовательский плейлист идёт в прежнем порядке.
 7. Нативный плеер Telegram воспроизводит присланные аудиофайлы; Mini App не перехватывает Play/Next и не считывает фактические прослушивания.
 
 ## Структура данных
@@ -28,8 +30,12 @@ dislikes: track_id.
 queues: id, label, source_kind, cursor, created_at.
 queue_items: queue_id, position, track_id.
 sent_history: id, queue_id, track_id, sent_at.
+track_ratings: track_id, score (1..10).
+playback_events: track_id, event (manual skip/complete), source, dedupe_key, created_at.
+widget_bindings: chat_id + message_id → track_id (только подготовка).
+widget_receipts: query_id → результат (идемпотентность при будущем включении).
 
-SQLite CREATE IF NOT EXISTS расширяет v0.1 без сброса медиа и плейлистов. Длинные очереди считаются snapshot: перестановка плейлиста не ломает уже выданную очередь.
+SQLite CREATE IF NOT EXISTS расширяет v0.1 без сброса медиа и плейлистов. Пользовательские плейлисты используют snapshots; у радио следующие порции добавляются к очереди при запросе. У всех очередей SQLite хранит уже выданные позиции, предотвращая случайное повторение того же блока.
 
 ## Приватность и инфраструктура
 
