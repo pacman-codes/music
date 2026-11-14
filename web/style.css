@@ -19,3 +19,5 @@
 .catalog-available,.catalog-unavailable{font-size:12px;opacity:.8}
 .catalog-link{display:inline-flex;align-items:center;padding:7px 10px;border-radius:9px;color:var(--tg-theme-link-color,#a6bfff);text-decoration:none;border:1px solid var(--tg-theme-hint-color,#666);font-size:12px}
 @media(max-width:390px){.catalog-radio select{max-width:100%}.catalog-radio input{width:100%;flex-basis:100%}}
+
+.catalog-section .heading .actions{margin-top:0}

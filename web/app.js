@@ -282,6 +282,14 @@ async function externalSearch(query) {
   renderExternalCatalog(value.results);
 }
 
+async function personalDiscover() {
+  show("catalog-status", "Подбираю новые песни по твоим оценкам…");
+  const value = await api("/api/discovery/for-you");
+  show("catalog-status", "✨ На основе: " + value.seed_artists.join(", ") +
+       ". " + value.results.length + " новых записей — пока без аудио.");
+  renderExternalCatalog(value.results);
+}
+
 async function externalRadio() {
   const seed = byId("artist-seed").value.trim();
   const difficulty = byId("radio-difficulty").value;
@@ -327,6 +335,10 @@ if (tg && initData) {
   byId("artist-radio").addEventListener("click", async () => {
     try { await externalRadio(); }
     catch(error) { show("catalog-status", "Радио недоступно"); toast(error.message); }
+  });
+  byId("personal-discover").addEventListener("click", async () => {
+    try { await personalDiscover(); }
+    catch(error) { show("catalog-status","Не удалось собрать персональные открытия"); toast(error.message); }
   });
   byId("show-wishlist").addEventListener("click", () =>
     showExternalWishlist().catch(error => toast(error.message)));
