@@ -218,6 +218,17 @@ class Library:
             if "added_at" not in columns:
                 db.execute("ALTER TABLE tracks ADD COLUMN added_at TEXT")
             db.execute("INSERT OR IGNORE INTO playlists(name,kind) VALUES('Мне нравится','liked')")
+            # Existing explicit likes and dislikes are already decisions; carry
+            # them forward without fabricating ratings or playback events.
+            db.execute(
+                """INSERT OR IGNORE INTO track_verdicts(track_id,status)
+                   SELECT track_id,'add' FROM playlist_tracks
+                   WHERE playlist_id=(SELECT id FROM playlists WHERE kind='liked')"""
+            )
+            db.execute(
+                """INSERT OR IGNORE INTO track_verdicts(track_id,status)
+                   SELECT track_id,'never' FROM dislikes"""
+            )
             # Existing imported audio rows predate recording-identity links.
             db.execute(
                 """INSERT OR IGNORE INTO track_recording_links(track_id,mbid,provenance)
