@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from music_bot.anime import AniListCatalog, AniListError
 from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normalize, normalized_identity, valid_mbid
 from music_bot.config import Settings, load_settings
 from music_bot.importer import AudioIngestService, MediaImportError
@@ -34,6 +35,12 @@ class DirectImportRequest(BaseModel):
 
 class RecordingMatchRequest(BaseModel):
     mbid: str = Field(min_length=36, max_length=36)
+
+
+class AnimeWatchRequest(BaseModel):
+    watch_status: Literal["planned", "watching", "completed", "on_hold", "dropped"]
+    progress: int = Field(default=0, ge=0, le=10000, strict=True)
+    score: int | None = Field(default=None, ge=1, le=10, strict=True)
 
 
 class PlaylistCreate(BaseModel):
@@ -61,10 +68,12 @@ def create_app(config: Settings | None = None,
                catalog: MusicCatalog | None = None,
                importer: AudioIngestService | None = None,
                youtube_source: YouTubeSource | None = None,
-               youtube_ingest: YouTubeIngestService | None = None) -> FastAPI:
+               youtube_ingest: YouTubeIngestService | None = None,
+               anime_catalog: AniListCatalog | None = None) -> FastAPI:
     settings = config or load_settings()
     db = Library(settings.db_path)
     catalog_client = catalog or MusicCatalog(settings.db_path)
+    anime_client = anime_catalog or AniListCatalog(settings.db_path)
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         try:
@@ -72,6 +81,8 @@ def create_app(config: Settings | None = None,
         finally:
             if catalog is None:
                 await catalog_client.close()
+            if anime_catalog is None:
+                await anime_client.close()
 
     app = FastAPI(
         title="music private Mini App",
@@ -382,6 +393,41 @@ def create_app(config: Settings | None = None,
             "suggestions": [s.public() for s in matches],
             "auto_imported": False,
         }
+
+    @app.get("/api/anime/search", dependencies=[auth])
+    async def anime_search(
+        q: str = Query(min_length=2, max_length=100),
+        limit: int = Query(default=12, ge=1, le=20),
+    ):
+        try:
+            matches = await anime_client.search(q, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(422, detail="Некорректный запрос") from exc
+        except AniListError as exc:
+            raise HTTPException(502, detail=str(exc)) from exc
+        db.remember_anime(matches)
+        return {"type": "metadata_only",
+                "results": [entry.public() for entry in matches]}
+
+    @app.get("/api/anime/watchlist", dependencies=[auth])
+    async def anime_watchlist():
+        return {"results": [
+            {**record, "playable": False} for record in db.anime_list()
+        ]}
+
+    @app.post("/api/anime/watchlist/{anime_id}", dependencies=[auth])
+    async def anime_watch_update(anime_id: int, payload: AnimeWatchRequest):
+        try:
+            return db.update_anime_watch(
+                anime_id, watch_status=payload.watch_status,
+                progress=payload.progress, score=payload.score,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
+
+    @app.delete("/api/anime/watchlist/{anime_id}", dependencies=[auth])
+    async def anime_watch_remove(anime_id: int):
+        return {"removed": db.remove_anime_watch(anime_id)}
 
     @app.get("/api/youtube/status", dependencies=[auth])
     async def youtube_status():
