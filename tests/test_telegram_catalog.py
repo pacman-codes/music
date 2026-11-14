@@ -40,7 +40,7 @@ def test_catalog_handler_registration_with_private_parent_middleware(tmp_path):
         pass
 
     install_catalog_handlers(router, db, FakeCatalog())
-    assert len(router.message.handlers) - before_msg == 7
+    assert len(router.message.handlers) - before_msg == 8
     assert len(router.callback_query.handlers) - before_cb == 3
 
 
