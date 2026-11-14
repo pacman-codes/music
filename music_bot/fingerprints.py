@@ -191,3 +191,50 @@ class AudioRecognition:
         else:
             suggestions = parse_acoustid(cached)
         return RecognitionResult(digest, duration, tuple(suggestions))
+
+
+
+async def recognize_telegram_track(db, bot, recognizer: AudioRecognition,
+                                   track_id: int) -> dict:
+    """Read at most 19 MiB from this bot's own Telegram file, then delete it.
+
+    Does not assume ownership of arbitrary URLs and never assigns MusicBrainz
+    identity automatically. Existing fingerprint matches are only duplicate
+    *suggestions*; different encodings may have different hashes.
+    """
+    from tempfile import TemporaryDirectory
+
+    track = db.get_track(track_id)
+    if track is None:
+        raise RecognitionError("Трек отсутствует в библиотеке")
+    try:
+        info = await bot.get_file(track.file_id)
+        if (type(info.file_size) is not int or
+                not 1 <= info.file_size <= MAX_AUDIO or
+                not isinstance(info.file_path, str) or not info.file_path):
+            raise RecognitionError(
+                "Telegram не позволяет получить этот файл (лимит 19 МиБ)"
+            )
+        with TemporaryDirectory(prefix="music-fingerprint-") as name:
+            path = Path(name) / "audio"
+            await bot.download_file(info.file_path, destination=path, timeout=90)
+            if not path.is_file() or not 1 <= path.stat().st_size <= MAX_AUDIO:
+                raise RecognitionError("Скачанный файл не прошёл проверку размера")
+            outcome = await recognizer.identify(path)
+    except RecognitionError:
+        raise
+    except Exception as exc:
+        # Never expose a Telegram file path, token, or raw Bot API error.
+        raise RecognitionError("Не удалось получить аудио для распознавания") from exc
+    duplicate_ids = db.save_audio_fingerprint(
+        track_id, outcome.fingerprint_hash, outcome.duration_sec,
+    )
+    if outcome.candidates:
+        db.remember_candidates([candidate.recording for candidate in outcome.candidates])
+    return {
+        "track_id": track_id,
+        "duration_sec": outcome.duration_sec,
+        "duplicates": duplicate_ids,
+        "results": [candidate.public() for candidate in outcome.candidates],
+        "auto_matched": False,
+    }
