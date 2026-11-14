@@ -36,8 +36,7 @@ This is separate from the local playable /wave.
 - 1–10 score is a positive seed only above 4; liked and high-rated songs
   contribute to artist preferences. A manual skip streak removes an artist
   seed derived solely from a frequently skipped song, without unliking it.
-- At most three favorite artists are selected; similar recording metadata
-  comes from ListenBrainz and is resolved by MusicBrainz.
+- At most three favorite artists are selected; if there are no positive favorites or ratings yet, the saved library supplies a weak automatic artist-frequency cold start (not inferred listening). Similar recording metadata comes from ListenBrainz and is resolved by MusicBrainz.
 - Cross-seed candidate lists are merged by reciprocal-rank fusion, not a naive round-robin. A song repeatedly suggested by independently favored artists rises in rank. Soft artist diversity, deduplication and owned-title filtering reduce monotony. Only repeated explicit negative ratings/dislikes without positive signals can suppress an artist. Partial provider failures degrade gracefully.
 - Only a confirmed MusicBrainz MBID is used as a definite identity. A textual
   match is a suggestion, not proof.
