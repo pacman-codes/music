@@ -98,3 +98,13 @@ SQLite CREATE IF NOT EXISTS расширяет v0.1 без сброса меди
 ## Восстановление очередей после сетевых сбоев
 
 `Library.latest_queue_id()` позволяет восстановить последнюю прослушиваемую очередь после перезапуска polling-бота или отказа Telegram прислать карточку. Команда `/continue` и кнопка `nav:continue` запускают выдачу начиная с **зафиксированного cursor**. После подтверждённого Telegram media API ответа курсор и история коммитятся до отправки отдельной панели оценки, которая может не дойти. Для одной очереди атомарно резервируется `media_import_leases(source_type='queue', source_key=queue_id)` с TTL 180 с; после завершения lease удаляется только владельцем токена. Это сериализует выдачу между polling-ботом и Mini App, но не обеспечивает «точно один раз» при сетевой неопределённости ответа Telegram.
+
+## Новые модули music v0.6
+
+- `music_bot.wave_v2`: quota mixer только реальных аудиофайлов в категориях familiar/similar/new. `library_preferences` хранит текущий preset.
+- `music_bot.storage.edit_queue`, `queue_filters`: редактирование будущих позиций под SQLite `BEGIN IMMEDIATE`, запрет редактирования при активной queue lease. Подтверждённые отправки не меняются.
+- `music_bot.fingerprints`: опциональный `fpcalc` и AcoustID. Получает временные байты через Bot API, хранит только SHA256 отпечатка, показывает возможные дубли и кандидатов без автоматического MBID. `audio_fingerprints` ссылается на `tracks`. `apply_confirmed_recording_tags` меняет только текст SQLite после явного выбора, не файл.
+- `music_bot.weekly`: отдельный список fresh releases (release-group MBID, **не recording MBID**) и персональные рекомендации ListenBrainz (recording MBID). Два разных типа метаданных не смешиваются в одной таблице.
+- `music_bot.weekly_notify`: запуск `--send` из доверенного планировщика, SQLite `weekly_digest_receipts` и lease `weekly` — одна подтверждённая отправка в ISO-неделю. Не включается автоматически.
+- `music_bot.wrapped`: read-only агрегаты SQLite из `sent_history`, `track_ratings`, `playlist_tracks`, `playback_events`. Никогда не считает отправки действительным playback.
+- `web/queue.js`, `web/wrapped.js`: управления очередью и статистика исключительно через API с проверенным Telegram initData.
