@@ -358,14 +358,25 @@ function renderYouTubeResults(videos) {
         "✓ Уже сохранено как Telegram-аудио #" + video.track_id));
     } else if (youtubeDownloadEnabled) {
       buttons.append(action("🎧 В Telegram", async () => {
-        if (!window.confirm(
-          "Подтверждаешь, что у тебя есть право скачать этот материал " +
-          "и сохранить его в Telegram?")) return;
+        const linkedRecording = video.recording_mbid || null;
+        const prompt = linkedRecording
+          ? "Подтверди две вещи:\n1. Это именно нужная запись MusicBrainz: " +
+            linkedRecording + " (проверь live/remix и длительность).\n" +
+            "2. У тебя есть право скачать её и отправить в Telegram.\n" +
+            "Совпадение по названию само по себе не является подтверждением."
+          : "Подтверждаешь, что у тебя есть право скачать этот материал " +
+            "и сохранить его в Telegram?";
+        if (!window.confirm(prompt)) return;
         const result=await post("/api/youtube/import/" +
-          encodeURIComponent(video.video_id));
+          encodeURIComponent(video.video_id),
+          linkedRecording ? {recording_mbid:linkedRecording} : {});
         toast(result.reused ?
           "Аудио отправлено повторно" : "MP3 отправлен в Telegram");
         video.track_id=result.track_id;
+        if (linkedRecording) {
+          toast("Сохранено с подтверждённым MusicBrainz ID ✅");
+          await refreshTracks();
+        }
         renderYouTubeResults(videos);
       }, "secondary-action"));
     } else {
