@@ -162,7 +162,7 @@ class CatalogCache:
         Reserve a slot under BEGIN IMMEDIATE before contacting MusicBrainz.
         Returns seconds to sleep; skipping a reserved slot is harmless.
         """
-        if provider != "mb" or not 1.0 <= interval <= 5.0:
+        if provider not in {"mb", "anilist"} or not 1.0 <= interval <= 5.0:
             raise ValueError("Unsupported rate-limit provider")
         timestamp = time.time() if now is None else now
         with closing(self._db()) as db:
