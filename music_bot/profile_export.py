@@ -85,10 +85,12 @@ def export_profile(
         feedback: dict[int, dict[str, int]] = defaultdict(
             lambda: {"manual_skips_30d": 0, "manual_finishes_30d": 0}
         )
+        manual_cutoff = (current - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
         for row in sql.execute(
             """SELECT track_id,event,COUNT(*) AS amount FROM playback_events
-               WHERE source='manual' AND created_at>=datetime('now','-30 days')
-               GROUP BY track_id,event"""
+               WHERE source='manual' AND created_at>=?
+               GROUP BY track_id,event""",
+            (manual_cutoff,),
         ):
             key = "manual_skips_30d" if row["event"] == "skip" else "manual_finishes_30d"
             feedback[int(row["track_id"])][key] += int(row["amount"])
@@ -170,6 +172,24 @@ def compare_profiles(previous: dict[str, Any], current: dict[str, Any]) -> dict:
         tid for tid in sorted(old.keys() & new.keys())
         if not old[tid].get("liked") and new[tid].get("liked")
     ]
+    old_lists = {
+        int(pl["id"]): set(pl["track_ids_in_order"])
+        for pl in previous.get("playlists", [])
+    }
+    playlist_additions = [
+        {
+            "playlist_id": int(pl["id"]),
+            "playlist_name": pl["name"],
+            "added_track_ids": [
+                int(tid) for tid in pl["track_ids_in_order"]
+                if tid not in old_lists.get(int(pl["id"]), set())
+            ],
+        }
+        for pl in current.get("playlists", [])
+    ]
+    playlist_additions = [
+        item for item in playlist_additions if item["added_track_ids"]
+    ]
     return {
         "from": previous.get("generated_at_utc"),
         "to": current.get("generated_at_utc"),
@@ -177,6 +197,7 @@ def compare_profiles(previous: dict[str, Any], current: dict[str, Any]) -> dict:
         "removed_track_ids": deleted_ids,
         "rating_changes": rating_changes,
         "newly_liked_track_ids": newly_liked,
+        "playlist_additions": playlist_additions,
         "warning": "Compare only snapshots of the same music bot database",
     }
 
