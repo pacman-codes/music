@@ -1,5 +1,6 @@
 """Dry-run maintenance never deletes owner music or watchlists."""
 from music_bot.anime import AnimeTitle
+from music_bot.catalog import CatalogCache
 from music_bot.maintenance import prune_temporary_data
 from music_bot.screen import ScreenTitle
 from music_bot.storage import Library
@@ -7,6 +8,7 @@ from music_bot.storage import Library
 
 def test_pruning_only_transient_records_and_dry_run(tmp_path):
     db=Library(tmp_path/"music.db")
+    CatalogCache(db.path)
     t=db.add_track("file","unique","Song","Artist")
     db.like(t.id)
     db.set_rating(t.id,9)
@@ -52,3 +54,10 @@ def test_pruning_only_transient_records_and_dry_run(tmp_path):
     assert db.playlists()
     assert db.anime_list()[0]["progress"]==8
     assert db.screen_watchlist()[0]["score"]==9
+
+
+def test_prune_fresh_db_without_optional_cache(tmp_path):
+    db=Library(tmp_path/"music.db")
+    result=prune_temporary_data(db.path,dry_run=True)
+    assert result["expired_catalog_cache"]==0
+    assert prune_temporary_data(db.path,dry_run=False)["expired_catalog_cache"]==0
