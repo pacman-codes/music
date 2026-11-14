@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from aiogram import Bot
+from aiogram.types import FSInputFile
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,10 +15,15 @@ from pydantic import BaseModel, Field
 
 from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normalize, normalized_identity, valid_mbid
 from music_bot.config import Settings, load_settings
+from music_bot.importer import AudioIngestService, MediaImportError
 from music_bot.main import deliver_queue
 from music_bot.selection import select_wave_batch
 from music_bot.storage import Library
 from music_bot.webapp_auth import InvalidInitData, verify_init_data
+
+
+class DirectImportRequest(BaseModel):
+    url: str = Field(min_length=12, max_length=2048)
 
 
 class PlaylistCreate(BaseModel):
@@ -42,7 +48,8 @@ class QueueRequest(BaseModel):
 
 
 def create_app(config: Settings | None = None,
-               catalog: MusicCatalog | None = None) -> FastAPI:
+               catalog: MusicCatalog | None = None,
+               importer: AudioIngestService | None = None) -> FastAPI:
     settings = config or load_settings()
     db = Library(settings.db_path)
     catalog_client = catalog or MusicCatalog(settings.db_path)
@@ -53,6 +60,22 @@ def create_app(config: Settings | None = None,
     static = Path(__file__).resolve().parent.parent / "web"
     app.mount("/assets", StaticFiles(directory=static), name="assets")
     send_lock = asyncio.Lock()
+    import_lock = asyncio.Lock()
+
+    async def publish_audio(path: Path, title: str, artist: str) -> tuple[str, str]:
+        # A *real* Telegram audio message ensures native playback.
+        async with Bot(token=settings.token) as bot:
+            message = await bot.send_audio(
+                chat_id=settings.owner_id, audio=FSInputFile(path),
+                title=title[:64], performer=artist[:64],
+            )
+        if message.audio is None:
+            raise MediaImportError("Telegram не подтвердил аудиофайл")
+        return message.audio.file_id, message.audio.file_unique_id
+
+    ingest = importer or AudioIngestService(
+        db, settings.allowed_media_hosts, publish_audio,
+    )
 
     @app.on_event("shutdown")
     async def close_catalog():
@@ -105,11 +128,14 @@ def create_app(config: Settings | None = None,
         wanted = db.wishlist_ids()
         saved = {normalized_identity(t.title, t.artist): t.id
                  for t in db.all_tracks(1000)}
+        linked = db.linked_candidate_tracks()
         output = []
         for t in recordings:
             body = t.public()
             body["in_wishlist"] = t.mbid in wanted
-            body["local_track_id"] = saved.get(normalized_identity(t.title, t.artist))
+            body["local_track_id"] = linked.get(t.mbid) or saved.get(
+                normalized_identity(t.title, t.artist)
+            )
             output.append(body)
         return output
 
@@ -194,6 +220,29 @@ def create_app(config: Settings | None = None,
         if not valid_mbid(mbid):
             raise HTTPException(422, detail="Некорректный MBID")
         return {"removed": db.wishlist_remove(mbid.lower())}
+
+    @app.get("/api/discovery/import-config", dependencies=[auth])
+    async def import_config():
+        return {
+            "enabled": bool(settings.allowed_media_hosts),
+            "formats": ["mp3", "m4a"],
+            "max_bytes": 45 * 1024 * 1024,
+            "note": "Only operator-allowlisted HTTPS sources; no YouTube resolver",
+        }
+
+    @app.post("/api/discovery/import/{mbid}", dependencies=[auth])
+    async def import_audio(mbid: str, payload: DirectImportRequest):
+        if not valid_mbid(mbid):
+            raise HTTPException(422, detail="Некорректный MusicBrainz ID")
+        if not settings.allowed_media_hosts and importer is None:
+            raise HTTPException(
+                409, detail="Импорт ещё не настроен на сервере",
+            )
+        async with import_lock:
+            try:
+                return await ingest.import_recording(mbid.lower(), payload.url)
+            except MediaImportError as exc:
+                raise HTTPException(422, detail=str(exc)) from exc
 
     @app.get("/api/playlists", dependencies=[auth])
     async def playlists():
