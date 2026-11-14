@@ -1,6 +1,9 @@
 services:
   music:
-    build: .
+    build:
+      context: .
+      args:
+        MUSIC_WITH_YOUTUBE: ${MUSIC_WITH_YOUTUBE:-false}
     restart: unless-stopped
     env_file: .env
     volumes:
@@ -10,7 +13,10 @@ services:
     cap_drop:
       - ALL
   web:
-    build: .
+    build:
+      context: .
+      args:
+        MUSIC_WITH_YOUTUBE: ${MUSIC_WITH_YOUTUBE:-false}
     command: ["uvicorn", "music_bot.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8085"]
     restart: unless-stopped
     env_file: .env
