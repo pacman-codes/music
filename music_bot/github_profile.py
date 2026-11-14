@@ -67,7 +67,8 @@ async def sync_private_profile(
         except ValueError:
             raise ProfileSyncError("GitHub вернул некорректные сведения о репозитории.") from None
         name = info.get("full_name") if isinstance(info, dict) else None
-        if info.get("private") is not True or not isinstance(name, str) or name.casefold() != repo.casefold():
+        if (not isinstance(info, dict) or info.get("private") is not True
+                or not isinstance(name, str) or name.casefold() != repo.casefold()):
             raise ProfileSyncError("GitHub не подтвердил приватность указанного репозитория.")
         if info.get("archived"):
             raise ProfileSyncError("Репозиторий архивирован и недоступен для записи.")
