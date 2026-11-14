@@ -24,7 +24,10 @@ HELP = """🎵 music — личный плеер
 /library — последние треки
 /search Текст — поиск в своей библиотеке
 /liked — избранное
-/like ID /unlike ID /dislike ID — оценки
+/like ID /unlike ID /dislike ID — избранное и исключения
+/rate ID 1-10 — оценка трека
+/skip ID — вручную отметить пропуск
+/finished ID — вручную отметить дослушивание
 /playliked — играть понравившиеся
 /newplaylist Название — создать подборку
 /playlists — список подборок
@@ -39,7 +42,8 @@ HELP = """🎵 music — личный плеер
 /discover — открытия среди сохранённых треков
 
 Нативный Telegram-плеер играет присланные аудиофайлы.
-Бот не видит события реального прослушивания и пропусков."""
+Бот не видит события реального прослушивания и пропусков.
+Кнопки «Пропустил» / «Дослушал» — только ручные отметки."""
 
 
 class OwnerOnly(BaseMiddleware):
@@ -97,9 +101,19 @@ def home_keyboard(webapp_url: str | None = None) -> InlineKeyboardMarkup:
 
 def track_keyboard(track_id: int) -> InlineKeyboardMarkup:
     return keyboard([
-        [button("❤️ Нравится", f"like:{track_id}"),
-         button("👎 Не предлагать", f"dislike:{track_id}")],
-        [button("➕ В плейлист", f"chooseadd:{track_id}")],
+        [button("⭐ Оценить 1–10", f"rateopen:{track_id}"),
+         button("❤️ Нравится", f"like:{track_id}")],
+        [button("➕ В плейлист", f"chooseadd:{track_id}"),
+         button("🚫 Не предлагать", f"dislike:{track_id}")],
+    ])
+
+
+def rating_keyboard(track_id: int) -> InlineKeyboardMarkup:
+    return keyboard([
+        [button(str(n), f"rate:{track_id}:{n}") for n in range(1, 6)],
+        [button(str(n), f"rate:{track_id}:{n}") for n in range(6, 11)],
+        [button("⏭ Пропустил (вручную)", f"listen:skip:{track_id}")],
+        [button("✅ Дослушал (вручную)", f"listen:complete:{track_id}")],
     ])
 
 
@@ -189,6 +203,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None) -> 
         tracks = wave(
             db.all_tracks(), db.liked_ids(), db.disliked_ids(),
             recent_ids=db.recent_ids(60), count=60, mode=mode,
+            ratings=db.ratings(), playback=db.playback_stats(),
         )
         if not tracks:
             await bot.send_message(
@@ -255,6 +270,56 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None) -> 
         await message.answer(
             f"Сохранено #{track.id}: {track.artist} — {track.title}"[:3500],
             reply_markup=track_keyboard(track.id),
+        )
+
+    @router.callback_query(F.data.startswith("rateopen:"))
+    async def rating_picker(callback: CallbackQuery):
+        try:
+            track_id = int((callback.data or "").split(":")[1])
+        except (ValueError, IndexError):
+            await callback.answer("Некорректный трек", show_alert=True)
+            return
+        message = callback_message(callback)
+        if message is None:
+            await callback.answer("Не удалось открыть оценку", show_alert=True)
+            return
+        if not any(t.id == track_id for t in db.all_tracks()):
+            await callback.answer("Трек не найден", show_alert=True)
+            return
+        current = db.ratings().get(track_id)
+        await callback.answer()
+        await message.answer(
+            f"⭐ Трек #{track_id}. Твоя оценка: {str(current)+'/10' if current else 'нет'}.\n"
+            "Пропуск и дослушивание здесь отмечаются вручную; "
+            "Telegram не сообщает о них автоматически.",
+            reply_markup=rating_keyboard(track_id),
+        )
+
+    @router.callback_query(F.data.startswith("rate:"))
+    async def rate_button(callback: CallbackQuery):
+        try:
+            _, raw_track, raw_score = (callback.data or "").split(":")
+            score = int(raw_score)
+            db.set_rating(int(raw_track), score)
+        except (ValueError, IndexError):
+            await callback.answer("Оценка должна быть от 1 до 10", show_alert=True)
+            return
+        await callback.answer(f"Оценено на {score}/10 ⭐")
+
+    @router.callback_query(F.data.startswith("listen:"))
+    async def listen_button(callback: CallbackQuery):
+        try:
+            _, event, raw_track = (callback.data or "").split(":")
+            changed = db.record_playback_event(
+                int(raw_track), event, source="manual",
+                dedupe_key=f"tg:callback:{callback.id}",
+            )
+        except (ValueError, IndexError):
+            await callback.answer("Не удалось записать отметку", show_alert=True)
+            return
+        await callback.answer(
+            ("⏭ Пропуск учтён" if event == "skip" else "✅ Дослушивание учтено")
+            if changed else "Эта отметка уже учтена",
         )
 
     @router.callback_query(F.data.startswith("like:"))
@@ -388,6 +453,42 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None) -> 
             await message.answer(str(exc))
             return
         await message.answer("Готово ✅" if changed else "Уже было установлено.")
+
+    @router.message(Command("rate"))
+    async def rate_command(message: Message):
+        ids = arguments(message, 2)
+        if not ids or not 1 <= ids[1] <= 10:
+            await message.answer("Пример: /rate 12 8 — оценка от 1 до 10")
+            return
+        try:
+            db.set_rating(ids[0], ids[1])
+        except ValueError as exc:
+            await message.answer(str(exc))
+            return
+        await message.answer(
+            f"⭐ Трек #{ids[0]}: {ids[1]}/10. Оценка не меняет избранное."
+        )
+
+    @router.message(Command("skip", "finished"))
+    async def report_command(message: Message):
+        ids = arguments(message, 1)
+        if not ids:
+            await message.answer("Пример: /skip 12 или /finished 12")
+            return
+        action = message.text.split()[0].split("@")[0][1:]
+        event = "skip" if action == "skip" else "complete"
+        try:
+            db.record_playback_event(
+                ids[0], event, source="manual",
+                dedupe_key=f"tg:message:{message.chat.id}:{message.message_id}",
+            )
+        except ValueError as exc:
+            await message.answer(str(exc))
+            return
+        await message.answer(
+            "⏭ Отметка пропуска сохранена." if event == "skip"
+            else "✅ Отметка дослушивания сохранена."
+        )
 
     @router.message(Command("playliked"))
     async def playliked(message: Message, bot: Bot):

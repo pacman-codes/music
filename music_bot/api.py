@@ -27,6 +27,14 @@ class PlaylistAdd(BaseModel):
     track_id: int = Field(gt=0)
 
 
+class RatingRequest(BaseModel):
+    score: int = Field(ge=1, le=10, strict=True)
+
+
+class PlaybackReport(BaseModel):
+    event: Literal["skip", "complete"]
+
+
 class QueueRequest(BaseModel):
     kind: Literal["wave", "discover", "liked", "playlist"]
     playlist_id: int | None = None
@@ -76,8 +84,14 @@ def create_app(config: Settings | None = None) -> FastAPI:
     async def tracks(q: str = Query(default="", max_length=100)):
         found = db.search_tracks(q, 80) if q else db.all_tracks(80)
         liked = db.liked_ids()
-        return [{"id": t.id, "title": t.title, "artist": t.artist,
-                 "liked": t.id in liked} for t in found]
+        ratings = db.ratings()
+        stats = db.playback_stats()
+        return [{
+            "id": t.id, "title": t.title, "artist": t.artist,
+            "liked": t.id in liked, "rating": ratings.get(t.id),
+            "reported_skips": stats.get(t.id, (0, 0))[0],
+            "reported_completions": stats.get(t.id, (0, 0))[1],
+        } for t in found]
 
     @app.get("/api/playlists", dependencies=[auth])
     async def playlists():
@@ -111,6 +125,27 @@ def create_app(config: Settings | None = None) -> FastAPI:
     async def unlike(track_id: int):
         return {"changed": db.unlike(track_id)}
 
+    @app.post("/api/rating/{track_id}", dependencies=[auth])
+    async def set_rating(track_id: int, payload: RatingRequest):
+        try:
+            db.set_rating(track_id, payload.score)
+        except ValueError as exc:
+            raise HTTPException(404, detail="Track not found") from exc
+        return {"rating": payload.score}
+
+    @app.delete("/api/rating/{track_id}", dependencies=[auth])
+    async def clear_rating(track_id: int):
+        return {"changed": db.clear_rating(track_id)}
+
+    @app.post("/api/report/{track_id}", dependencies=[auth])
+    async def report_playback(track_id: int, payload: PlaybackReport):
+        # These are owner-entered notes, not native Telegram player telemetry.
+        try:
+            db.record_playback_event(track_id, payload.event, source="manual")
+        except ValueError as exc:
+            raise HTTPException(404, detail="Track not found") from exc
+        return {"recorded": True, "source": "manual"}
+
     @app.post("/api/playlists/{playlist_id}/add", dependencies=[auth])
     async def add_to_playlist(playlist_id: int, payload: PlaylistAdd):
         try:
@@ -135,6 +170,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             selected = wave(
                 db.all_tracks(), db.liked_ids(), db.disliked_ids(),
                 recent_ids=db.recent_ids(60), count=60, mode=mode,
+                ratings=db.ratings(), playback=db.playback_stats(),
             )
             title = "Открытия" if mode == "discover" else "Моя волна"
         if not selected:
