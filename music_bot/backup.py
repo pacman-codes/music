@@ -10,6 +10,7 @@ import secrets
 import sqlite3
 import tempfile
 from datetime import datetime, timezone
+from contextlib import closing
 from pathlib import Path
 
 
@@ -25,8 +26,8 @@ def backup_db(database: str | Path, directory: str | Path) -> Path:
     os.close(fd)
     temp_path = Path(temp_name)
     try:
-        with sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True) as source:
-            with sqlite3.connect(temp_path) as dest:
+        with closing(sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True)) as source:
+            with closing(sqlite3.connect(temp_path)) as dest:
                 source.backup(dest)
                 check = dest.execute("PRAGMA integrity_check").fetchone()
                 if check is None or check[0] != "ok":

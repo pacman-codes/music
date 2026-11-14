@@ -73,9 +73,25 @@ function renderTracks(items) {
     const info=element("div","info");
     info.append(element("div","name",t.title),element("div","sub",t.artist));
     row.append(info,action(t.liked?"♥":"♡", async()=>{
-      await post("/api/like/"+t.id);
+      if (t.liked) {
+        await api("/api/like/"+t.id,{method:"DELETE"});
+      } else {
+        await post("/api/like/"+t.id);
+      }
       await refreshTracks();
     }, t.liked?"heart liked":"heart"));
+    row.append(action("＋", async()=>{
+      const list=(await api("/api/playlists")).filter(p=>p.kind==="custom");
+      if (!list.length) { toast("Сначала создай плейлист"); return; }
+      const choice=window.prompt("Выбери номер плейлиста:\n"+
+        list.map(p=>p.id+" — "+p.name).join("\n"));
+      if (!choice) return;
+      const target=list.find(p=>String(p.id)===choice.trim());
+      if (!target) throw new Error("Неверный номер плейлиста");
+      await post("/api/playlists/"+target.id+"/add",{track_id:t.id});
+      toast("Добавлено в «"+target.name+"»");
+      await refreshPlaylists();
+    }));
     host.append(row);
   }
 }

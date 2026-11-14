@@ -107,6 +107,10 @@ def create_app(config: Settings | None = None) -> FastAPI:
             raise HTTPException(404, detail="Track not found") from exc
         return {"changed": changed}
 
+    @app.delete("/api/like/{track_id}", dependencies=[auth])
+    async def unlike(track_id: int):
+        return {"changed": db.unlike(track_id)}
+
     @app.post("/api/playlists/{playlist_id}/add", dependencies=[auth])
     async def add_to_playlist(playlist_id: int, payload: PlaylistAdd):
         try:

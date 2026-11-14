@@ -73,6 +73,10 @@ def test_api_requires_valid_telegram_auth(tmp_path):
         liked = client.post(f"/api/like/{track.id}", headers=headers)
         assert liked.status_code == 200
         assert liked.json()["changed"]
+        unliked = client.delete(f"/api/like/{track.id}", headers=headers)
+        assert unliked.status_code == 200
+        assert unliked.json()["changed"]
+        assert client.get("/api/tracks", headers=headers).json()[0]["liked"] is False
         playlist = client.post("/api/playlists", headers=headers, json={"name": "Road"})
         assert playlist.status_code == 201
         playlist_id = playlist.json()["id"]
