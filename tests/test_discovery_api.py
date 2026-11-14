@@ -76,6 +76,9 @@ def test_auth_and_metadata_only_wishlist(tmp_path):
         now_found = client.get("/api/discovery/search?q=Roads", headers=good)
         assert now_found.json()["results"][0]["local_track_id"] is not None
         assert now_found.json()["results"][0]["playable"] is False  # metadata never is media
+        wishlist_after_upload = client.get("/api/discovery/wishlist", headers=good).json()
+        assert wishlist_after_upload["results"][0]["local_track_id"] is not None
+        assert wishlist_after_upload["results"][0]["playable"] is False
 
         removed = client.delete(f"/api/discovery/wishlist/{RECORDING}", headers=good)
         assert removed.status_code == 200 and removed.json()["removed"] is True
