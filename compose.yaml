@@ -4,8 +4,11 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      - ./data:/app/data
+      - music_data:/app/data
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+volumes:
+  music_data:
