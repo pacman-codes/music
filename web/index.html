@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>music</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js?65"></script>
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">Личная медиатека</div>
+    <h1>music <span>♫</span></h1>
+    <p id="status">Проверяем подключение к Telegram…</p>
+  </header>
+  <main id="main">
+    <section class="hero">
+      <div class="hero-label">Твоя музыка, твой ритм</div>
+      <h2>🌊 Моя волна</h2>
+      <p>Подборка из сохранённых песен. Слушай в родном плеере Telegram.</p>
+      <div class="actions">
+        <button type="button" id="wave" class="primary">Слушать волну</button>
+        <button type="button" id="discover">Открытия</button>
+      </div>
+    </section>
+    <section>
+      <div class="heading"><h2>Плейлисты</h2><button type="button" id="create">＋ Новый</button></div>
+      <div id="playlists" class="list"></div>
+    </section>
+    <section>
+      <div class="heading"><h2>Моя библиотека</h2><span id="count"></span></div>
+      <label class="search">
+        <span>🔍</span>
+        <input type="search" id="query" placeholder="Найти песню или исполнителя" maxlength="100" autocomplete="off">
+      </label>
+      <div id="tracks" class="list"></div>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
