@@ -8,6 +8,11 @@ services:
     env_file: .env
     volumes:
       - music_data:/app/data
+    # Download/conversion buffers cannot fill the host's persistent disk.
+    # Ephemeral tmpfs is bounded independently for each container.
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    pids_limit: 64
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -24,6 +29,11 @@ services:
       - music_data:/app/data
     ports:
       - "127.0.0.1:8085:8085"
+    # Download/conversion buffers cannot fill the host's persistent disk.
+    # Ephemeral tmpfs is bounded independently for each container.
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    pids_limit: 64
     security_opt:
       - no-new-privileges:true
     cap_drop:
