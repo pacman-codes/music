@@ -69,6 +69,33 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
     ]
 
 
+def strongly_negative_artists(tracks, liked_ids, disliked_ids, ratings, playback):
+    """Conservatively exclude an artist only with repeated explicit negatives.
+
+    One disliked song does not mean the whole artist is disliked. Any clear
+    positive rating/favorite for that artist prevents the artist-level ban.
+    """
+    negative: dict[str, set[int]] = defaultdict(set)
+    positive: set[str] = set()
+    for track in tracks:
+        artist = normalize(track.artist.strip())
+        if not artist:
+            continue
+        rating = ratings.get(track.id)
+        if rating is not None and rating >= 8:
+            positive.add(artist)
+        elif track.id in liked_ids and (rating is None or rating >= 5):
+            positive.add(artist)
+        if (track.id in disliked_ids or
+                (rating is not None and rating <= 3) or
+                fatigue_suppressed(*playback.get(track.id, (0, 0)))):
+            negative[artist].add(track.id)
+    return {
+        artist for artist, song_ids in negative.items()
+        if len(song_ids) >= 2 and artist not in positive
+    }
+
+
 async def personalized_discovery(
     db: Library, catalog: MusicCatalog, *, difficulty: str = "medium",
     limit: int = 15, max_seeds: int = 3,
@@ -89,11 +116,16 @@ async def personalized_discovery(
     known_ids = db.confirmed_recording_ids()
     own_tracks = db.all_tracks(10000)
     own_names = {normalized_identity(t.title, t.artist) for t in own_tracks}
+    likes, dislikes = db.liked_ids(), db.disliked_ids()
+    ratings, feedback = db.ratings(), db.playback_stats()
     suppressed_names = {
         normalized_identity(t.title, t.artist)
-        for t in own_tracks if t.id in db.disliked_ids()
-        or fatigue_suppressed(*db.playback_stats().get(t.id, (0, 0)))
+        for t in own_tracks if t.id in dislikes
+        or fatigue_suppressed(*feedback.get(t.id, (0, 0)))
     }
+    excluded_artists = strongly_negative_artists(
+        own_tracks, likes, dislikes, ratings, feedback
+    )
     pools: list[list[CatalogTrack]] = []
     used_seeds: list[str] = []
     errors = 0
@@ -112,6 +144,7 @@ async def personalized_discovery(
             if song.mbid not in known_ids and not song.variant
             and normalized_identity(song.title, song.artist) not in own_names
             and normalized_identity(song.title, song.artist) not in suppressed_names
+            and normalize(song.artist) not in excluded_artists
         ]
         pools.append(clean)
 
