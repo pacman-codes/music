@@ -16,6 +16,7 @@ from music_bot.catalog import MusicCatalog
 from music_bot.config import load_settings
 from music_bot.telegram_catalog import install_catalog_handlers
 from music_bot.telegram_import import install_import_handlers
+from music_bot.telegram_youtube import install_youtube_handlers
 from music_bot.selection import DYNAMIC_MODES, select_wave_batch
 from music_bot.storage import Library, Track
 
@@ -34,6 +35,8 @@ HELP = """🎵 music — личный плеер
 /unmatch ID — убрать ошибочную ручную привязку
 /saved — отложенные находки (пока без аудио)
 /import MBID URL — разрешённый прямой MP3/M4A → Telegram
+/yt Запрос — YouTube-поиск (если включён)
+/ytget VIDEO_ID — получить разрешённое аудио в Telegram
 /liked — избранное
 /like ID /unlike ID /dislike ID — избранное и исключения
 /rate ID 1-10 — оценка трека
@@ -241,7 +244,9 @@ async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
 
 def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                   catalog: MusicCatalog | None = None,
-                  media_hosts: tuple[str, ...] = ()) -> Router:
+                  media_hosts: tuple[str, ...] = (),
+                  youtube_search_enabled: bool = False,
+                  youtube_download_enabled: bool = False) -> Router:
     router = Router()
     router.message.middleware(OwnerOnly(owner_id))
     router.callback_query.middleware(OwnerOnly(owner_id))
@@ -672,6 +677,10 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
     if catalog is not None:
         install_catalog_handlers(router, db, catalog)
     install_import_handlers(router, db, owner_id, media_hosts)
+    install_youtube_handlers(
+        router, db, owner_id, search_enabled=youtube_search_enabled,
+        download_enabled=youtube_download_enabled,
+    )
     return router
 
 
@@ -685,6 +694,8 @@ async def main():
     dp.include_router(create_router(
         db, config.owner_id, config.webapp_url,
         catalog=catalog, media_hosts=config.allowed_media_hosts,
+        youtube_search_enabled=config.youtube_search_enabled,
+        youtube_download_enabled=config.youtube_download_enabled,
     ))
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
