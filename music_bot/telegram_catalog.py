@@ -35,6 +35,10 @@ def catalog_keyboard(rows: list[CatalogTrack], *,
                 callback_data=f"match:{match_track_id}:{track.mbid}",
             )])
         controls.append([InlineKeyboardButton(
+            text=f"📌 {track.artist[:14]} — {track.title[:25]}",
+            callback_data=f"wish:{track.mbid}",
+        )])
+        controls.append([InlineKeyboardButton(
             text=f"🧭 Оценить: {track.artist[:14]} — {track.title[:22]}",
             callback_data=f"vopen:c:{track.mbid}",
         )])
