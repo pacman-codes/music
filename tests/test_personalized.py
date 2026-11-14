@@ -1,0 +1,107 @@
+"""Live-feedback-based personal discovery across multiple LB radio seeds."""
+import asyncio
+
+import pytest
+
+from music_bot.catalog import CatalogError, CatalogTrack
+from music_bot.personalized import personalized_discovery, ranked_seed_artists
+from music_bot.storage import Library
+
+A="8a49dba0-253a-4535-b87f-78bb035336ce"
+B="f3bba4cd-8018-468b-902e-bc8f029593e5"
+C="8e74dd9d-e5a3-4acd-918a-c36a0f8cda84"
+D="8f0cb94a-eeb4-4cc4-a168-c61687fc0a2e"
+
+
+class FakeRadio:
+    def __init__(self, failures=()):
+        self.calls=[]
+        self.failures=set(failures)
+
+    async def artist_radio(self, artist, *, difficulty, limit):
+        self.calls.append((artist,difficulty,limit))
+        if artist in self.failures:
+            raise CatalogError("upstream unavailable")
+        if artist=="Portishead":
+            return [CatalogTrack(A, "Roads", "Portishead"),
+                    CatalogTrack(B, "Glory Box", "Portishead"),
+                    CatalogTrack(C, "Angel", "Massive Attack")]
+        if artist=="Massive Attack":
+            return [CatalogTrack(C, "Angel", "Massive Attack"),
+                    CatalogTrack(D, "Teardrop", "Massive Attack"),
+                    CatalogTrack(A, "Roads", "Portishead")]
+        return []
+
+
+@pytest.fixture
+def db(tmp_path):
+    return Library(tmp_path/"music.db")
+
+
+def add(db, name, artist, *, score=None, liked=False):
+    t=db.add_track("file-"+name,"uid-"+name,name,artist)
+    if score is not None: db.set_rating(t.id,score)
+    if liked: db.like(t.id)
+    return t
+
+
+def test_low_rating_and_manual_skips_remove_seed_without_unliking(db):
+    a=add(db,"One","Portishead",score=10,liked=True)
+    b=add(db,"Two","Massive Attack",score=8,liked=True)
+    c=add(db,"Three","PoorArtist",score=2,liked=True)
+    names=[s.name for s in ranked_seed_artists(db)]
+    assert names==["Portishead","Massive Attack"]
+    assert c.id in db.liked_ids()
+    for _ in range(3): db.record_playback_event(a.id,"skip")
+    names=[s.name for s in ranked_seed_artists(db)]
+    assert names==["Massive Attack"]
+    assert a.id in db.liked_ids()
+
+
+def test_multiple_artist_radio_round_robin_and_no_duplicate_tracks(db):
+    own=add(db,"My saved song","Portishead",score=10,liked=True)
+    other=add(db,"Another saved","Massive Attack",score=9,liked=True)
+    catalog=FakeRadio()
+    seeds, results=asyncio.run(personalized_discovery(db,catalog,limit=10))
+    assert seeds==["Portishead","Massive Attack"]
+    assert [r.mbid for r in results]==[A,C,B,D]
+    assert len(catalog.calls)==2
+    assert all(not hasattr(r,"file_id") for r in results)
+
+
+def test_owned_and_variant_records_excluded(db):
+    own=add(db,"Roads","Portishead",score=9,liked=True)
+    db.remember_candidates([CatalogTrack(A, "Roads", "Portishead")])
+    db.confirm_recording_match(own.id,A)
+    second=add(db,"Another","Massive Attack",score=8,liked=True)
+
+    class WithVariants(FakeRadio):
+        async def artist_radio(self, artist, *, difficulty, limit):
+            return [CatalogTrack(A,"Roads","Portishead"),
+                    CatalogTrack(B,"Glory Box (Live)","Portishead",variant=True),
+                    CatalogTrack(C,"Angel","Massive Attack")]
+    seeds,results=asyncio.run(personalized_discovery(db,WithVariants()))
+    assert [r.mbid for r in results]==[C]
+
+
+def test_partial_upstream_errors_are_tolerated(db):
+    add(db,"One","Portishead",score=9,liked=True)
+    add(db,"Two","Massive Attack",score=8,liked=True)
+    catalog=FakeRadio(failures={"Portishead"})
+    seeds,results=asyncio.run(personalized_discovery(db,catalog,limit=5))
+    assert seeds==["Massive Attack"]
+    assert results
+
+    catalog=FakeRadio(failures={"Portishead","Massive Attack"})
+    with pytest.raises(CatalogError):
+        asyncio.run(personalized_discovery(db,catalog,limit=5))
+
+
+def test_empty_profile_and_arguments(db):
+    catalog=FakeRadio()
+    assert asyncio.run(personalized_discovery(db,catalog)) == ([], [])
+    assert catalog.calls==[]
+    with pytest.raises(ValueError):
+        asyncio.run(personalized_discovery(db,catalog,difficulty="bad"))
+    with pytest.raises(ValueError):
+        asyncio.run(personalized_discovery(db,catalog,limit=200))
