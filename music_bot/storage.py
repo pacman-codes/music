@@ -656,6 +656,50 @@ class Library:
             )
         return self.queue_snapshot(queue_id)
 
+    def recommendation_signals(self, seed_ids, *, history_limit: int = 240) -> dict:
+        """Passive *exposure*, not inferred listens or dislikes.
+
+        Summarize recently delivered tracks and explicit custom-playlist
+        membership. No network calls, new schema, or user interaction.
+        A playlist with a favorite acts as a weak cross-artist similarity hint.
+        """
+        if not 1 <= history_limit <= 2000:
+            raise ValueError("Invalid history window")
+        with self.con() as db:
+            sent = db.execute(
+                "SELECT track_id FROM sent_history ORDER BY id DESC LIMIT ?",
+                (history_limit,),
+            ).fetchall()
+            pairs = db.execute(
+                """SELECT pt.playlist_id, pt.track_id
+                   FROM playlist_tracks pt
+                   JOIN playlists p ON p.id=pt.playlist_id
+                   WHERE p.kind='custom'"""
+            ).fetchall()
+        exposure: dict[int, float] = {}
+        for position, row in enumerate(sent):
+            track_id = int(row["track_id"])
+            # Decayed *delivery frequency* gives the latest cards more weight.
+            # It never implies that Telegram actually played the audio.
+            exposure[track_id] = exposure.get(track_id, 0.0) + 1.0 / (1.0 + position / 25.0)
+        playlists: dict[int, set[int]] = {}
+        counts: dict[int, int] = {}
+        for row in pairs:
+            playlist_id, track_id = int(row["playlist_id"]), int(row["track_id"])
+            playlists.setdefault(playlist_id, set()).add(track_id)
+            counts[track_id] = counts.get(track_id, 0) + 1
+        seed = set(seed_ids)
+        related: set[int] = set()
+        for members in playlists.values():
+            # Giant catch-all playlists are not reliable similarity evidence.
+            if 2 <= len(members) <= 80 and members & seed:
+                related.update(members - seed)
+        return {
+            "exposure": exposure,
+            "playlist_counts": counts,
+            "related_ids": related,
+        }
+
     def latest_sent_ids(self, limit: int = 3) -> set[int]:
         with self.con() as db:
             return {int(row[0]) for row in db.execute(
