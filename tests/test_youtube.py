@@ -137,3 +137,56 @@ def test_candidate_retrieval_and_link_integrity(tmp_path):
     db.remember_youtube_videos([yt.VideoCandidate(VIDEO,"Updated","Creator",120)])
     assert db.get_youtube_video(VIDEO)["title"]=="Updated"
     assert db.get_youtube_video(VIDEO)["track_id"]==t.id
+
+
+def test_youtube_temp_mp3_path_is_verified_and_deleted(monkeypatch):
+    root_files = []
+    async def downloaded(args, *, timeout, output_dir=None):
+        assert "--audio-format" in args
+        assert "--ignore-config" in args
+        assert args[-1] == f"https://www.youtube.com/watch?v={VIDEO}"
+        assert output_dir is not None
+        path = output_dir / (VIDEO + ".mp3")
+        path.write_bytes(b"ID3" + b"\x00" * 100)
+        root_files.append(path)
+        return b""
+    monkeypatch.setattr(yt, "run_ytdlp", downloaded)
+
+    async def scenario():
+        async with yt.temporary_youtube_mp3(VIDEO) as file:
+            assert file.exists() and file.name == VIDEO + ".mp3"
+        assert not root_files[0].exists()
+    asyncio.run(scenario())
+
+
+def test_bad_converted_mp3_is_rejected_and_cleaned(monkeypatch):
+    tmp_files = []
+    async def fake(args, *, timeout, output_dir=None):
+        file = output_dir / (VIDEO + ".mp3")
+        file.write_bytes(b"<html>bad</html>")
+        tmp_files.append(file)
+        return b""
+    monkeypatch.setattr(yt, "run_ytdlp", fake)
+    async def scenario():
+        with pytest.raises(yt.YouTubeError):
+            async with yt.temporary_youtube_mp3(VIDEO):
+                pass
+    asyncio.run(scenario())
+    assert not tmp_files[0].exists()
+
+
+def test_big_converted_audio_fails_without_publishing(monkeypatch):
+    tmp_files = []
+    async def oversized(args, *, timeout, output_dir=None):
+        file = output_dir / (VIDEO + ".mp3")
+        file.write_bytes(b"ID3" + b"\x00" * 100)
+        tmp_files.append(file)
+        return b""
+    monkeypatch.setattr(yt, "run_ytdlp", oversized)
+    monkeypatch.setattr(yt, "MAX_AUDIO_BYTES", 10)
+    async def scenario():
+        with pytest.raises(yt.YouTubeError):
+            async with yt.temporary_youtube_mp3(VIDEO):
+                pass
+    asyncio.run(scenario())
+    assert not tmp_files[0].exists()
