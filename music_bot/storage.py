@@ -69,6 +69,19 @@ class Library:
               position INTEGER NOT NULL,
               track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
               PRIMARY KEY(queue_id, position));
+            CREATE TABLE IF NOT EXISTS track_ratings(
+              track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+              score INTEGER NOT NULL CHECK(score BETWEEN 1 AND 10),
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS playback_events(
+              id INTEGER PRIMARY KEY,
+              track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+              event TEXT NOT NULL CHECK(event IN ('skip','complete')),
+              source TEXT NOT NULL CHECK(source IN ('manual','instrumented')),
+              dedupe_key TEXT UNIQUE,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE INDEX IF NOT EXISTS playback_event_recent
+              ON playback_events(track_id, id DESC);
             CREATE TABLE IF NOT EXISTS sent_history(
               id INTEGER PRIMARY KEY,
               queue_id INTEGER REFERENCES queues(id) ON DELETE SET NULL,
@@ -301,3 +314,71 @@ class Library:
                 [(batch.queue_id, t.id) for t in batch.tracks],
             )
             return True
+
+    def set_rating(self, track_id: int, score: int) -> None:
+        """Record an explicit 1–10 score. Rating does not modify favorites."""
+        if type(score) is not int or not 1 <= score <= 10:
+            raise ValueError("Rating must be an integer from 1 to 10")
+        with self.con() as db:
+            if not db.execute("SELECT 1 FROM tracks WHERE id=?", (track_id,)).fetchone():
+                raise ValueError("Track not found")
+            db.execute(
+                """INSERT INTO track_ratings(track_id,score) VALUES (?,?)
+                   ON CONFLICT(track_id) DO UPDATE SET
+                     score=excluded.score, updated_at=CURRENT_TIMESTAMP""",
+                (track_id, score),
+            )
+
+    def clear_rating(self, track_id: int) -> bool:
+        with self.con() as db:
+            return bool(db.execute(
+                "DELETE FROM track_ratings WHERE track_id=?", (track_id,)
+            ).rowcount)
+
+    def ratings(self) -> dict[int, int]:
+        with self.con() as db:
+            return {int(r["track_id"]): int(r["score"]) for r in db.execute(
+                "SELECT track_id, score FROM track_ratings"
+            )}
+
+    def record_playback_event(
+        self, track_id: int, event: str, *, source: str = "manual",
+        dedupe_key: str | None = None,
+    ) -> bool:
+        """Log an *explicit* signal. Telegram native playback emits no such event.
+
+        'instrumented' is reserved for a future independently authenticated player.
+        Returning False indicates an already-recorded dedupe_key.
+        """
+        if event not in {"skip", "complete"} or source not in {"manual", "instrumented"}:
+            raise ValueError("Unsupported feedback signal or source")
+        if dedupe_key is not None and not 1 <= len(dedupe_key) <= 160:
+            raise ValueError("Invalid event idempotency key")
+        with self.con() as db:
+            if not db.execute("SELECT 1 FROM tracks WHERE id=?", (track_id,)).fetchone():
+                raise ValueError("Track not found")
+            return bool(db.execute(
+                """INSERT OR IGNORE INTO playback_events(track_id,event,source,dedupe_key)
+                   VALUES(?,?,?,?)""", (track_id, event, source, dedupe_key),
+            ).rowcount)
+
+    def playback_stats(self) -> dict[int, tuple[int, int]]:
+        """Recent *reported* skips and completions; 20 events/song, 30-day window.
+
+        Sent-history has no bearing on playback stats.
+        """
+        with self.con() as db:
+            rows = db.execute("""
+                WITH recent AS (
+                  SELECT track_id, event,
+                    ROW_NUMBER() OVER (PARTITION BY track_id ORDER BY id DESC) AS rank
+                  FROM playback_events
+                  WHERE created_at >= datetime('now','-30 days')
+                )
+                SELECT track_id,
+                       SUM(CASE WHEN event='skip' THEN 1 ELSE 0 END) AS skipped,
+                       SUM(CASE WHEN event='complete' THEN 1 ELSE 0 END) AS completed
+                  FROM recent WHERE rank <= 20 GROUP BY track_id
+            """).fetchall()
+            return {int(r["track_id"]): (int(r["skipped"]), int(r["completed"]))
+                    for r in rows}
