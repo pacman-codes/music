@@ -54,3 +54,38 @@ def test_identify_keyboard_contains_only_existing_mbid_and_track_id():
     assert f"match:12:{mbid}" in callbacks
     assert f"wish:{mbid}" in callbacks
     assert all(len(value.encode("utf-8")) <= 64 for value in callbacks)
+
+
+def test_catalog_play_buttons_only_for_confirmed_telegram_files(tmp_path):
+    from music_bot.catalog import CatalogTrack
+    db = Library(tmp_path / "music.db")
+    known = CatalogTrack(MBID, "Roads", "Portishead")
+    unlinked = CatalogTrack("f3bba4cd-8018-468b-902e-bc8f029593e5",
+                            "Roads (Live)", "Portishead")
+    saved = db.add_track("tg-file-id", "tg-unique-id", "Roads", "Portishead")
+    db.remember_candidates([known, unlinked])
+
+    # A matching title alone cannot make the button playable.
+    without = catalog_keyboard([known, unlinked],
+                               linked=db.resolved_catalog_tracks())
+    assert all(
+        not btn.callback_data.startswith("play:")
+        for row in without.inline_keyboard for btn in row
+    )
+
+    db.confirm_recording_match(saved.id, MBID)
+    linked = catalog_keyboard([known, unlinked],
+                              linked=db.resolved_catalog_tracks())
+    buttons = [btn.callback_data for row in linked.inline_keyboard for btn in row]
+    assert f"play:{saved.id}" in buttons
+    assert f"wish:{MBID}" in buttons
+    assert f"wish:{unlinked.mbid}" in buttons
+    assert buttons.count(f"play:{saved.id}") == 1
+    assert all(len(v.encode("utf-8")) <= 64 for v in buttons)
+    # When the recording is already playable, do not invite relinking it
+    # as a different local track from search suggestions.
+    suggestions = catalog_keyboard([known], match_track_id=999, linked=db.resolved_catalog_tracks())
+    assert not any(
+        btn.callback_data.startswith("match:")
+        for row in suggestions.inline_keyboard for btn in row
+    )
