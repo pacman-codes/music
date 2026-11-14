@@ -59,6 +59,19 @@ class Library:
     def init(self):
         with self.con() as db:
             db.executescript("""
+            CREATE TABLE IF NOT EXISTS anime_titles (
+              id INTEGER PRIMARY KEY, title TEXT NOT NULL,
+              english TEXT, native TEXT, episodes INTEGER,
+              format TEXT, release_status TEXT, year INTEGER,
+              average_score INTEGER, mal_id INTEGER,
+              last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS anime_watchlist (
+              anime_id INTEGER PRIMARY KEY REFERENCES anime_titles(id) ON DELETE CASCADE,
+              watch_status TEXT NOT NULL CHECK (
+                watch_status IN ('planned','watching','completed','on_hold','dropped')),
+              progress INTEGER NOT NULL DEFAULT 0 CHECK (progress>=0),
+              score INTEGER CHECK (score BETWEEN 1 AND 10),
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS youtube_candidates (
               video_id TEXT PRIMARY KEY,
               title TEXT NOT NULL,
@@ -762,3 +775,86 @@ class Library:
                     track_id=excluded.track_id,linked_at=CURRENT_TIMESTAMP""",
                 (video_id,track_id),
             )
+
+    def remember_anime(self, entries) -> None:
+        """Only AniList catalog metadata, never video streaming links."""
+        with self.con() as db:
+            db.executemany(
+                """INSERT INTO anime_titles(
+                   id,title,english,native,episodes,format,release_status,year,
+                   average_score,mal_id) VALUES(?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     title=excluded.title,english=excluded.english,
+                     native=excluded.native,episodes=excluded.episodes,
+                     format=excluded.format,release_status=excluded.release_status,
+                     year=excluded.year,average_score=excluded.average_score,
+                     mal_id=excluded.mal_id,last_seen_at=CURRENT_TIMESTAMP""",
+                [(t.id,t.title,t.english,t.native,t.episodes,t.format,
+                  t.release_status,t.year,t.average_score,t.mal_id)
+                 for t in entries],
+            )
+
+    def get_anime(self, anime_id: int) -> dict | None:
+        with self.con() as db:
+            row = db.execute(
+                """SELECT t.*, w.watch_status,w.progress,w.score
+                   FROM anime_titles t LEFT JOIN anime_watchlist w ON w.anime_id=t.id
+                   WHERE t.id=?""", (anime_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def anime_list(self, limit: int = 200) -> list[dict]:
+        with self.con() as db:
+            return [dict(r) for r in db.execute(
+                """SELECT t.id,t.title,t.english,t.native,t.episodes,t.format,
+                          t.release_status,t.year,t.average_score,t.mal_id,
+                          w.watch_status,w.progress,w.score
+                   FROM anime_watchlist w JOIN anime_titles t ON t.id=w.anime_id
+                   ORDER BY w.updated_at DESC,t.id DESC LIMIT ?""",
+                (limit,),
+            )]
+
+    def update_anime_watch(self, anime_id: int, *,
+                           watch_status: str | None = None,
+                           progress: int | None = None,
+                           score: int | None = None) -> dict:
+        """Atomic owner-only list update, validating progress against episodes."""
+        states = {"planned", "watching", "completed", "on_hold", "dropped"}
+        if watch_status is not None and watch_status not in states:
+            raise ValueError("Unknown watch status")
+        if progress is not None and (type(progress) is not int or not 0 <= progress <= 10000):
+            raise ValueError("Progress must be 0..10000")
+        if score is not None and (type(score) is not int or not 1 <= score <= 10):
+            raise ValueError("Score must be 1..10")
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute(
+                """SELECT t.id,t.episodes,w.watch_status,w.progress,w.score
+                   FROM anime_titles t LEFT JOIN anime_watchlist w ON w.anime_id=t.id
+                   WHERE t.id=?""", (anime_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError("Anime must be found in AniList first")
+            status = watch_status or current["watch_status"] or "planned"
+            next_progress = progress if progress is not None else (current["progress"] or 0)
+            total = current["episodes"]
+            if total is not None and next_progress > total:
+                raise ValueError("Progress exceeds the number of episodes")
+            next_score = score if score is not None else current["score"]
+            db.execute(
+                """INSERT INTO anime_watchlist(anime_id,watch_status,progress,score)
+                   VALUES(?,?,?,?) ON CONFLICT(anime_id) DO UPDATE SET
+                    watch_status=excluded.watch_status,progress=excluded.progress,
+                    score=excluded.score,updated_at=CURRENT_TIMESTAMP""",
+                (anime_id,status,next_progress,next_score),
+            )
+            return dict(db.execute(
+                "SELECT anime_id,watch_status,progress,score FROM anime_watchlist WHERE anime_id=?",
+                (anime_id,),
+            ).fetchone())
+
+    def remove_anime_watch(self, anime_id: int) -> bool:
+        with self.con() as db:
+            return bool(db.execute(
+                "DELETE FROM anime_watchlist WHERE anime_id=?", (anime_id,),
+            ).rowcount)
