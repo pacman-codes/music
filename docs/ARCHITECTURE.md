@@ -14,6 +14,7 @@
 - music_bot.telegram_catalog: чат-команды поиска, подтверждения MBID и персонального радио без HTTPS Mini App.
 - music_bot.importer: отдельный ограниченный импорт разрешённых MP3/M4A по HTTPS в Telegram через Bot API (выключен без allowlist).
 - music_bot.youtube: отключаемый yt-dlp adapter для поиска метаданных и временной конвертации разрешённых роликов в MP3.
+- music_bot.source_matching: ранжирование вероятных YouTube-вариантов по MusicBrainz-метаданным, без автоматического утверждения совпадения или запуска импорта.
 - music_bot.telegram_youtube: приватные команды /yt и /ytget, отдельные флаги на поиск и загрузку.
 - web/: адаптивный интерфейс. Не загружает аудио напрямую и не использует собственный player.
 
