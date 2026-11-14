@@ -74,10 +74,13 @@ def test_auth_and_metadata_only_wishlist(tmp_path):
         lib = Library(settings.db_path)
         lib.add_track("real-telegram-file-id", "unique-1", "Roads", "Portishead")
         now_found = client.get("/api/discovery/search?q=Roads", headers=good)
-        assert now_found.json()["results"][0]["local_track_id"] is not None
+        assert now_found.json()["results"][0]["local_track_id"] is None
+        assert now_found.json()["results"][0]["possible_match_track_id"] is not None
+        assert now_found.json()["results"][0]["match_confirmed"] is False
         assert now_found.json()["results"][0]["playable"] is False  # metadata never is media
         wishlist_after_upload = client.get("/api/discovery/wishlist", headers=good).json()
-        assert wishlist_after_upload["results"][0]["local_track_id"] is not None
+        assert wishlist_after_upload["results"][0]["local_track_id"] is None
+        assert wishlist_after_upload["results"][0]["possible_match_track_id"] is not None
         assert wishlist_after_upload["results"][0]["playable"] is False
 
         removed = client.delete(f"/api/discovery/wishlist/{RECORDING}", headers=good)
