@@ -12,6 +12,7 @@ import sqlite3
 import time
 import unicodedata
 import uuid
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -75,7 +76,9 @@ def _get_artist_credit(parts: Any) -> tuple[str, str | None]:
         if isinstance(item, str):
             display.append(item)
         elif isinstance(item, dict):
-            name = item.get("name") or item.get("artist", {}).get("name") or ""
+            nested_artist = item.get("artist")
+            fallback_name = nested_artist.get("name") if isinstance(nested_artist, dict) else ""
+            name = item.get("name") or fallback_name or ""
             if not isinstance(name, str):
                 continue
             display.append(name)
@@ -134,7 +137,7 @@ class CatalogCache:
     def __init__(self, database: Path | str):
         self.path = Path(database)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._db() as db:
+        with closing(self._db()) as db, db:
             db.execute("""CREATE TABLE IF NOT EXISTS external_catalog_cache (
                 cache_key TEXT PRIMARY KEY,
                 payload TEXT NOT NULL,
@@ -150,7 +153,7 @@ class CatalogCache:
 
     def get(self, key: str, now: int | None = None) -> Any | None:
         timestamp = int(time.time()) if now is None else now
-        with self._db() as db:
+        with closing(self._db()) as db:
             row = db.execute(
                 "SELECT payload FROM external_catalog_cache "
                 "WHERE cache_key=? AND expires_at>?", (key, timestamp)
@@ -169,7 +172,9 @@ class CatalogCache:
         payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         if len(payload.encode("utf-8")) > MAX_RESPONSE_BYTES:
             raise CatalogError("Слишком большой ответ музыкального каталога")
-        with self._db() as db:
+        with closing(self._db()) as db, db:
+            db.execute("DELETE FROM external_catalog_cache WHERE expires_at<=?",
+                       (timestamp,))
             db.execute(
                 """INSERT INTO external_catalog_cache(cache_key,payload,expires_at)
                    VALUES(?,?,?) ON CONFLICT(cache_key) DO UPDATE SET
