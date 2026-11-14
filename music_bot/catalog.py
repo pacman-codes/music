@@ -145,11 +145,42 @@ class CatalogCache:
             )""")
             db.execute("CREATE INDEX IF NOT EXISTS external_catalog_expires "
                        "ON external_catalog_cache(expires_at)")
+            db.execute("""CREATE TABLE IF NOT EXISTS external_catalog_throttle (
+                provider TEXT PRIMARY KEY,
+                next_allowed REAL NOT NULL
+            )""")
 
     def _db(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)
         db.execute("PRAGMA busy_timeout=10000")
         return db
+
+    def reserve_request_slot(self, provider: str, interval: float = 1.1,
+                             *, now: float | None = None) -> float:
+        """Cross-process MusicBrainz limiter shared by bot and web processes.
+
+        Reserve a slot under BEGIN IMMEDIATE before contacting MusicBrainz.
+        Returns seconds to sleep; skipping a reserved slot is harmless.
+        """
+        if provider != "mb" or not 1.0 <= interval <= 5.0:
+            raise ValueError("Unsupported rate-limit provider")
+        timestamp = time.time() if now is None else now
+        with closing(self._db()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT next_allowed FROM external_catalog_throttle WHERE provider=?",
+                (provider,),
+            ).fetchone()
+            reserved = max(timestamp, row[0] if row is not None else timestamp)
+            db.execute(
+                """INSERT INTO external_catalog_throttle(provider,next_allowed)
+                   VALUES(?,?)
+                   ON CONFLICT(provider) DO UPDATE SET
+                     next_allowed=excluded.next_allowed""",
+                (provider, reserved + interval),
+            )
+            db.commit()
+        return max(0.0, reserved - timestamp)
 
     def get(self, key: str, now: int | None = None) -> Any | None:
         timestamp = int(time.time()) if now is None else now
@@ -194,7 +225,6 @@ class MusicCatalog:
             trust_env=False,
         )
         self._mb_lock = asyncio.Lock()
-        self._next_mb_request = 0.0
 
     async def close(self) -> None:
         if self._owned_client:
@@ -216,11 +246,11 @@ class MusicCatalog:
                 cached = self.cache.get(key)
                 if cached is not None:
                     return cached
-                now = time.monotonic()
-                if self._next_mb_request > now:
-                    await asyncio.sleep(self._next_mb_request - now)
-                # One MusicBrainz request per 1.1 seconds, including failures.
-                self._next_mb_request = time.monotonic() + 1.10
+                # Reserve a single shared slot across polling bot and web API,
+                # even though these run as distinct processes.
+                wait = self.cache.reserve_request_slot("mb", interval=1.10)
+                if wait > 0:
+                    await asyncio.sleep(wait)
                 value = await self._fetch(root + path, params)
         else:
             value = await self._fetch(root + path, params)
