@@ -28,6 +28,9 @@ HELP = """🎵 music — личный плеер
 /search Текст — поиск в своей библиотеке
 /find Название — внешний поиск MusicBrainz
 /radio Исполнитель — похожая музыка ListenBrainz
+/radiotrack ID — радио по конкретной песне
+/identify ID — подобрать MusicBrainz ID для локального файла
+/unmatch ID — убрать ошибочную ручную привязку
 /saved — отложенные находки (пока без аудио)
 /import MBID URL — разрешённый прямой MP3/M4A → Telegram
 /liked — избранное
