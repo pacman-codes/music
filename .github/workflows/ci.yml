@@ -16,3 +16,5 @@ jobs:
       - run: python -m pytest -q
       - name: Check Mini App JavaScript syntax
         run: node --check web/app.js
+      - name: Validate optional YouTube Docker Compose configuration
+        run: cp .env.example .env && docker compose config -q
