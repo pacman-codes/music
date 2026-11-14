@@ -220,6 +220,17 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
         renderExternalCatalog(rows, fromWishlist, matchingTrackId);
       }, "secondary-action"));
     }
+    if (!item.local_track_id && youtubeSearchEnabled && item.mbid) {
+      controls.append(action("▶ Найти на YouTube", async () => {
+        show("youtube-status", "Ищу возможные совпадения по названию и длительности…");
+        const result=await api("/api/discovery/" +
+          encodeURIComponent(item.mbid) + "/youtube-suggestions");
+        show("youtube-status", "Для «" + item.title + "»: " +
+          result.suggestions.length + " вариантов. Совпадение не гарантировано.");
+        renderYouTubeResults(result.suggestions);
+        byId("youtube-section").scrollIntoView({behavior:"smooth"});
+      }, "secondary-action"));
+    }
     if (!item.local_track_id && directImportEnabled) {
       controls.append(action("📥 В Telegram", async () => {
         const url = window.prompt(
@@ -334,6 +345,13 @@ function renderYouTubeResults(videos) {
       link.target="_blank";
       link.rel="noopener noreferrer";
       buttons.append(link);
+    }
+    if (video.match_score != null) {
+      buttons.append(element("span","catalog-caption",
+        "Совпадение: " + Math.round(video.match_score * 100) + "% (оценка, не гарантия)"));
+      for (const caution of (video.warnings || [])) {
+        buttons.append(element("span","catalog-unavailable","⚠ " + caution));
+      }
     }
     if (video.track_id) {
       buttons.append(element("span","catalog-available",
