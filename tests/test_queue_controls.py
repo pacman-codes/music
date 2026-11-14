@@ -40,7 +40,7 @@ def test_batch_keyboard_has_ten_track_choices_and_more(tmp_path):
         first_batch_ids = {str(t.id) for t in songs[:10]}
         ratings = [x.callback_data for x in buttons if x.callback_data.startswith("vopen:l:")]
         assert len(ratings) == 10
-        assert {x.split(":")[1] for x in ratings} == first_batch_ids
+        assert {x.split(":")[2] for x in ratings} == first_batch_ids
         assert any(b.callback_data == f"more:{queue_id}:10" for b in buttons)
         await deliver_queue(bot, db, 123, queue_id, asyncio.Lock())
         last_buttons = controls(bot.messages[-1][1]["reply_markup"])
