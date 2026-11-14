@@ -35,8 +35,8 @@ def catalog_keyboard(rows: list[CatalogTrack], *,
                 callback_data=f"match:{match_track_id}:{track.mbid}",
             )])
         controls.append([InlineKeyboardButton(
-            text=f"📌 {track.artist[:14]} — {track.title[:25]}",
-            callback_data=f"wish:{track.mbid}",
+            text=f"🧭 Оценить: {track.artist[:14]} — {track.title[:22]}",
+            callback_data=f"vopen:c:{track.mbid}",
         )])
     return InlineKeyboardMarkup(inline_keyboard=controls)
 
@@ -59,7 +59,7 @@ def format_catalog(rows: list[CatalogTrack], title: str) -> str:
     for i, item in enumerate(rows[:8], 1):
         variant = " [другая версия]" if item.variant else ""
         lines.append(f"{i}. {item.artist} — {item.title}{variant}"[:250])
-    lines.append("📌 Отложить — добавить в список ожидания. Для прослушивания нужен файл.")
+    lines.append("🧭 Оценить — один из пяти списков. ▶ только если аудио уже загружено.")
     return "\n".join(lines)[:3800]
 
 
@@ -278,6 +278,10 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
                 "Потом используй /recommend."
             )
             return
+        # Already reviewed discoveries belong to their decision lists.
+        # Do not pressure the owner to assess the same recording repeatedly.
+        decided = db.catalog_verdicts()
+        rows = [row for row in rows if row.mbid not in decided]
         if not rows:
             await message.answer(
                 "По твоим любимым исполнителям пока не нашлось новых записей. "
