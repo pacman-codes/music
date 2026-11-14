@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/assets/style.css">
   <script src="https://telegram.org/js/telegram-web-app.js?65"></script>
   <script src="/assets/app.js" defer></script>
+  <script src="/assets/queue.js" defer></script>
   <script src="/assets/anime.js" defer></script>
   <script src="/assets/screen.js" defer></script>
 </head>
@@ -31,6 +32,29 @@
         </select>
         <button type="button" id="discover">Открытия</button>
       </div>
+    </section>
+    <section id="queue-section">
+      <div class="heading">
+        <h2>⏭ Очередь</h2>
+        <button id="queue-refresh" type="button">Обновить</button>
+      </div>
+      <p class="catalog-hint">Порядок можно менять только для песен, ещё не отправленных в Telegram. Плеер Telegram управляется отдельно.</p>
+      <div id="queue-summary" class="catalog-caption" role="status">Сначала запусти Волну или плейлист.</div>
+      <div class="actions">
+        <button id="queue-send" type="button">▶ Следующая порция</button>
+      </div>
+      <div id="queue-filters" class="catalog-radio" hidden>
+        <label>Оценка от <select id="queue-rating">
+          <option value="0">Любая</option>
+          <option value="5">5/10</option>
+          <option value="7">7/10</option>
+          <option value="9">9/10</option>
+        </select></label>
+        <label><input id="queue-liked" type="checkbox"> Только избранное</label>
+        <label><input id="queue-no-repeat" type="checkbox"> Не отправлялось сегодня</label>
+        <button id="queue-save-filters" type="button">Применить</button>
+      </div>
+      <div id="queue-items" class="list"></div>
     </section>
     <section class="catalog-section" aria-labelledby="catalog-heading">
       <div class="heading">

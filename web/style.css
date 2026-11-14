@@ -24,3 +24,7 @@
 
 #youtube-section{margin-top:26px}
 #youtube-section .heading span{color:var(--tg-theme-hint-color,#aaa);font-size:12px}
+
+#queue-filters label { display:inline-flex; align-items:center; gap:8px; font-size:0.85rem }
+#queue-filters input[type="checkbox"] { width:18px; height:18px }
+#queue-items .track-actions { flex-wrap:wrap; }

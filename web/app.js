@@ -52,6 +52,7 @@ function action(label, fn, klass="") {
 async function sendQueue(kind, playlistId) {
   const result = await post("/api/queue", {kind, playlist_id:playlistId ?? null});
   toast(`Отправлено ${result.sent} треков в чат с ботом ▶️`);
+  await refreshQueue();
   tg?.HapticFeedback?.notificationOccurred("success");
 }
 function renderPlaylists(items) {
@@ -95,6 +96,10 @@ function renderTracks(items) {
       toast("Песня отправлена в Telegram ▶");
       tg?.HapticFeedback?.notificationOccurred("success");
     }));
+    actions.append(action("⏭ Следующим", async () => {
+      await queueAddNext(t.id);
+      toast("Песня поставлена следующей в очереди");
+    }, "secondary-action"));
     const rating = element("select", "track-rating");
     rating.setAttribute("aria-label", "Оценка от 1 до 10 для " + t.title);
     const empty = element("option", "", "⭐ —");
