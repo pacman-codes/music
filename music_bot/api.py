@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normalize, normalized_identity, valid_mbid
 from music_bot.config import Settings, load_settings
 from music_bot.main import deliver_queue
 from music_bot.selection import select_wave_batch
@@ -40,9 +41,11 @@ class QueueRequest(BaseModel):
     playlist_id: int | None = None
 
 
-def create_app(config: Settings | None = None) -> FastAPI:
+def create_app(config: Settings | None = None,
+               catalog: MusicCatalog | None = None) -> FastAPI:
     settings = config or load_settings()
     db = Library(settings.db_path)
+    catalog_client = catalog or MusicCatalog(settings.db_path)
     app = FastAPI(
         title="music private Mini App",
         docs_url=None, redoc_url=None, openapi_url=None,
@@ -50,6 +53,11 @@ def create_app(config: Settings | None = None) -> FastAPI:
     static = Path(__file__).resolve().parent.parent / "web"
     app.mount("/assets", StaticFiles(directory=static), name="assets")
     send_lock = asyncio.Lock()
+
+    @app.on_event("shutdown")
+    async def close_catalog():
+        if catalog is None:
+            await catalog_client.close()
 
     def owner(x_telegram_init_data: Annotated[str | None, Header()] = None):
         try:
@@ -92,6 +100,100 @@ def create_app(config: Settings | None = None) -> FastAPI:
             "reported_skips": stats.get(t.id, (0, 0))[0],
             "reported_completions": stats.get(t.id, (0, 0))[1],
         } for t in found]
+
+    def catalog_result(recordings: list[CatalogTrack]) -> list[dict]:
+        wanted = db.wishlist_ids()
+        saved = {normalized_identity(t.title, t.artist): t.id
+                 for t in db.all_tracks(1000)}
+        output = []
+        for t in recordings:
+            body = t.public()
+            body["in_wishlist"] = t.mbid in wanted
+            body["local_track_id"] = saved.get(normalized_identity(t.title, t.artist))
+            output.append(body)
+        return output
+
+    @app.get("/api/discovery/search", dependencies=[auth])
+    async def catalog_search(
+        q: str = Query(min_length=2, max_length=100),
+        limit: int = Query(default=15, ge=1, le=25),
+        variants: bool = False,
+    ):
+        try:
+            matches = await catalog_client.search(
+                q, limit=limit, allow_variants=variants,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Некорректный поисковый запрос") from exc
+        except CatalogError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        db.remember_candidates(matches)
+        return {"results": catalog_result(matches), "type": "metadata_only"}
+
+    @app.get("/api/discovery/radio", dependencies=[auth])
+    async def catalog_artist_radio(
+        artist: str = Query(default="", max_length=90),
+        difficulty: Literal["easy", "medium", "hard"] = "medium",
+        limit: int = Query(default=12, ge=1, le=20),
+    ):
+        seed_artist = artist.strip()
+        if not seed_artist:
+            # If no seed is entered, pick one of the user's own preferred
+            # artists rather than claim to know their ListenBrainz account.
+            favorites = db.playlist_tracks(db.liked_id(), 1000)
+            ratings = db.ratings()
+            rated = sorted(db.all_tracks(1000),
+                           key=lambda t: ratings.get(t.id, 0), reverse=True)
+            candidates = favorites or [t for t in rated if ratings.get(t.id, 0) >= 7]
+            seed_artist = next(
+                (t.artist for t in candidates
+                 if t.artist.strip() and normalize(t.artist) != "неизвестный исполнитель"),
+                "",
+            )
+        if not seed_artist:
+            raise HTTPException(
+                status_code=409,
+                detail="Укажи исполнителя или добавь любимую музыку",
+            )
+        try:
+            found = await catalog_client.artist_radio(
+                seed_artist, difficulty=difficulty, limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Некорректный исполнитель") from exc
+        except CatalogError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        db.remember_candidates(found)
+        return {
+            "artist_seed": seed_artist,
+            "type": "metadata_only",
+            "results": catalog_result(found),
+        }
+
+    @app.get("/api/discovery/wishlist", dependencies=[auth])
+    async def wishlist():
+        return {"results": [
+            {**track, "playable": False}
+            for track in db.wishlist(100)
+        ]}
+
+    @app.post("/api/discovery/wishlist/{mbid}", dependencies=[auth])
+    async def wishlist_add(mbid: str):
+        if not valid_mbid(mbid):
+            raise HTTPException(422, detail="Некорректный MBID")
+        try:
+            changed = db.wishlist_add(mbid.lower())
+        except ValueError as exc:
+            raise HTTPException(
+                404, detail="Сначала найди этот трек через музыкальный каталог"
+            ) from exc
+        return {"saved": changed}
+
+    @app.delete("/api/discovery/wishlist/{mbid}", dependencies=[auth])
+    async def wishlist_delete(mbid: str):
+        if not valid_mbid(mbid):
+            raise HTTPException(422, detail="Некорректный MBID")
+        return {"removed": db.wishlist_remove(mbid.lower())}
 
     @app.get("/api/playlists", dependencies=[auth])
     async def playlists():
