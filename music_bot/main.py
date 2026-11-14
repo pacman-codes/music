@@ -68,7 +68,8 @@ HELP = """🎵 music — личный плеер
 /removefrom ПЛЕЙЛИСТ_ID ТРЕК_ID — убрать
 /move ПЛЕЙЛИСТ_ID ТРЕК_ID ПОЗИЦИЯ — переставить
 /playplaylist ID — слушать подборку
-/wave — обычная Волна
+/wave — Волна 2.0 (знакомое, похожее и новое)
+/mix balanced|familiar|explore — настроить Волну
 /continue — продолжить последнюю очередь после сбоя кнопок
 /discover — открытия среди сохранённых треков
 
@@ -805,6 +806,24 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             await message.answer("Пример: /playplaylist 2")
             return
         await start_playlist(bot, message.chat.id, ids[0])
+
+    @router.message(Command("mix"))
+    async def mix_cmd(message: Message):
+        raw = (message.text or "").split()
+        if len(raw) == 1:
+            await message.answer(
+                "Текущий режим Волны: " + db.get_wave_preset()
+                + ". Варианты: /mix balanced, /mix familiar, /mix explore."
+            )
+            return
+        try:
+            if len(raw) != 2:
+                raise ValueError("Invalid preset")
+            db.set_wave_preset(raw[1].lower())
+        except ValueError:
+            await message.answer("Варианты: /mix balanced|familiar|explore")
+            return
+        await message.answer("🌊 Режим Волны сохранён: " + db.get_wave_preset())
 
     @router.message(Command("wave", "discover"))
     async def wave_cmd(message: Message, bot: Bot):

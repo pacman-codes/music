@@ -436,7 +436,10 @@ async function refreshImportSettings() {
 async function refresh() {
   await Promise.all([
     refreshPlaylists(), refreshTracks(),
-    refreshImportSettings(), refreshYoutubeSettings()
+    refreshImportSettings(), refreshYoutubeSettings(),
+    api("/api/wave/preset").then(data=>{
+      byId("wave-preset").value=data.preset;
+    })
   ]);
 }
 if (tg && initData) {
@@ -451,6 +454,14 @@ if (tg && initData) {
     if (query.length < 2 || !youtubeSearchEnabled) return;
     try { await youtubeSearch(query); }
     catch(error) {show("youtube-status","YouTube-поиск недоступен");toast(error.message);}
+  });
+  byId("wave-preset").addEventListener("change", async event => {
+    try {
+      const result=await api("/api/wave/preset",{
+        method:"PUT",body:JSON.stringify({preset:event.target.value})
+      });
+      toast("Волна 2.0: "+result.preset);
+    } catch(error) { toast(error.message); }
   });
   byId("catalog-form").addEventListener("submit", async event => {
     event.preventDefault();

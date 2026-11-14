@@ -73,6 +73,10 @@ class PlaybackReport(BaseModel):
     event: Literal["skip", "complete"]
 
 
+class WavePresetRequest(BaseModel):
+    preset: Literal["balanced", "familiar", "explore"]
+
+
 class QueueRequest(BaseModel):
     kind: Literal["wave", "discover", "liked", "playlist"]
     playlist_id: int | None = None
@@ -659,6 +663,14 @@ def create_app(config: Settings | None = None,
         except ValueError as exc:
             raise HTTPException(404, detail="Playlist or track not found") from exc
         return {"changed": changed}
+
+    @app.get("/api/wave/preset", dependencies=[auth])
+    async def wave_preset():
+        return {"preset": db.get_wave_preset()}
+
+    @app.put("/api/wave/preset", dependencies=[auth])
+    async def update_wave_preset(payload: WavePresetRequest):
+        return {"preset": db.set_wave_preset(payload.preset)}
 
     @app.post("/api/queue", dependencies=[auth])
     async def send_to_telegram(request: QueueRequest):

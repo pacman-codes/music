@@ -24,6 +24,11 @@
       <p>Оценки 1–10 влияют на рекомендации. Отметки пропусков и дослушиваний вводятся вручную: Telegram не передаёт их боту.</p>
       <div class="actions">
         <button type="button" id="wave" class="primary">Слушать волну</button>
+        <select id="wave-preset" aria-label="Состав Волны">
+          <option value="balanced">60% знакомое · 25% похожее · 15% новое</option>
+          <option value="familiar">80% знакомое · 15% похожее · 5% новое</option>
+          <option value="explore">35% знакомое · 30% похожее · 35% новое</option>
+        </select>
         <button type="button" id="discover">Открытия</button>
       </div>
     </section>

@@ -6,6 +6,7 @@ No Telegram-native skip/completion events are available.
 from __future__ import annotations
 
 from music_bot.recommend import wave
+from music_bot.wave_v2 import wave_v2
 from music_bot.storage import Library, Track
 
 
@@ -35,8 +36,18 @@ def select_wave_batch(db: Library, mode: str, count: int = 10) -> list[Track]:
         "mode": mode,
         "count": count,
     }
-    result = wave(pool, **prefs)
+    result = (wave_v2(pool, prefs["liked_ids"], prefs["disliked_ids"],
+                      ratings=prefs["ratings"], playback=prefs["playback"],
+                      recent_ids=prefs["recent_ids"], count=count,
+                      preset=db.get_wave_preset())
+              if mode == "balanced" else wave(pool, **prefs))
     if not result and pool is not candidates:
         # The only non-recent candidates might all be explicitly excluded.
-        result = wave(candidates, **prefs)
+        result = (
+            wave_v2(candidates, prefs["liked_ids"], prefs["disliked_ids"],
+                    ratings=prefs["ratings"], playback=prefs["playback"],
+                    recent_ids=prefs["recent_ids"], count=count,
+                    preset=db.get_wave_preset())
+            if mode == "balanced" else wave(candidates, **prefs)
+        )
     return result

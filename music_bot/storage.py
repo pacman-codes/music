@@ -140,6 +140,9 @@ class Library:
               PRIMARY KEY(playlist_id,track_id));
             CREATE TABLE IF NOT EXISTS dislikes(
               track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE);
+            CREATE TABLE IF NOT EXISTS library_preferences (
+              pref_key TEXT PRIMARY KEY,
+              pref_value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS queues(
               id INTEGER PRIMARY KEY,
               label TEXT NOT NULL,
@@ -378,6 +381,26 @@ class Library:
                 [(queue_id, i, t_id) for i, t_id in enumerate(ids)],
             )
             return queue_id
+
+    def get_wave_preset(self) -> str:
+        with self.con() as db:
+            row = db.execute(
+                "SELECT pref_value FROM library_preferences WHERE pref_key='wave_preset'"
+            ).fetchone()
+            value = str(row["pref_value"]) if row else "balanced"
+            return value if value in {"balanced", "familiar", "explore"} else "balanced"
+
+    def set_wave_preset(self, preset: str) -> str:
+        if preset not in {"balanced", "familiar", "explore"}:
+            raise ValueError("Unknown Wave 2.0 preset")
+        with self.con() as db:
+            db.execute(
+                """INSERT INTO library_preferences(pref_key,pref_value)
+                   VALUES('wave_preset',?)
+                   ON CONFLICT(pref_key) DO UPDATE SET pref_value=excluded.pref_value""",
+                (preset,),
+            )
+        return preset
 
     def latest_queue_id(self) -> int | None:
         """Return the latest persisted listening queue (owner-only bot)."""
