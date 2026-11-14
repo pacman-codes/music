@@ -812,10 +812,16 @@ class Library:
         with self.con() as db:
             db.execute("BEGIN IMMEDIATE")
             candidate = db.execute(
-                "SELECT mbid FROM catalog_candidates WHERE mbid=?", (mbid,)
+                "SELECT mbid,title,artist FROM catalog_candidates WHERE mbid=?",
+                (mbid,),
             ).fetchone()
             video = db.execute(
-                """SELECT a.track_id FROM youtube_audio_assets a
+                """SELECT a.track_id, v.title AS video_title,
+                          v.channel AS video_channel,
+                          t.title AS track_title,t.artist AS track_artist
+                   FROM youtube_audio_assets a
+                   JOIN youtube_candidates v ON v.video_id=a.video_id
+                   JOIN tracks t ON t.id=a.track_id
                    WHERE a.video_id=?""", (video_id,)
             ).fetchone()
             if candidate is None or video is None:
@@ -846,6 +852,16 @@ class Library:
                    provenance='import',linked_at=CURRENT_TIMESTAMP""",
                 (track_id, mbid),
             )
+            # A plain /yt import initially uses the YouTube channel and
+            # video title. On later *explicit* identification, promote only
+            # untouched metadata, never overwrite user-edited names.
+            if (video["track_title"] == video["video_title"] and
+                    video["track_artist"] == video["video_channel"]):
+                db.execute(
+                    "UPDATE tracks SET title=?,artist=? WHERE id=?",
+                    (candidate["title"][:250], candidate["artist"][:250],
+                     track_id),
+                )
             return track_id
 
     def remember_anime(self, entries) -> None:
