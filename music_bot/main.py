@@ -12,8 +12,10 @@ from aiogram.types import (
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaAudio, Message, WebAppInfo,
 )
 
+from music_bot.anime import AniListCatalog
 from music_bot.catalog import MusicCatalog
 from music_bot.config import load_settings
+from music_bot.telegram_anime import install_anime_handlers
 from music_bot.telegram_catalog import install_catalog_handlers
 from music_bot.telegram_import import install_import_handlers
 from music_bot.telegram_youtube import install_youtube_handlers
@@ -38,6 +40,11 @@ HELP = """🎵 music — личный плеер
 /yt Запрос — YouTube-поиск (если включён)
 /ytget VIDEO_ID — получить разрешённое аудио в Telegram
 /ytfor MBID — подобрать YouTube-версии записи MusicBrainz
+/anime Название — поиск аниме AniList
+/animelist — список смотрю/просмотрено/в планах
+/animestatus ID plan|watch|done|hold|drop
+/animeprogress ID Серий — прогресс
+/animerate ID 1-10 — оценка аниме
 /liked — избранное
 /like ID /unlike ID /dislike ID — избранное и исключения
 /rate ID 1-10 — оценка трека
@@ -247,7 +254,8 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                   catalog: MusicCatalog | None = None,
                   media_hosts: tuple[str, ...] = (),
                   youtube_search_enabled: bool = False,
-                  youtube_download_enabled: bool = False) -> Router:
+                  youtube_download_enabled: bool = False,
+                  anime_catalog: AniListCatalog | None = None) -> Router:
     router = Router()
     router.message.middleware(OwnerOnly(owner_id))
     router.callback_query.middleware(OwnerOnly(owner_id))
@@ -682,6 +690,8 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         router, db, owner_id, search_enabled=youtube_search_enabled,
         download_enabled=youtube_download_enabled,
     )
+    if anime_catalog is not None:
+        install_anime_handlers(router, db, anime_catalog)
     return router
 
 
@@ -690,6 +700,7 @@ async def main():
     config = load_settings()
     db = Library(config.db_path)
     catalog = MusicCatalog(config.db_path)
+    anime_catalog = AniListCatalog(config.db_path)
     bot = Bot(token=config.token)
     dp = Dispatcher()
     dp.include_router(create_router(
@@ -697,11 +708,13 @@ async def main():
         catalog=catalog, media_hosts=config.allowed_media_hosts,
         youtube_search_enabled=config.youtube_search_enabled,
         youtube_download_enabled=config.youtube_download_enabled,
+        anime_catalog=anime_catalog,
     ))
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await catalog.close()
+        await anime_catalog.close()
         await bot.session.close()
 
 
