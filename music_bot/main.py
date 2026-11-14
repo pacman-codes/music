@@ -139,6 +139,15 @@ def track_keyboard(track_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def quick_play_buttons(tracks: list[Track] | tuple[Track, ...],
+                       limit: int = 8) -> list[list[InlineKeyboardButton]]:
+    """Direct play buttons for search and library lists without many /play IDs."""
+    return [
+        [button(f"▶ #{t.id} {t.artist[:12]} — {t.title[:24]}", f"play:{t.id}")]
+        for t in tracks[:limit]
+    ]
+
+
 def rating_keyboard(track_id: int) -> InlineKeyboardMarkup:
     return keyboard([
         [button(str(n), f"rate:{track_id}:{n}") for n in range(1, 6)],
@@ -355,12 +364,16 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         tracks = db.all_tracks(20)
         await message.answer(
             format_tracks(tracks, "🎵 Библиотека:") if tracks
-            else "Библиотека пуста. Пришли аудио."
+            else "Библиотека пуста. Пришли аудио.",
+            reply_markup=keyboard(quick_play_buttons(tracks)) if tracks else None,
         )
 
     async def show_liked(message: Message) -> None:
         tracks = db.playlist_tracks(db.liked_id(), 30)
-        rows = [[button("▶️ Слушать понравившиеся", f"playlist:{db.liked_id()}")]]
+        rows = (
+            [[button("▶️ Слушать понравившиеся", f"playlist:{db.liked_id()}")]]
+            + quick_play_buttons(tracks, limit=6)
+        )
         await message.answer(
             format_tracks(tracks, "❤️ Мне нравится:") if tracks
             else "Список понравившихся пока пуст.",
@@ -574,7 +587,8 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             return
         tracks = db.search_tracks(query)
         await message.answer(
-            format_tracks(tracks, "🔎 Результаты:") if tracks else "Ничего не найдено."
+            format_tracks(tracks, "🔎 Результаты:") if tracks else "Ничего не найдено.",
+            reply_markup=keyboard(quick_play_buttons(tracks)) if tracks else None,
         )
 
     @router.message(Command("liked"))
