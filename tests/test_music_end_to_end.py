@@ -191,3 +191,64 @@ def test_failed_telegram_upload_keeps_library_empty(tmp_path, monkeypatch):
         assert db.all_tracks() == []
         assert db.get_youtube_video(VIDEO)["track_id"] is None
         assert not BotRecorder.paths[0].exists()
+
+
+def test_selected_musicbrainz_recording_becomes_playable_after_youtube_upload(
+    tmp_path, monkeypatch,
+):
+    """An explicit choice must link MusicBrainz without using uploader metadata."""
+    from music_bot.catalog import CatalogTrack
+
+    BotRecorder.audio = []
+    BotRecorder.media_groups = []
+    BotRecorder.messages = []
+    BotRecorder.paths = []
+    BotRecorder.invalid_uploads = False
+    monkeypatch.setattr(api_module, "Bot", BotRecorder)
+    cfg = Settings(TOKEN, OWNER, tmp_path / "db.sqlite", None, (), True, True)
+    db = Library(cfg.db_path)
+    mbid = "8a49dba0-253a-4535-b87f-78bb035336ce"
+    db.remember_candidates([CatalogTrack(mbid, "Roads", "Portishead")])
+
+    class MismatchedYoutube:
+        async def search(self, query, *, limit):
+            return [VideoCandidate(VIDEO, "Portishead Roads - official",
+                                   "RandomYoutubeChannel", 302)]
+
+    @asynccontextmanager
+    async def fake_download(video_id):
+        path = tmp_path / "incoming.mp3"
+        path.write_bytes(b"ID3" + b"\x00" * 200)
+        try:
+            yield path
+        finally:
+            path.unlink(missing_ok=True)
+
+    monkeypatch.setattr(youtube_module, "temporary_youtube_mp3", fake_download)
+
+    with TestClient(create_app(cfg, youtube_source=MismatchedYoutube())) as client:
+        headers = signed_init_data()
+        lookup = client.get("/api/youtube/search?q=Roads", headers=headers)
+        assert lookup.status_code == 200
+        assert db.get_youtube_video(VIDEO)["track_id"] is None
+        invalid = client.post(
+            f"/api/youtube/import/{VIDEO}", headers=headers,
+            json={"recording_mbid": "invalid"},
+        )
+        assert invalid.status_code == 422
+        assert db.all_tracks() == []
+
+        uploaded = client.post(
+            f"/api/youtube/import/{VIDEO}", headers=headers,
+            json={"recording_mbid": mbid},
+        )
+        assert uploaded.status_code == 200, uploaded.text
+        track = db.get_track(uploaded.json()["track_id"])
+        assert (track.title, track.artist) == ("Roads", "Portishead")
+        assert db.resolved_catalog_tracks()[mbid] == track.id
+
+        # Public MusicBrainz lookup is separately mocked elsewhere; the
+        # permanent local catalog binding is the source of truth.
+        assert db.recording_for_track(track.id)["mbid"] == mbid
+        assert db.recording_for_track(track.id)["provenance"] == "import"
+        assert not BotRecorder.paths[0].exists()
