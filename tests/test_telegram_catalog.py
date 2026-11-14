@@ -14,7 +14,7 @@ def test_external_result_message_is_not_a_false_playback_queue():
     item = CatalogTrack(MBID, "Roads", "Portishead")
     text = format_catalog([item], "Новая музыка")
     assert "Portishead — Roads" in text
-    assert "не Telegram-аудио" in text
+    assert "только для" in text
     markup = catalog_keyboard([item])
     assert markup.inline_keyboard[0][0].callback_data == f"wish:{MBID}"
     assert not any(

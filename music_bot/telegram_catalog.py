@@ -52,7 +52,9 @@ def default_artist(db: Library) -> str | None:
 
 
 def format_catalog(rows: list[CatalogTrack], title: str) -> str:
-    lines = [title, "Новые находки — метаданные, не Telegram-аудио."]
+    lines = [title,
+             "MusicBrainz показывает записи каталога. ▶ доступно только для "
+             "уже загруженного и подтверждённого Telegram-аудио."]
     for i, item in enumerate(rows[:8], 1):
         variant = " [другая версия]" if item.variant else ""
         lines.append(f"{i}. {item.artist} — {item.title}{variant}"[:250])
