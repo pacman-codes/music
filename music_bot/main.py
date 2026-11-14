@@ -132,6 +132,25 @@ def callback_message(callback: CallbackQuery) -> Message | None:
     return callback.message if isinstance(callback.message, Message) else None
 
 
+def queue_feedback_keyboard(tracks: tuple[Track, ...], queue_id: int,
+                            has_more: bool) -> InlineKeyboardMarkup:
+    """Compact, native Telegram control surface for this specific audio batch.
+
+    sendMediaGroup cannot attach an inline keyboard to each audio message.
+    A single companion card allows selecting any of up to 10 tracks.
+    """
+    choices = [
+        button(f"⭐ {index + 1}. {track.title[:14]}", f"rateopen:{track.id}")
+        for index, track in enumerate(tracks)
+    ]
+    rows = [choices[offset:offset + 2] for offset in range(0, len(choices), 2)]
+    if has_more:
+        rows.append([button("▶️ Ещё 10", f"more:{queue_id}")])
+    rows.append([button("🌊 Новая волна", "nav:wave"),
+                 button("📂 Плейлисты", "nav:playlists")])
+    return keyboard(rows)
+
+
 async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
                         send_lock: asyncio.Lock) -> None:
     """Serialize sends and only advance a queue after Telegram accepts its batch."""
@@ -177,19 +196,25 @@ async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
             await bot.send_message(chat_id, "Очередь изменилась, создай новую /wave.")
             return
 
-        if batch.remaining_after:
-            more = keyboard([[button("▶️ Ещё 10", f"more:{queue_id}")],
-                             [button("🌊 Новая волна", "nav:wave")]])
-            await bot.send_message(
-                chat_id,
-                f"🎧 {batch.label}: отправлено {len(batch.tracks)}, "
-                f"осталось {batch.remaining_after}.",
-                reply_markup=more,
-            )
-        else:
-            await bot.send_message(
-                chat_id, "✅ Подборка закончилась.", reply_markup=home_keyboard()
-            )
+        # Show controls after Telegram accepts the audio batch. This is
+        # deliberately a separate message: media groups do not support markup
+        # on individual audio messages.
+        count = len(batch.tracks)
+        notice = (
+            f"🎧 {batch.label}: отправлено {count}, осталось {batch.remaining_after}."
+            if batch.remaining_after else
+            f"✅ {batch.label}: последние {count} треков отправлены."
+        )
+        notice += (
+            "\n⭐ Выбери песню для оценки 1–10. "
+            "Пропуски и дослушивания отмечаются только вручную."
+        )
+        await bot.send_message(
+            chat_id, notice,
+            reply_markup=queue_feedback_keyboard(
+                batch.tracks, queue_id, bool(batch.remaining_after)
+            ),
+        )
 
 
 def create_router(db: Library, owner_id: int, webapp_url: str | None = None) -> Router:
@@ -283,13 +308,15 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None) -> 
         if message is None:
             await callback.answer("Не удалось открыть оценку", show_alert=True)
             return
-        if not any(t.id == track_id for t in db.all_tracks()):
+        track = db.get_track(track_id)
+        if track is None:
             await callback.answer("Трек не найден", show_alert=True)
             return
         current = db.ratings().get(track_id)
         await callback.answer()
         await message.answer(
-            f"⭐ Трек #{track_id}. Твоя оценка: {str(current)+'/10' if current else 'нет'}.\n"
+            f"⭐ {track.artist} — {track.title} (#{track_id}). "
+            f"Оценка: {str(current)+'/10' if current else 'нет'}.\n"
             "Пропуск и дослушивание здесь отмечаются вручную; "
             "Telegram не сообщает о них автоматически.",
             reply_markup=rating_keyboard(track_id),

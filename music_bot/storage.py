@@ -108,6 +108,11 @@ class Library:
             row = db.execute("SELECT * FROM tracks WHERE file_unique_id=?", (unique_id,)).fetchone()
             return self.track(row)
 
+    def get_track(self, track_id: int) -> Track | None:
+        with self.con() as db:
+            row = db.execute("SELECT * FROM tracks WHERE id=?", (track_id,)).fetchone()
+            return self.track(row) if row is not None else None
+
     def all_tracks(self, limit=1000):
         with self.con() as db:
             return [self.track(r) for r in db.execute(
