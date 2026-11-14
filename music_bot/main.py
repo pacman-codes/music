@@ -9,7 +9,7 @@ from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.types import (
-    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaAudio, Message,
+    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaAudio, Message, WebAppInfo,
 )
 
 from music_bot.config import load_settings
@@ -77,14 +77,22 @@ def keyboard(rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def home_keyboard() -> InlineKeyboardMarkup:
-    return keyboard([
+def home_keyboard(webapp_url: str | None = None) -> InlineKeyboardMarkup:
+    rows = [
         [button("🌊 Моя волна", "nav:wave"),
          button("🆕 Открытия", "nav:discover")],
         [button("❤️ Понравившиеся", "nav:liked"),
          button("📂 Плейлисты", "nav:playlists")],
         [button("🎵 Библиотека", "nav:library")],
-    ])
+    ]
+    if webapp_url:
+        rows.insert(0, [
+            InlineKeyboardButton(
+                text="📱 Открыть медиатеку",
+                web_app=WebAppInfo(url=webapp_url),
+            )
+        ])
+    return keyboard(rows)
 
 
 def track_keyboard(track_id: int) -> InlineKeyboardMarkup:
@@ -170,7 +178,7 @@ async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
             )
 
 
-def create_router(db: Library, owner_id: int) -> Router:
+def create_router(db: Library, owner_id: int, webapp_url: str | None = None) -> Router:
     router = Router()
     router.message.middleware(OwnerOnly(owner_id))
     router.callback_query.middleware(OwnerOnly(owner_id))
@@ -234,7 +242,7 @@ def create_router(db: Library, owner_id: int) -> Router:
 
     @router.message(Command("start", "help"))
     async def start(message: Message):
-        await message.answer(HELP, reply_markup=home_keyboard())
+        await message.answer(HELP, reply_markup=home_keyboard(webapp_url))
 
     @router.message(F.audio)
     async def audio(message: Message):
@@ -522,7 +530,7 @@ async def main():
     db = Library(config.db_path)
     bot = Bot(token=config.token)
     dp = Dispatcher()
-    dp.include_router(create_router(db, config.owner_id))
+    dp.include_router(create_router(db, config.owner_id, config.webapp_url))
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
