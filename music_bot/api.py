@@ -21,6 +21,7 @@ from music_bot.importer import AudioIngestService, MediaImportError
 from music_bot.main import deliver_queue
 from music_bot.personalized import personalized_discovery
 from music_bot.selection import select_wave_batch
+from music_bot.screen import TmdbCatalog, TmdbError
 from music_bot.source_matching import suggest_sources
 from music_bot.storage import Library
 from music_bot.webapp_auth import InvalidInitData, verify_init_data
@@ -35,6 +36,13 @@ class DirectImportRequest(BaseModel):
 
 class RecordingMatchRequest(BaseModel):
     mbid: str = Field(min_length=36, max_length=36)
+
+
+class ScreenWatchRequest(BaseModel):
+    watch_status: Literal["planned", "watching", "completed", "on_hold", "dropped"]
+    season: int = Field(default=0, ge=0, le=1000, strict=True)
+    episode: int = Field(default=0, ge=0, le=10000, strict=True)
+    score: int | None = Field(default=None, ge=1, le=10, strict=True)
 
 
 class AnimeWatchRequest(BaseModel):
@@ -69,11 +77,15 @@ def create_app(config: Settings | None = None,
                importer: AudioIngestService | None = None,
                youtube_source: YouTubeSource | None = None,
                youtube_ingest: YouTubeIngestService | None = None,
-               anime_catalog: AniListCatalog | None = None) -> FastAPI:
+               anime_catalog: AniListCatalog | None = None,
+               screen_catalog: TmdbCatalog | None = None) -> FastAPI:
     settings = config or load_settings()
     db = Library(settings.db_path)
     catalog_client = catalog or MusicCatalog(settings.db_path)
     anime_client = anime_catalog or AniListCatalog(settings.db_path)
+    screen_client = screen_catalog or TmdbCatalog(
+        settings.db_path, settings.tmdb_read_token or "",
+    )
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         try:
@@ -83,6 +95,8 @@ def create_app(config: Settings | None = None,
                 await catalog_client.close()
             if anime_catalog is None:
                 await anime_client.close()
+            if screen_catalog is None:
+                await screen_client.close()
 
     app = FastAPI(
         title="music private Mini App",
@@ -393,6 +407,49 @@ def create_app(config: Settings | None = None,
             "suggestions": [s.public() for s in matches],
             "auto_imported": False,
         }
+
+    @app.get("/api/screen/status", dependencies=[auth])
+    async def screen_catalog_status():
+        return {"enabled": bool(settings.tmdb_read_token)}
+
+    @app.get("/api/screen/search", dependencies=[auth])
+    async def search_screen(
+        q: str = Query(min_length=2, max_length=100),
+        limit: int = Query(default=15, ge=1, le=20),
+    ):
+        if not settings.tmdb_read_token and screen_catalog is None:
+            raise HTTPException(409, detail="Каталог TMDB пока не настроен")
+        try:
+            movies = await screen_client.search(q, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(422, detail="Некорректный запрос") from exc
+        except TmdbError as exc:
+            raise HTTPException(502, detail=str(exc)) from exc
+        db.remember_screen_titles(movies)
+        return {"results": [movie.public() for movie in movies],
+                "type": "metadata_only"}
+
+    @app.get("/api/screen/watchlist", dependencies=[auth])
+    async def screen_watchlist():
+        return {"results": [{**item,"playable":False}
+                            for item in db.screen_watchlist()]}
+
+    @app.post("/api/screen/watchlist/{kind}/{tmdb_id}", dependencies=[auth])
+    async def screen_watch_update(
+        kind: Literal["movie","tv"], tmdb_id: int,
+        body: ScreenWatchRequest,
+    ):
+        try:
+            return db.update_screen_watch(
+                kind,tmdb_id,watch_status=body.watch_status,
+                season=body.season,episode=body.episode,score=body.score,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
+
+    @app.delete("/api/screen/watchlist/{kind}/{tmdb_id}", dependencies=[auth])
+    async def screen_watch_delete(kind: Literal["movie","tv"], tmdb_id: int):
+        return {"removed": db.remove_screen_watch(kind,tmdb_id)}
 
     @app.get("/api/anime/search", dependencies=[auth])
     async def anime_search(
