@@ -58,6 +58,13 @@ class Library:
             CREATE TABLE IF NOT EXISTS tracks(
               id INTEGER PRIMARY KEY, file_id TEXT NOT NULL,
               file_unique_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, artist TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS track_recording_links(
+              track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+              mbid TEXT NOT NULL REFERENCES catalog_candidates(mbid) ON DELETE CASCADE,
+              provenance TEXT NOT NULL CHECK(provenance IN ('confirmed','import')),
+              linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE INDEX IF NOT EXISTS track_recording_by_mbid
+              ON track_recording_links(mbid);
             CREATE TABLE IF NOT EXISTS playlists(
               id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
               kind TEXT NOT NULL DEFAULT 'custom' CHECK (kind IN ('liked','custom')));
@@ -583,7 +590,7 @@ class Library:
             return dict(row) if row is not None else None
 
     def link_candidate_track(self, mbid: str, track_id: int) -> None:
-        """Only the successful Telegram upload path should call this method."""
+        """The successful Telegram upload path binds both asset and recording identity."""
         with self.con() as db:
             if not db.execute("SELECT 1 FROM catalog_candidates WHERE mbid=?", (mbid,)).fetchone():
                 raise ValueError("Unknown catalog recording")
@@ -595,9 +602,83 @@ class Library:
                      track_id=excluded.track_id, linked_at=CURRENT_TIMESTAMP""",
                 (mbid, track_id),
             )
+            db.execute(
+                """INSERT INTO track_recording_links(track_id,mbid,provenance)
+                   VALUES(?,?,'import')
+                   ON CONFLICT(track_id) DO UPDATE SET
+                     mbid=excluded.mbid, provenance='import',
+                     linked_at=CURRENT_TIMESTAMP""",
+                (track_id, mbid),
+            )
 
     def linked_candidate_tracks(self) -> dict[str, int]:
         with self.con() as db:
             return {str(row[0]): int(row[1]) for row in db.execute(
                 "SELECT mbid,track_id FROM catalog_audio_assets"
+            )}
+
+    def confirm_recording_match(self, track_id: int, mbid: str) -> dict:
+        """Owner-confirmed identity for existing Telegram files.
+
+        This is NEVER inferred from title matching. Imported/authoritative links
+        are immutable here. Candidates must already exist in the trusted cache.
+        """
+        with self.con() as db:
+            if not db.execute("SELECT 1 FROM tracks WHERE id=?", (track_id,)).fetchone():
+                raise ValueError("Track not found")
+            candidate = db.execute(
+                "SELECT mbid,title,artist,artist_mbid FROM catalog_candidates WHERE mbid=?",
+                (mbid,),
+            ).fetchone()
+            if candidate is None:
+                raise ValueError("Recording not found in catalog")
+            current = db.execute(
+                "SELECT provenance FROM track_recording_links WHERE track_id=?",
+                (track_id,),
+            ).fetchone()
+            if current is not None and current["provenance"] == "import":
+                raise ValueError("Imported recording links cannot be reassigned manually")
+            db.execute(
+                """INSERT INTO track_recording_links(track_id,mbid,provenance)
+                   VALUES(?,?,'confirmed')
+                   ON CONFLICT(track_id) DO UPDATE SET
+                    mbid=excluded.mbid, provenance='confirmed',
+                    linked_at=CURRENT_TIMESTAMP""",
+                (track_id, mbid),
+            )
+            return dict(candidate)
+
+    def unlink_recording_match(self, track_id: int) -> bool:
+        """Remove only manually confirmed identity, never an imported asset."""
+        with self.con() as db:
+            return bool(db.execute(
+                """DELETE FROM track_recording_links
+                   WHERE track_id=? AND provenance='confirmed'""",
+                (track_id,),
+            ).rowcount)
+
+    def recording_for_track(self, track_id: int) -> dict | None:
+        with self.con() as db:
+            row = db.execute(
+                """SELECT l.track_id,l.mbid,l.provenance,c.title,c.artist,
+                          c.artist_mbid,c.duration_ms,c.variant
+                   FROM track_recording_links l
+                   JOIN catalog_candidates c ON c.mbid=l.mbid
+                   WHERE l.track_id=?""", (track_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def recording_for_tracks(self) -> dict[int, dict]:
+        with self.con() as db:
+            return {int(row["track_id"]): dict(row) for row in db.execute(
+                """SELECT l.track_id,l.mbid,l.provenance,c.title,c.artist,
+                          c.artist_mbid,c.duration_ms,c.variant
+                   FROM track_recording_links l
+                   JOIN catalog_candidates c ON c.mbid=l.mbid"""
+            )}
+
+    def confirmed_recording_ids(self) -> set[str]:
+        with self.con() as db:
+            return {str(row[0]) for row in db.execute(
+                "SELECT mbid FROM track_recording_links"
             )}
