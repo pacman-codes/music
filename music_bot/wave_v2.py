@@ -34,7 +34,8 @@ def classify(tracks, liked_ids, ratings, playback, related_ids=frozenset()):
         loved = t.id in liked_ids or ratings.get(t.id, 0) >= 8
         if loved:
             category = "familiar"
-        elif t.artist.strip().casefold() in positive_artists or t.id in related_ids:
+        elif (ratings.get(t.id, 10) >= 5 and
+              (t.artist.strip().casefold() in positive_artists or t.id in related_ids)):
             category = "similar"
         else:
             category = "new"
