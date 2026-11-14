@@ -177,3 +177,25 @@ def test_direct_import_reuses_owner_confirmed_audio_without_downloading(db):
 
     asyncio.run(scenario())
     assert db.resolved_catalog_tracks() == {A: first.id}
+
+
+def test_local_tags_require_confirmed_recording_and_preserve_telegram_file(db):
+    candidates(db)
+    t=db.add_track("existing-file-id","existing-unique","Unknown title","Unknown artist")
+    db.like(t.id)
+    db.set_rating(t.id,9)
+    with pytest.raises(ValueError,match="Confirm"):
+        db.apply_confirmed_recording_tags(t.id)
+    db.confirm_recording_match(t.id,A)
+    tagged=db.apply_confirmed_recording_tags(t.id)
+    assert tagged.title=="Roads" and tagged.artist=="Portishead"
+    assert tagged.file_id=="existing-file-id"
+    assert tagged.file_unique_id=="existing-unique"
+    assert t.id in db.liked_ids()
+    assert db.ratings()[t.id]==9
+    assert db.recording_for_track(t.id)["mbid"]==A
+    db.confirm_recording_match(t.id,B)
+    again=db.apply_confirmed_recording_tags(t.id)
+    assert again.title=="Roads (Live)"
+    with pytest.raises(ValueError):
+        db.apply_confirmed_recording_tags(999)
