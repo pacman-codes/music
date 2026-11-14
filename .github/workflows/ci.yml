@@ -18,3 +18,11 @@ jobs:
         run: node --check web/app.js && node --check web/anime.js && node --check web/screen.js
       - name: Validate optional YouTube Docker Compose configuration
         run: cp .env.example .env && docker compose config -q
+      - name: Build production image with the default lightweight profile
+        run: docker build --pull -t music-ci:latest .
+      - name: Smoke test installed package and read-only doctor in Docker
+        run: |
+          docker run --rm \
+            -e BOT_TOKEN=123456:ci-placeholder \
+            -e OWNER_TELEGRAM_ID=42 \
+            music-ci:latest python -m music_bot.doctor --json
