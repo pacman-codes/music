@@ -5,7 +5,7 @@ import pytest
 
 from music_bot.catalog import CatalogTrack
 from music_bot.discovery_ranking import fuse_artist_radio
-from music_bot.personalized import personalized_discovery, strongly_negative_artists
+from music_bot.personalized import personalized_discovery, ranked_seed_artists, strongly_negative_artists
 from music_bot.storage import Library
 
 A = "8a49dba0-253a-4535-b87f-78bb035336ce"
@@ -81,3 +81,25 @@ def test_personalized_radio_filters_strong_negative_artists(tmp_path):
     ))
     assert artists == ["Seed"]
     assert [c.mbid for c in candidates] == [B]
+
+
+def test_cold_start_uses_saved_artists_without_fake_listens(tmp_path):
+    db = Library(tmp_path / "db.sqlite")
+    db.add_track("fa1", "ua1", "One", "Very Saved")
+    db.add_track("fa2", "ua2", "Two", "Very Saved")
+    db.add_track("fb", "ub", "Three", "Other")
+    seeds = ranked_seed_artists(db, count=3)
+    assert [seed.name for seed in seeds] == ["Very Saved", "Other"]
+    assert seeds[0].score < 1.0  # weak inference, not a fabricated rating
+    assert db.playback_stats() == {}
+    assert db.ratings() == {}
+    assert db.liked_ids() == set()
+
+
+def test_cold_start_ignores_repeatedly_rejected_artist(tmp_path):
+    db = Library(tmp_path / "db.sqlite")
+    for n in (1, 2):
+        t = db.add_track(f"badf{n}", f"badu{n}", f"Bad{n}", "Rejected")
+        db.set_rating(t.id, 1)
+    db.add_track("good", "gooduid", "OK", "Unrated")
+    assert [seed.name for seed in ranked_seed_artists(db)] == ["Unrated"]
