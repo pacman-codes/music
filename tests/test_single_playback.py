@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 import music_bot.api as api_module
 from music_bot.api import create_app
 from music_bot.config import Settings
-from music_bot.main import send_single_track, track_keyboard
+from music_bot.main import send_single_track, track_keyboard, quick_play_buttons
 from music_bot.storage import Library
 
 TOKEN = "123456:fake-token"
@@ -111,3 +111,18 @@ def test_play_endpoint_owner_only_and_playback_failures(tmp_path, monkeypatch):
             RecordingBot.failure = False
         assert len(RecordingBot.audio_calls) == 1
         assert Library(cfg.db_path).recent_ids()[0] == track.id
+
+
+def test_compact_quick_play_buttons_for_search_and_liked(tmp_path):
+    db = Library(tmp_path / "db.sqlite")
+    songs = [
+        db.add_track(f"tg-file-{i}", f"uniq-{i}", "X" * 160, "Artist")
+        for i in range(12)
+    ]
+    buttons = quick_play_buttons(songs)
+    assert len(buttons) == 8
+    assert [row[0].callback_data for row in buttons] == [
+        f"play:{t.id}" for t in songs[:8]
+    ]
+    assert all(len(row[0].text) <= 55 for row in buttons)
+    assert quick_play_buttons([], limit=8) == []
