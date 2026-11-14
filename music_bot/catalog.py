@@ -292,8 +292,21 @@ class MusicCatalog:
         if seed is None or not valid_mbid(seed.get("id")):
             return []
 
+        return await self.artist_radio_by_id(seed["id"], difficulty=difficulty,
+                                             limit=limit)
+
+    async def artist_radio_by_id(self, artist_mbid: str, *, difficulty: str = "medium",
+                                 limit: int = 12) -> list[CatalogTrack]:
+        """Discover records by a *confirmed* MusicBrainz artist identifier.
+
+        Avoids fuzzy resolution when the owner has matched the seed track.
+        """
+        if not valid_mbid(artist_mbid) or difficulty not in {"easy", "medium", "hard"}:
+            raise ValueError("Invalid artist MBID or radio mode")
+        if not 1 <= limit <= 20:
+            raise ValueError("Invalid radio result count")
         result = await self._json(
-            "lb", f'/1/lb-radio/artist/{seed["id"]}',
+            "lb", f'/1/lb-radio/artist/{artist_mbid.lower()}',
             {"mode": difficulty, "max_similar_artists": 6,
              "max_recordings_per_artist": 5, "pop_begin": 0, "pop_end": 100},
             ttl=86400,
