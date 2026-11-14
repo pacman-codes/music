@@ -693,7 +693,30 @@ def create_app(config: Settings | None = None,
     @app.get("/api/queue/current", dependencies=[auth])
     async def queue_current():
         current = db.latest_queue_id()
-        return db.queue_snapshot(current) if current is not None else None
+        if current is None:
+            return None
+        result = db.queue_snapshot(current)
+        result["filters"] = db.get_queue_filters(current)
+        return result
+
+    @app.post("/api/queue/{queue_id}/send", dependencies=[auth])
+    async def queue_send_next(queue_id: int):
+        try:
+            before = db.queue_snapshot(queue_id)
+        except ValueError as exc:
+            raise HTTPException(404, detail=str(exc)) from exc
+        async with Bot(token=settings.token) as bot:
+            await deliver_queue(
+                bot, db, settings.owner_id, queue_id, send_lock,
+                expected_cursor=before["cursor"],
+            )
+        after = db.queue_snapshot(queue_id)
+        advanced = after["cursor"] - before["cursor"]
+        if advanced <= 0:
+            raise HTTPException(
+                409, detail="Очередь закончилась, занята или Telegram не ответил"
+            )
+        return {"queue_id": queue_id, "sent": advanced, "cursor": after["cursor"]}
 
     @app.get("/api/queue/{queue_id}", dependencies=[auth])
     async def queue_preview(queue_id: int):
