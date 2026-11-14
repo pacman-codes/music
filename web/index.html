@@ -9,6 +9,7 @@
   <script src="https://telegram.org/js/telegram-web-app.js?65"></script>
   <script src="/assets/app.js" defer></script>
   <script src="/assets/anime.js" defer></script>
+  <script src="/assets/screen.js" defer></script>
 </head>
 <body>
   <header>
@@ -72,6 +73,17 @@
       </form>
       <div class="catalog-caption" id="anime-status" role="status" aria-live="polite"></div>
       <div id="anime-results" class="list"></div>
+    </section>
+    <section id="screen-section" hidden>
+      <div class="heading"><h2>🎬 Фильмы и сериалы</h2><button type="button" id="screen-watchlist">Мой список</button></div>
+      <p class="catalog-hint">Каталог TMDB. Можно вести просмотренное и серии; видеоплеер будет отдельным этапом.</p>
+      <form id="screen-form" class="catalog-form">
+        <input id="screen-query" type="search" minlength="2" maxlength="100"
+               placeholder="Название фильма или сериала" required autocomplete="off">
+        <button type="submit">Найти</button>
+      </form>
+      <div class="catalog-caption" id="screen-status" role="status" aria-live="polite"></div>
+      <div id="screen-results" class="list"></div>
     </section>
     <section>
       <div class="heading"><h2>Плейлисты</h2><button type="button" id="create">＋ Новый</button></div>
