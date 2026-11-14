@@ -44,6 +44,16 @@ class Library:
     def init(self):
         with self.con() as db:
             db.executescript("""
+            CREATE TABLE IF NOT EXISTS youtube_candidates (
+              video_id TEXT PRIMARY KEY,
+              title TEXT NOT NULL,
+              channel TEXT NOT NULL,
+              duration_sec INTEGER,
+              last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS youtube_audio_assets (
+              video_id TEXT PRIMARY KEY REFERENCES youtube_candidates(video_id) ON DELETE CASCADE,
+              track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+              linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS catalog_candidates (
               mbid TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL,
               artist_mbid TEXT, duration_ms INTEGER, variant INTEGER NOT NULL DEFAULT 0,
@@ -695,3 +705,45 @@ class Library:
         for track_id, record in self.recording_for_tracks().items():
             resolved[record["mbid"]] = track_id
         return resolved
+
+    def remember_youtube_videos(self, videos) -> None:
+        """Persist only trusted video IDs and plain-text metadata, never URLs."""
+        with self.con() as db:
+            for v in videos:
+                db.execute(
+                    """INSERT INTO youtube_candidates(video_id,title,channel,duration_sec)
+                       VALUES(?,?,?,?)
+                       ON CONFLICT(video_id) DO UPDATE SET
+                       title=excluded.title,channel=excluded.channel,
+                       duration_sec=excluded.duration_sec,
+                       last_seen_at=CURRENT_TIMESTAMP""",
+                    (v.video_id, v.title[:220], v.channel[:150], v.duration_sec),
+                )
+
+    def get_youtube_video(self, video_id: str) -> dict | None:
+        with self.con() as db:
+            row = db.execute(
+                """SELECT v.video_id,v.title,v.channel,v.duration_sec,a.track_id
+                   FROM youtube_candidates v
+                   LEFT JOIN youtube_audio_assets a ON a.video_id=v.video_id
+                   WHERE v.video_id=?""", (video_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def link_youtube_video(self, video_id: str, track_id: int) -> None:
+        """Called only after Telegram returned an actual audio file_id."""
+        with self.con() as db:
+            if not db.execute(
+                "SELECT 1 FROM youtube_candidates WHERE video_id=?", (video_id,)
+            ).fetchone():
+                raise ValueError("Video was not searched through the bot")
+            if not db.execute(
+                "SELECT 1 FROM tracks WHERE id=?", (track_id,)
+            ).fetchone():
+                raise ValueError("Telegram track not found")
+            db.execute(
+                """INSERT INTO youtube_audio_assets(video_id,track_id) VALUES(?,?)
+                   ON CONFLICT(video_id) DO UPDATE SET
+                    track_id=excluded.track_id,linked_at=CURRENT_TIMESTAMP""",
+                (video_id,track_id),
+            )
