@@ -30,6 +30,9 @@ from music_bot.selection import select_wave_batch
 from music_bot.screen import TmdbCatalog, TmdbError
 from music_bot.source_matching import suggest_sources
 from music_bot.storage import Library
+from music_bot.taste_sources import (
+    TasteSourceError, parse_yandex_url, fetch_yandex_playlist, parse_youtube_export,
+)
 from music_bot.verdicts import LABELS, STATUSES, valid_status, yandex_search_url
 from music_bot.webapp_auth import InvalidInitData, verify_init_data
 from music_bot.youtube import (
@@ -39,6 +42,15 @@ from music_bot.youtube import (
 
 class DirectImportRequest(BaseModel):
     url: str = Field(min_length=12, max_length=2048)
+
+
+class YandexLikedRequest(BaseModel):
+    url: str = Field(min_length=18, max_length=350)
+
+
+class YoutubeLikedRequest(BaseModel):
+    filename: str = Field(min_length=5, max_length=100)
+    content: str = Field(min_length=1, max_length=1_500_000)
 
 
 class YoutubeImportRequest(BaseModel):
@@ -691,6 +703,60 @@ def create_app(config: Settings | None = None,
                 return await ingest.import_recording(mbid.lower(), payload.url)
             except MediaImportError as exc:
                 raise HTTPException(422, detail=str(exc)) from exc
+
+    @app.get("/api/sources", dependencies=[auth])
+    async def taste_sources():
+        return db.taste_sources()
+
+    @app.get("/api/sources/{provider}/tracks", dependencies=[auth])
+    async def taste_tracks(
+        provider: str, offset: int = Query(default=0, ge=0, le=1000000),
+        limit: int = Query(default=20, ge=1, le=100),
+    ):
+        if provider not in {"yandex", "youtube_music"}:
+            raise HTTPException(404, detail="Unknown music source")
+        return {"provider": provider, "offset": offset, "limit": limit,
+                "total": next((s["count"] for s in db.taste_sources()
+                               if s["provider"] == provider), 0),
+                "items": db.taste_tracks(provider, limit=limit, offset=offset)}
+
+    @app.post("/api/sources/yandex/sync", dependencies=[auth])
+    async def taste_yandex_sync(payload: YandexLikedRequest):
+        try:
+            parse_yandex_url(payload.url)
+            lease = db.acquire_media_import("taste", "yandex", ttl=150)
+            if lease is None:
+                raise HTTPException(409, detail="Синхронизация уже выполняется")
+            try:
+                tracks = await fetch_yandex_playlist(payload.url)
+                return db.sync_taste_source(
+                    "yandex", tracks, public_url=payload.url, complete=True)
+            finally:
+                db.release_media_import("taste", "yandex", lease)
+        except TasteSourceError as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
+
+    @app.post("/api/sources/yandex/refresh", dependencies=[auth])
+    async def taste_yandex_refresh():
+        row = next((s for s in db.taste_sources()
+                    if s["provider"] == "yandex"), None)
+        if not row or not row["public_url"]:
+            raise HTTPException(409, detail="Сначала добавь ссылку на плейлист")
+        return await taste_yandex_sync(YandexLikedRequest(url=row["public_url"]))
+
+    @app.post("/api/sources/youtube_music/import", dependencies=[auth])
+    async def taste_youtube_import(payload: YoutubeLikedRequest):
+        lease = db.acquire_media_import("taste", "youtube_music", ttl=150)
+        if lease is None:
+            raise HTTPException(409, detail="Импорт уже выполняется")
+        try:
+            songs, complete = parse_youtube_export(
+                payload.content.encode("utf-8"), payload.filename)
+            return db.sync_taste_source("youtube_music", songs, complete=complete)
+        except (ValueError, TasteSourceError) as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
+        finally:
+            db.release_media_import("taste", "youtube_music", lease)
 
     @app.get("/api/decisions", dependencies=[auth])
     async def decision_categories():

@@ -74,6 +74,13 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
             continue
         representative.setdefault(key, name)
         artist_scores[key] += 2.0 if status == "add" else 0.30
+    # Imported external likes are metadata-only and do not appear in Telegram
+    # playback statistics. They still supply a capped positive taste profile.
+    for artist, weight in db.taste_artist_scores():
+        key = normalize(artist.strip())
+        if key and key not in {"unknown artist", "неизвестный исполнитель"}:
+            representative.setdefault(key, artist.strip())
+            artist_scores[key] += weight
     if not artist_scores:
         # Cold start: uploading/saving a file is weak evidence of interest,
         # never a fabricated listen or an explicit "like". Only use this
@@ -157,7 +164,8 @@ async def personalized_discovery(
     known_ids = db.confirmed_recording_ids()
     decided_mbids = set(db.catalog_verdicts())
     own_tracks = db.all_tracks(10000)
-    own_names = {normalized_identity(t.title, t.artist) for t in own_tracks}
+    own_names = ({normalized_identity(t.title, t.artist) for t in own_tracks}
+                 | db.taste_identities())
     likes, dislikes = db.liked_ids(), db.disliked_ids()
     ratings, feedback = db.ratings(), db.playback_stats()
     verdicts = db.track_verdicts()
