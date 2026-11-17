@@ -109,7 +109,7 @@
       say("Импортирую музыку без скачивания аудио…");
       const result=await post("/api/sources/youtube_music/import",{filename,content});
       say("YouTube Music: " + result.active + " любимых, новых " + result.added + ". " +
-          (result.complete ? "Полный CSV." : "Текст страницы: только добавление, без удаления."));
+          "Повторный импорт не удаляет старые записи.");
       selected="youtube_music";offset=0;await refresh();
     } catch(err){say(err.message);}
     finally {button.disabled=false;}
