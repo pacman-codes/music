@@ -158,6 +158,21 @@ class Library:
               updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE INDEX IF NOT EXISTS track_verdict_status ON track_verdicts(status,updated_at);
             CREATE INDEX IF NOT EXISTS catalog_verdict_status ON catalog_verdicts(status,updated_at);
+            CREATE TABLE IF NOT EXISTS taste_sources(
+              provider TEXT PRIMARY KEY CHECK(provider IN ('yandex','youtube_music')),
+              public_url TEXT,
+              is_complete INTEGER NOT NULL DEFAULT 0,
+              last_synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS taste_tracks(
+              provider TEXT NOT NULL REFERENCES taste_sources(provider) ON DELETE CASCADE,
+              external_id TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL,
+              source_url TEXT NOT NULL, liked_at TEXT,
+              normalized_title TEXT NOT NULL, normalized_artist TEXT NOT NULL,
+              active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+              last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY(provider,external_id));
+            CREATE INDEX IF NOT EXISTS taste_tracks_active
+              ON taste_tracks(provider,active,normalized_artist);
             CREATE TABLE IF NOT EXISTS weekly_digest_receipts (
               week_key TEXT PRIMARY KEY,
               sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -1275,6 +1290,150 @@ class Library:
                      AND COALESCE(l.track_id,a.track_id) IS NULL"""
             )]
 
+    def sync_taste_source(
+        self, provider: str, songs, *, public_url: str | None = None,
+        complete: bool = True,
+    ) -> dict:
+        """Commit a validated snapshot atomically. Partial TXT never deletes."""
+        from music_bot.catalog import normalize
+        if provider not in {"yandex", "youtube_music"}:
+            raise ValueError("Unsupported music source")
+        if not songs or len(songs) > 10000:
+            raise ValueError("Music import cannot be empty or exceed 10000 items")
+        if public_url is not None and (
+            provider != "yandex" or len(public_url) > 350 or
+            not public_url.startswith("https://music.yandex.")
+        ):
+            raise ValueError("Invalid Yandex source URL")
+        by_id = {}
+        for song in songs:
+            ident = str(song.external_id)
+            title, artist = song.title.strip(), song.artist.strip()
+            if not ident or not title or not artist:
+                continue
+            by_id[ident] = (ident, title, artist, song.url, song.liked_at,
+                            normalize(title), normalize(artist))
+        if not by_id:
+            raise ValueError("No valid liked songs were supplied")
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            prev = {
+                str(r[0]) for r in db.execute(
+                    "SELECT external_id FROM taste_tracks WHERE provider=? AND active=1",
+                    (provider,),
+                )
+            }
+            db.execute(
+                """INSERT INTO taste_sources(provider,public_url,is_complete)
+                   VALUES(?,?,?) ON CONFLICT(provider) DO UPDATE SET
+                     public_url=COALESCE(excluded.public_url,taste_sources.public_url),
+                     is_complete=excluded.is_complete,
+                     last_synced_at=CURRENT_TIMESTAMP""",
+                (provider, public_url, int(complete)),
+            )
+            if complete:
+                db.execute(
+                    "UPDATE taste_tracks SET active=0 WHERE provider=?", (provider,)
+                )
+            for item in by_id.values():
+                db.execute(
+                    """INSERT INTO taste_tracks(
+                         provider,external_id,title,artist,source_url,liked_at,
+                         normalized_title,normalized_artist,active)
+                       VALUES(?,?,?,?,?,?,?,?,1)
+                       ON CONFLICT(provider,external_id) DO UPDATE SET
+                         title=excluded.title,artist=excluded.artist,
+                         source_url=excluded.source_url,
+                         liked_at=COALESCE(excluded.liked_at,taste_tracks.liked_at),
+                         normalized_title=excluded.normalized_title,
+                         normalized_artist=excluded.normalized_artist,
+                         active=1,last_seen_at=CURRENT_TIMESTAMP""",
+                    (provider,*item),
+                )
+            now_ids = {
+                str(r[0]) for r in db.execute(
+                    "SELECT external_id FROM taste_tracks WHERE provider=? AND active=1",
+                    (provider,),
+                )
+            }
+        return {
+            "provider": provider, "active": len(now_ids),
+            "added": len(now_ids - prev),
+            "removed": len(prev - now_ids) if complete else 0,
+            "complete": bool(complete),
+        }
+
+    def taste_sources(self) -> list[dict]:
+        with self.con() as db:
+            return [dict(r) for r in db.execute(
+                """SELECT s.provider,s.public_url,s.is_complete,s.last_synced_at,
+                          COUNT(t.external_id) AS count
+                   FROM taste_sources s LEFT JOIN taste_tracks t
+                     ON s.provider=t.provider AND t.active=1
+                   GROUP BY s.provider ORDER BY s.provider"""
+            )]
+
+    def taste_tracks(self, provider: str, *, limit: int = 30,
+                     offset: int = 0) -> list[dict]:
+        if provider not in {"yandex", "youtube_music"} or not 1 <= limit <= 100 or offset < 0:
+            raise ValueError("Invalid source query")
+        with self.con() as db:
+            return [dict(r) for r in db.execute(
+                """SELECT external_id,title,artist,source_url,liked_at
+                   FROM taste_tracks WHERE provider=? AND active=1
+                   ORDER BY COALESCE(liked_at,last_seen_at) DESC,external_id
+                   LIMIT ? OFFSET ?""",
+                (provider,limit,offset),
+            )]
+
+    def taste_export_tracks(self, provider: str) -> list[dict]:
+        """Complete liked metadata for owner's private taste export."""
+        if provider not in {"yandex", "youtube_music"}:
+            raise ValueError("Unknown music source")
+        with self.con() as db:
+            return [dict(row) for row in db.execute(
+                """SELECT external_id,title,artist,source_url,liked_at
+                   FROM taste_tracks WHERE provider=? AND active=1
+                   ORDER BY last_seen_at DESC,external_id""",
+                (provider,),
+            )]
+
+    def taste_artist_scores(self) -> list[tuple[str, float]]:
+        """External favorites are positive *likes*, never invented plays."""
+        with self.con() as db:
+            rows = db.execute(
+                """SELECT artist,normalized_title,normalized_artist,liked_at
+                   FROM taste_tracks WHERE active=1
+                   ORDER BY liked_at DESC"""
+            ).fetchall()
+        from datetime import datetime, timedelta, timezone
+        recent_cutoff = (datetime.now(timezone.utc) -
+                         timedelta(days=180)).date().isoformat()
+        seen = set()
+        weights = {}
+        names = {}
+        for row in rows:
+            key = (row["normalized_title"],row["normalized_artist"])
+            if key in seen or not key[0] or not key[1]:
+                continue
+            seen.add(key)
+            artist = row["normalized_artist"]
+            names.setdefault(artist,row["artist"])
+            # Cap individual artists to prevent bulk imports drowning explicit
+            # ratings. Recency only matters when the source supplied a date.
+            recent = bool(row["liked_at"] and row["liked_at"][:10] >= recent_cutoff)
+            weights[artist] = min(4.0, weights.get(artist,0.0)
+                                  + (0.40 if recent else 0.25))
+        return [(names[k],v) for k,v in sorted(
+            weights.items(),key=lambda pair:(-pair[1],pair[0]))]
+
+    def taste_identities(self) -> set[tuple[str, str]]:
+        with self.con() as db:
+            return {(str(r[0]),str(r[1])) for r in db.execute(
+                """SELECT normalized_title,normalized_artist FROM taste_tracks
+                   WHERE active=1"""
+            )}
+
     def remember_candidates(self, candidates) -> None:
         """Catalog metadata only: no Telegram file_id, no playable asset implied."""
         with self.con() as db:
@@ -1746,7 +1905,7 @@ class Library:
         """
         import secrets
         import time
-        if kind not in {"youtube", "musicbrainz", "global", "queue", "weekly"}:
+        if kind not in {"youtube", "musicbrainz", "global", "queue", "weekly", "taste"}:
             raise ValueError("Unknown import provider")
         if not isinstance(key, str) or not 1 <= len(key) <= 128:
             raise ValueError("Invalid source identifier")

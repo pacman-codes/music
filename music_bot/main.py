@@ -23,6 +23,7 @@ from music_bot.telegram_catalog import install_catalog_handlers
 from music_bot.telegram_import import install_import_handlers
 from music_bot.telegram_fingerprint import install_fingerprint_handlers
 from music_bot.telegram_youtube import install_youtube_handlers
+from music_bot.telegram_taste import install_taste_handlers
 from music_bot.selection import DYNAMIC_MODES, select_wave_batch
 from music_bot.wrapped import wrapped_summary
 from music_bot.profile_export import export_profile, profile_json_bytes
@@ -46,6 +47,10 @@ HELP = """🎵 music — личный плеер
 /wrapped 30d|365d|all — музыкальная статистика
 /tasteexport — приватный JSON всей медиатеки для анализа рекомендаций
 /tastesync — обновить музыкальный профиль в приватном GitHub (если настроено)
+/ymimport URL — импорт избранного из публичного плейлиста Яндекс Музыки
+/ymrefresh — обновить импортированный плейлист Яндекс Музыки
+/ytmimport — CSV/TXT из YouTube Music (прикрепи документ с этой подписью)
+/sources — импортированные внешние любимые треки и ссылки для прослушивания
 /identify ID — подобрать MusicBrainz ID для локального файла
 /fingerprint ID — распознать аудио через AcoustID (если включён)
 /tag ID — обновить локальные теги после подтверждения MusicBrainz
@@ -1252,6 +1257,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         install_catalog_handlers(router, db, catalog)
     install_import_handlers(router, db, owner_id, media_hosts)
     install_fingerprint_handlers(router, db, fingerprint_recognizer)
+    install_taste_handlers(router, db)
     install_youtube_handlers(
         router, db, owner_id, search_enabled=youtube_search_enabled,
         download_enabled=youtube_download_enabled,

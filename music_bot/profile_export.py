@@ -149,6 +149,12 @@ def export_profile(
         "recently_added_track_ids": new_ids,
         "tracks": exported_tracks,
         "catalog_decisions": catalog_verdicts,
+        "external_taste_sources": db.taste_sources(),
+        # Owner-only profile, no audio, cookies or access tokens.
+        "external_liked_tracks": {
+            provider: db.taste_export_tracks(provider)
+            for provider in ("yandex", "youtube_music")
+        },
         "playlists": [
             {
                 "id": int(p["id"]), "name": p["name"], "kind": p["kind"],

@@ -10,6 +10,7 @@
   <script src="/assets/app.js" defer></script>
   <script src="/assets/queue.js" defer></script>
   <script src="/assets/decisions.js" defer></script>
+  <script src="/assets/sources.js" defer></script>
   <script src="/assets/wrapped.js" defer></script>
   <script src="/assets/anime.js" defer></script>
   <script src="/assets/screen.js" defer></script>
@@ -132,6 +133,32 @@
       </form>
       <div class="catalog-caption" id="screen-status" role="status" aria-live="polite"></div>
       <div id="screen-results" class="list"></div>
+    </section>
+    <section id="sources-section" aria-labelledby="sources-heading">
+      <div class="heading"><h2 id="sources-heading">🎵 Мои музыкальные источники</h2>
+        <button id="sources-refresh" type="button">Обновить списки</button></div>
+      <p class="catalog-hint">Любимые песни Яндекс Музыки и YouTube Music учитываются при поиске новинок. Это ссылки и метаданные — не скачанное аудио.</p>
+      <div class="actions">
+        <input id="source-yandex-url" type="url" autocomplete="off"
+               placeholder="https://music.yandex.ru/playlists/lk....">
+        <button id="source-yandex-sync" type="button">Синхронизировать Яндекс</button>
+        <button id="source-yandex-repeat" type="button">Обновить существующий</button>
+      </div>
+      <div class="actions">
+        <textarea id="source-youtube-data" rows="3" maxlength="1500000"
+                  placeholder="Вставь текст страницы YouTube Music или содержимое CSV Google Takeout"></textarea>
+        <input id="source-youtube-file" type="file" accept=".txt,.csv,text/plain,text/csv" aria-label="Выбрать файл YouTube Music">
+        <button id="source-youtube-sync" type="button">Импорт YouTube Music</button>
+      </div>
+      <p class="catalog-hint">Для полного CSV на телефоне можно отправить документ боту с подписью /ytmimport. Текст страницы может содержать только часть лайков.</p>
+      <div id="source-status" class="catalog-caption" role="status"></div>
+      <div id="source-tabs" class="actions"></div>
+      <div id="source-items" class="list"></div>
+      <div class="actions">
+        <button id="source-prev" type="button">◀ Назад</button>
+        <span id="source-page" class="catalog-caption"></span>
+        <button id="source-next" type="button">Вперёд ▶</button>
+      </div>
     </section>
     <section id="decision-section" aria-labelledby="decision-heading">
       <div class="heading">

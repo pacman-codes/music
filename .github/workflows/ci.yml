@@ -15,7 +15,7 @@ jobs:
       - run: python -m compileall -q music_bot tests
       - run: python -m pytest -q
       - name: Check Mini App JavaScript syntax
-        run: node --check web/app.js && node --check web/decisions.js && node --check web/queue.js && node --check web/wrapped.js && node --check web/anime.js && node --check web/screen.js
+        run: node --check web/app.js && node --check web/decisions.js && node --check web/sources.js && node --check web/queue.js && node --check web/wrapped.js && node --check web/anime.js && node --check web/screen.js
       - name: Validate optional YouTube Docker Compose configuration
         run: cp .env.example .env && docker compose config -q
       - name: Build production image with the default lightweight profile
