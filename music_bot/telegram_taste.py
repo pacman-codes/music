@@ -86,11 +86,7 @@ def install_taste_handlers(router: Router, db: Library) -> None:
             return
         finally:
             db.release_media_import("taste", "youtube_music", lease)
-        note = (
-            "Полный CSV: отсутствующие записи удалены из активных лайков."
-            if result["complete"] else
-            "Текст страницы может быть неполным: существующие лайки не удалены."
-        )
+        note = "Импорт не удаляет старые записи: исходная выгрузка может быть неполной."
         await message.answer(
             f"▶ YouTube Music: {result['active']} известных любимых треков; "
             f"новых +{result['added']}. {note} "
