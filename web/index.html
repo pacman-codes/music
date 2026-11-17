@@ -142,10 +142,12 @@
         <input id="source-yandex-url" type="url" autocomplete="off"
                placeholder="https://music.yandex.ru/playlists/lk....">
         <button id="source-yandex-sync" type="button">Синхронизировать Яндекс</button>
+        <button id="source-yandex-repeat" type="button">Обновить существующий</button>
       </div>
       <div class="actions">
         <textarea id="source-youtube-data" rows="3" maxlength="1500000"
                   placeholder="Вставь текст страницы YouTube Music или содержимое CSV Google Takeout"></textarea>
+        <input id="source-youtube-file" type="file" accept=".txt,.csv,text/plain,text/csv" aria-label="Выбрать файл YouTube Music">
         <button id="source-youtube-sync" type="button">Импорт YouTube Music</button>
       </div>
       <p class="catalog-hint">Для полного CSV на телефоне можно отправить документ боту с подписью /ytmimport. Текст страницы может содержать только часть лайков.</p>
