@@ -35,11 +35,12 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
     ratings = db.ratings()
     dislikes = db.disliked_ids()
     playback = db.playback_stats()
+    verdicts = db.track_verdicts()
     artist_scores: dict[str, float] = defaultdict(float)
     representative: dict[str, str] = {}
     tracks = db.all_tracks(10000)
     for t in tracks:
-        if t.id in dislikes:
+        if t.id in dislikes or verdicts.get(t.id) in {"later", "interesting"}:
             continue
         artist = t.artist.strip()
         key = normalize(artist)
@@ -48,12 +49,14 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
         rate = ratings.get(t.id)
         if rate is not None and rate <= 4:
             continue
-        if rate is None and t.id not in likes:
+        if rate is None and t.id not in likes and verdicts.get(t.id) != "maybe":
             continue
         skips, completes = playback.get(t.id, (0, 0))
         if fatigue_suppressed(skips, completes):
             continue
         weight = (2.0 if t.id in likes else 0.0)
+        if verdicts.get(t.id) == "maybe" and t.id not in likes:
+            weight += 0.35
         if rate is not None:
             weight += (rate - 5) * 1.5
         weight += min(2.0, completes * 0.30)
@@ -62,18 +65,28 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
             continue
         representative.setdefault(key, artist)
         artist_scores[key] += weight
+    # External MusicBrainz discoveries have no Telegram file_id; their
+    # explicit reactions still represent real preferences for finding music.
+    for artist, status in db.catalog_preference_artists():
+        name = artist.strip()
+        key = normalize(name)
+        if not key or key in {"неизвестный исполнитель", "unknown artist"}:
+            continue
+        representative.setdefault(key, name)
+        artist_scores[key] += 2.0 if status == "add" else 0.30
     if not artist_scores:
         # Cold start: uploading/saving a file is weak evidence of interest,
         # never a fabricated listen or an explicit "like". Only use this
         # fallback when no strong positive ratings/favorites are available.
         excluded = strongly_negative_artists(
-            tracks, likes, dislikes, ratings, playback
+            tracks, likes, dislikes, ratings, playback, verdicts=verdicts
         )
         weak_counts: dict[str, int] = defaultdict(int)
         for track in tracks:
             key = normalize(track.artist.strip())
             if (not key or key in {"неизвестный исполнитель", "unknown artist"}
                     or key in excluded or track.id in dislikes
+                    or verdicts.get(track.id) in {"later", "interesting"}
                     or ratings.get(track.id, 10) <= 4
                     or fatigue_suppressed(*playback.get(track.id, (0, 0)))):
                 continue
@@ -92,15 +105,20 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
     ]
 
 
-def strongly_negative_artists(tracks, liked_ids, disliked_ids, ratings, playback):
+def strongly_negative_artists(
+    tracks, liked_ids, disliked_ids, ratings, playback, *, verdicts=None,
+):
     """Conservatively exclude an artist only with repeated explicit negatives.
 
     One disliked song does not mean the whole artist is disliked. Any clear
     positive rating/favorite for that artist prevents the artist-level ban.
     """
+    verdicts = verdicts or {}
     negative: dict[str, set[int]] = defaultdict(set)
     positive: set[str] = set()
     for track in tracks:
+        if verdicts.get(track.id) in {"later", "interesting"}:
+            continue
         artist = normalize(track.artist.strip())
         if not artist:
             continue
@@ -142,13 +160,15 @@ async def personalized_discovery(
     own_names = {normalized_identity(t.title, t.artist) for t in own_tracks}
     likes, dislikes = db.liked_ids(), db.disliked_ids()
     ratings, feedback = db.ratings(), db.playback_stats()
+    verdicts = db.track_verdicts()
     suppressed_names = {
         normalized_identity(t.title, t.artist)
         for t in own_tracks if t.id in dislikes
+        or verdicts.get(t.id) in {"later", "interesting"}
         or fatigue_suppressed(*feedback.get(t.id, (0, 0)))
     }
     excluded_artists = strongly_negative_artists(
-        own_tracks, likes, dislikes, ratings, feedback
+        own_tracks, likes, dislikes, ratings, feedback, verdicts=verdicts
     )
     pools: list[list[CatalogTrack]] = []
     used_seeds: list[str] = []

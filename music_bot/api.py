@@ -222,7 +222,7 @@ def create_app(config: Settings | None = None,
         wanted = db.wishlist_ids()
         catalog_decisions = db.catalog_verdicts()
         saved = {normalized_identity(t.title, t.artist): t.id
-                 for t in db.all_tracks(1000)}
+                 for t in db.all_tracks(10000)}
         linked = db.resolved_catalog_tracks()
         output = []
         for t in recordings:
@@ -702,16 +702,16 @@ def create_app(config: Settings | None = None,
 
     @app.get("/api/decisions/{status}", dependencies=[auth])
     async def decision_tracks(
-        status: str, offset: int = Query(default=0, ge=0, le=10000),
+        status: str, offset: int = Query(default=0, ge=0, le=1000000),
         limit: int = Query(default=30, ge=1, le=100),
     ):
         if not valid_status(status):
             raise HTTPException(404, detail="Unknown decision category")
-        all_items = db.verdict_items(status)
-        rows = all_items[offset:offset + limit]
+        total = db.verdict_counts()[status]
+        rows = db.verdict_items(status, limit=limit, offset=offset)
         return {
             "status": status, "label": LABELS[status],
-            "total": len(all_items), "offset": offset, "limit": limit,
+            "total": total, "offset": offset, "limit": limit,
             "items": [
                 {
                     **item,
@@ -744,10 +744,7 @@ def create_app(config: Settings | None = None,
     async def play_decision_list(status: str):
         if not valid_status(status):
             raise HTTPException(404, detail="Unknown decision category")
-        items = db.verdict_items(status)
-        playable_ids = list(dict.fromkeys(
-            row["track_id"] for row in items if row["track_id"] is not None
-        ))
+        playable_ids = db.verdict_playable_ids(status)
         if not playable_ids:
             raise HTTPException(409, detail="Нет загруженных аудиофайлов")
         queue_id = db.create_queue(playable_ids, LABELS[status], "decision")

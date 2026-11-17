@@ -48,14 +48,15 @@ def select_wave_batch(db: Library, mode: str, count: int = 10,
     pool = filtered if len(filtered) >= min(count, 3) else candidates
     liked_ids = db.liked_ids()
     disliked_ids = db.disliked_ids()
+    verdicts = db.track_verdicts()
+    maybe_ids = {tid for tid,status in verdicts.items() if status == "maybe"}
     ratings = db.ratings()
     playback = db.playback_stats()
     # Existing preferences and playlists give free, zero-click taste signals.
     seeds = {
         tid for tid in (liked_ids | {tid for tid, value in ratings.items() if value >= 8})
-        if tid not in disliked_ids and not fatigue_suppressed(
-            *playback.get(tid, (0, 0))
-        )
+        if tid not in disliked_ids and tid not in suppressed
+        and not fatigue_suppressed(*playback.get(tid, (0, 0)))
     }
     signals = db.recommendation_signals(seeds)
     prefs = {
@@ -64,6 +65,7 @@ def select_wave_batch(db: Library, mode: str, count: int = 10,
         "recent_ids": db.recent_ids(60),
         "ratings": ratings,
         "playback": playback,
+        "maybe_ids": maybe_ids,
         **signals,
         "mode": mode,
         "count": count,
@@ -74,6 +76,7 @@ def select_wave_batch(db: Library, mode: str, count: int = 10,
                       exposure=prefs["exposure"],
                       playlist_counts=prefs["playlist_counts"],
                       related_ids=prefs["related_ids"],
+                      maybe_ids=maybe_ids,
                       preset=db.get_wave_preset())
               if mode == "balanced" else wave(pool, **prefs))
     if not result and pool is not candidates:
@@ -85,6 +88,7 @@ def select_wave_batch(db: Library, mode: str, count: int = 10,
                     exposure=prefs["exposure"],
                     playlist_counts=prefs["playlist_counts"],
                     related_ids=prefs["related_ids"],
+                    maybe_ids=maybe_ids,
                     preset=db.get_wave_preset())
             if mode == "balanced" else wave(candidates, **prefs)
         )

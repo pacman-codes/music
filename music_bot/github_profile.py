@@ -101,7 +101,8 @@ async def sync_private_profile(
             updated = response.json()
         except ValueError:
             raise ProfileSyncError("GitHub не подтвердил обновление профиля.") from None
-        commit_sha = updated.get("commit", {}).get("sha")
+        commit = updated.get("commit") if isinstance(updated, dict) else None
+        commit_sha = commit.get("sha") if isinstance(commit, dict) else None
         if not isinstance(commit_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
             raise ProfileSyncError("Не удалось подтвердить GitHub-коммит.")
         return {"repo": repo, "path": PATH, "commit_sha": commit_sha}

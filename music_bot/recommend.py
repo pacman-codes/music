@@ -18,7 +18,7 @@ def track_weight(
     track, liked_ids, favorite_artists, seen_artist,
     *, recent_ids=frozenset(), ratings=None, playback=None, mode="balanced",
     exposure=None, playlist_counts=None, related_ids=frozenset(),
-    recent_artists=(),
+    recent_artists=(), maybe_ids=frozenset(),
 ) -> float:
     """Positive sampling weight with a mild, reversible exposure penalty.
 
@@ -34,6 +34,9 @@ def track_weight(
     score = 1.0
     if mode != "discover" and liked:
         score += 3.0
+    if track.id in maybe_ids and not liked:
+        # Interest is weaker than an actual favorite, not a fake play.
+        score += 0.30
     if not liked and artist and artist in favorite_artists:
         score += 2.0
 
@@ -58,7 +61,7 @@ def track_weight(
     score /= 1 + 0.65 * max(0.0, exposure.get(track.id, 0.0))
 
     if artist:
-        score /= 1 + 2.5 * seen_artist[artist]
+        score /= 1 + 2.5 * seen_artist.get(artist,0)
         # Diversify neighboring songs without hard bans on small libraries.
         if recent_artists and artist == recent_artists[-1]:
             score *= 0.12
@@ -69,7 +72,8 @@ def track_weight(
 
 def wave(tracks, liked_ids, disliked_ids=frozenset(), count=30, seed=None,
          recent_ids=frozenset(), mode="balanced", *, ratings=None, playback=None,
-         exposure=None, playlist_counts=None, related_ids=frozenset()):
+         exposure=None, playlist_counts=None, related_ids=frozenset(),
+         maybe_ids=frozenset()):
     if mode not in {"balanced", "discover", "favorites"}:
         raise ValueError("Unknown wave mode")
     ratings = ratings or {}
@@ -100,6 +104,7 @@ def wave(tracks, liked_ids, disliked_ids=frozenset(), count=30, seed=None,
                 recent_ids=recent_ids, ratings=ratings, playback=playback, mode=mode,
                 exposure=exposure, playlist_counts=playlist_counts,
                 related_ids=related_ids, recent_artists=recent_artists,
+                maybe_ids=maybe_ids,
             )
             for t in pool
         ]

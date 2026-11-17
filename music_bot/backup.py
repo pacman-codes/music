@@ -33,7 +33,7 @@ def backup_db(database: str | Path, directory: str | Path) -> Path:
                 if check is None or check[0] != "ok":
                     raise RuntimeError("Backup integrity_check failed")
         # Ensure the generated file is written durably before atomic publication.
-        with temp_path.open("rb") as handle:
+        with temp_path.open("rb+") as handle:
             os.fsync(handle.fileno())
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         final = target_dir / f"music-{stamp}-{secrets.token_hex(4)}.sqlite3"
