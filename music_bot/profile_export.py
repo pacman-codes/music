@@ -152,7 +152,7 @@ def export_profile(
         "external_taste_sources": db.taste_sources(),
         # Owner-only profile, no audio, cookies or access tokens.
         "external_liked_tracks": {
-            provider: db.taste_tracks(provider, limit=100)
+            provider: db.taste_export_tracks(provider)
             for provider in ("yandex", "youtube_music")
         },
         "playlists": [
