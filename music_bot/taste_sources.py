@@ -212,7 +212,8 @@ def parse_youtube_page_text(raw: str) -> list[SourceSong]:
         last = i + 1
         if len(block) < 2:
             continue
-        if not songs and len(block) > 6:
+        if not songs and len(block) > 3:
+            # The first row often follows page navigation, genres and headers.
             block = block[-3:]
         if len(block) > 14:
             continue
