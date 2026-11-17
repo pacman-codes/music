@@ -73,7 +73,8 @@ def allocate_mix(size: int, capacities: dict[str, int], preset: str) -> dict[str
 def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
             playback=None, recent_ids=frozenset(), count=10,
             preset="balanced", seed=None, exposure=None,
-            playlist_counts=None, related_ids=frozenset()):
+            playlist_counts=None, related_ids=frozenset(),
+            maybe_ids=frozenset()):
     """Personalized native playback batch, no hypothetical audio candidates."""
     if preset not in PRESETS:
         raise ValueError("Unknown Wave 2.0 preset")
@@ -117,6 +118,7 @@ def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
                 mode="balanced", exposure=exposure,
                 playlist_counts=playlist_counts, related_ids=related_ids,
                 recent_artists=recent_artists,
+                maybe_ids=maybe_ids,
             )
             for t in pool
         ]

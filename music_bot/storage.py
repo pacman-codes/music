@@ -229,12 +229,50 @@ class Library:
                 """INSERT OR IGNORE INTO track_verdicts(track_id,status)
                    SELECT track_id,'never' FROM dislikes"""
             )
+            # Keep the old liked/disliked tables coherent with the explicit
+            # verdict after upgrades from earlier bot versions.
+            liked_id = db.execute(
+                "SELECT id FROM playlists WHERE kind='liked'"
+            ).fetchone()[0]
+            db.execute(
+                """DELETE FROM playlist_tracks WHERE playlist_id=? AND track_id IN (
+                       SELECT track_id FROM track_verdicts WHERE status<>'add')""",
+                (liked_id,),
+            )
+            db.execute(
+                """DELETE FROM dislikes WHERE track_id IN (
+                       SELECT track_id FROM track_verdicts WHERE status<>'never')"""
+            )
+            db.execute(
+                """INSERT OR IGNORE INTO playlist_tracks(playlist_id,track_id,position)
+                       SELECT ?,v.track_id,
+                         (SELECT COALESCE(MAX(position),0) FROM playlist_tracks
+                          WHERE playlist_id=?) + ROW_NUMBER() OVER (ORDER BY v.track_id)
+                       FROM track_verdicts v WHERE v.status='add'""",
+                (liked_id,liked_id),
+            )
+            db.execute(
+                """INSERT OR IGNORE INTO dislikes(track_id)
+                       SELECT track_id FROM track_verdicts WHERE status='never'"""
+            )
             # Existing imported audio rows predate recording-identity links.
             db.execute(
                 """INSERT OR IGNORE INTO track_recording_links(track_id,mbid,provenance)
                    SELECT track_id,mbid,'import' FROM catalog_audio_assets
                    ORDER BY linked_at DESC"""
             )
+            # Repair pre-upgrade links where the catalog decision was already
+            # chosen before a Telegram audio identity was confirmed.
+            pending_reconcile = db.execute(
+                """SELECT l.track_id,l.mbid FROM track_recording_links l
+                   JOIN catalog_verdicts c ON c.mbid=l.mbid
+                   LEFT JOIN track_verdicts t ON t.track_id=l.track_id
+                   WHERE t.track_id IS NULL OR t.status<>c.status"""
+            ).fetchall()
+            for linked in pending_reconcile:
+                self._reconcile_recording_verdict(
+                    db, int(linked["track_id"]), str(linked["mbid"])
+                )
 
     @staticmethod
     def track(row):
@@ -326,15 +364,20 @@ class Library:
                 "SELECT * FROM tracks ORDER BY id DESC LIMIT ?", (limit,))]
 
     def search_tracks(self, query: str, limit: int = 20):
-        query = query.strip()
+        query = query.strip().casefold()
         if not query:
             return []
-        # instr() is literal search: no accidental LIKE wildcard expansion.
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("Invalid search limit")
+        found = []
         with self.con() as db:
-            return [self.track(r) for r in db.execute(
-                """SELECT * FROM tracks WHERE
-                   instr(lower(title), lower(?)) > 0 OR instr(lower(artist), lower(?)) > 0
-                   ORDER BY id DESC LIMIT ?""", (query, query, limit))]
+            # Personal library; streaming rows avoids full result materialization.
+            for row in db.execute("SELECT * FROM tracks ORDER BY id DESC"):
+                if query in row["title"].casefold() or query in row["artist"].casefold():
+                    found.append(self.track(row))
+                    if len(found) >= limit:
+                        break
+        return found
 
     def liked_id(self):
         with self.con() as db:
@@ -382,40 +425,123 @@ class Library:
             if not changed:
                 raise ValueError("Custom playlist not found")
 
+    @staticmethod
+    def _apply_verdict(db, track_id: int, status: str) -> None:
+        """One atomic write path for the verdict, likes, dislikes and linked MBID."""
+        db.execute(
+            """INSERT INTO track_verdicts(track_id,status) VALUES(?,?)
+               ON CONFLICT(track_id) DO UPDATE SET
+                 status=excluded.status,updated_at=CURRENT_TIMESTAMP""",
+            (track_id, status),
+        )
+        liked_id = db.execute(
+            "SELECT id FROM playlists WHERE kind='liked'"
+        ).fetchone()[0]
+        if status == "add":
+            db.execute("DELETE FROM dislikes WHERE track_id=?", (track_id,))
+            db.execute(
+                """INSERT OR IGNORE INTO playlist_tracks(playlist_id,track_id,position)
+                   VALUES(?,?,(SELECT COALESCE(MAX(position),0)+1
+                               FROM playlist_tracks WHERE playlist_id=?))""",
+                (liked_id, track_id, liked_id),
+            )
+        else:
+            db.execute(
+                "DELETE FROM playlist_tracks WHERE playlist_id=? AND track_id=?",
+                (liked_id, track_id),
+            )
+            if status == "never":
+                db.execute(
+                    "INSERT OR IGNORE INTO dislikes(track_id) VALUES(?)",
+                    (track_id,),
+                )
+            else:
+                db.execute("DELETE FROM dislikes WHERE track_id=?", (track_id,))
+        db.execute(
+            """INSERT INTO catalog_verdicts(mbid,status)
+               SELECT mbid,? FROM track_recording_links WHERE track_id=?
+               ON CONFLICT(mbid) DO UPDATE SET
+                 status=excluded.status,updated_at=CURRENT_TIMESTAMP""",
+            (status, track_id),
+        )
+
+    @staticmethod
+    def _remove_like(db, track_id: int) -> bool:
+        liked_id = db.execute(
+            "SELECT id FROM playlists WHERE kind='liked'"
+        ).fetchone()[0]
+        removed = bool(db.execute(
+            "DELETE FROM playlist_tracks WHERE playlist_id=? AND track_id=?",
+            (liked_id, track_id),
+        ).rowcount)
+        db.execute(
+            "DELETE FROM track_verdicts WHERE track_id=? AND status='add'",
+            (track_id,),
+        )
+        db.execute(
+            """DELETE FROM catalog_verdicts
+               WHERE status='add' AND mbid IN
+                  (SELECT mbid FROM track_recording_links WHERE track_id=?)""",
+            (track_id,),
+        )
+        return removed
+
+    @classmethod
+    def _reconcile_recording_verdict(cls, db, track_id: int, mbid: str) -> None:
+        """Apply the newer explicit verdict after an audio↔recording match.
+
+        A local verdict wins equal-second ties; an older decision must never
+        silently erase a more recent reaction.
+        """
+        local = db.execute(
+            "SELECT status,updated_at FROM track_verdicts WHERE track_id=?",
+            (track_id,),
+        ).fetchone()
+        catalog = db.execute(
+            "SELECT status,updated_at FROM catalog_verdicts WHERE mbid=?",
+            (mbid,),
+        ).fetchone()
+        if local is not None and (
+            catalog is None or local["updated_at"] >= catalog["updated_at"]
+        ):
+            cls._apply_verdict(db, track_id, local["status"])
+        elif catalog is not None:
+            cls._apply_verdict(db, track_id, catalog["status"])
+
     def add_to(self, playlist_id, track_id):
         with self.con() as db:
-            if not db.execute("SELECT 1 FROM playlists WHERE id=?", (playlist_id,)).fetchone():
+            db.execute("BEGIN IMMEDIATE")
+            pl = db.execute(
+                "SELECT kind FROM playlists WHERE id=?", (playlist_id,)
+            ).fetchone()
+            if pl is None:
                 raise ValueError("Playlist not found")
-            if not db.execute("SELECT 1 FROM tracks WHERE id=?", (track_id,)).fetchone():
+            if not db.execute(
+                "SELECT 1 FROM tracks WHERE id=?", (track_id,)
+            ).fetchone():
                 raise ValueError("Track not found")
+            if pl["kind"] == "liked":
+                present = db.execute(
+                    "SELECT 1 FROM playlist_tracks WHERE playlist_id=? AND track_id=?",
+                    (playlist_id, track_id),
+                ).fetchone() is not None
+                self._apply_verdict(db, track_id, "add")
+                return not present
             pos = db.execute(
                 "SELECT COALESCE(MAX(position),0)+1 FROM playlist_tracks WHERE playlist_id=?",
-                (playlist_id,)).fetchone()[0]
-            return db.execute("""INSERT OR IGNORE INTO playlist_tracks(playlist_id,track_id,position)
-                                 VALUES(?,?,?)""", (playlist_id,track_id,pos)).rowcount > 0
+                (playlist_id,),
+            ).fetchone()[0]
+            return bool(db.execute(
+                """INSERT OR IGNORE INTO playlist_tracks(playlist_id,track_id,position)
+                   VALUES(?,?,?)""",
+                (playlist_id, track_id, pos),
+            ).rowcount)
 
     def like(self, track_id):
-        with self.con() as db:
-            db.execute("DELETE FROM dislikes WHERE track_id=?", (track_id,))
-        added = self.add_to(self.liked_id(), track_id)
-        self.set_track_verdict(track_id, "add")
-        return added
+        return self.add_to(self.liked_id(), track_id)
 
     def unlike(self, track_id):
-        removed = self.remove_from(self.liked_id(), track_id)
-        with self.con() as db:
-            db.execute(
-                "DELETE FROM track_verdicts WHERE track_id=? AND status='add'",
-                (track_id,),
-            )
-            db.execute(
-                """DELETE FROM catalog_verdicts
-                   WHERE status='add' AND mbid IN (
-                       SELECT mbid FROM track_recording_links WHERE track_id=?
-                   )""",
-                (track_id,),
-            )
-        return removed
+        return self.remove_from(self.liked_id(), track_id)
 
     def playlist_tracks(self, playlist_id, limit=1000):
         with self.con() as db:
@@ -425,7 +551,13 @@ class Library:
                 (playlist_id,limit))]
 
     def liked_ids(self):
-        return {t.id for t in self.playlist_tracks(self.liked_id())}
+        # Do not inherit playlist_tracks()'s display limit of 1000.
+        with self.con() as db:
+            return {int(row[0]) for row in db.execute(
+                """SELECT pt.track_id FROM playlist_tracks pt
+                   JOIN playlists p ON p.id=pt.playlist_id
+                   WHERE p.kind='liked'"""
+            )}
 
     @staticmethod
     def _rewrite_positions(db, playlist_id, ordered_ids):
@@ -437,17 +569,24 @@ class Library:
 
     def remove_from(self, playlist_id, track_id):
         with self.con() as db:
-            deleted = db.execute(
-                "DELETE FROM playlist_tracks WHERE playlist_id=? AND track_id=?",
-                (playlist_id, track_id),
-            ).rowcount
+            db.execute("BEGIN IMMEDIATE")
+            pl = db.execute(
+                "SELECT kind FROM playlists WHERE id=?", (playlist_id,)
+            ).fetchone()
+            if pl is not None and pl["kind"] == "liked":
+                deleted = self._remove_like(db, track_id)
+            else:
+                deleted = bool(db.execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id=? AND track_id=?",
+                    (playlist_id, track_id),
+                ).rowcount)
             if deleted:
                 order = [r[0] for r in db.execute(
                     "SELECT track_id FROM playlist_tracks WHERE playlist_id=? ORDER BY position",
                     (playlist_id,),
                 )]
                 self._rewrite_positions(db, playlist_id, order)
-            return bool(deleted)
+            return deleted
 
     def move_track(self, playlist_id, track_id, new_position):
         with self.con() as db:
@@ -464,15 +603,6 @@ class Library:
             self._rewrite_positions(db, playlist_id, order)
 
     def dislike(self, track_id):
-        with self.con() as db:
-            if not db.execute("SELECT 1 FROM tracks WHERE id=?", (track_id,)).fetchone():
-                raise ValueError("Track not found")
-            db.execute("INSERT OR IGNORE INTO dislikes(track_id) VALUES(?)", (track_id,))
-            # Don't leave the same song both liked and disliked.
-            db.execute(
-                "DELETE FROM playlist_tracks WHERE playlist_id=? AND track_id=?",
-                (self.liked_id(), track_id),
-            )
         self.set_track_verdict(track_id, "never")
 
     def disliked_ids(self):
@@ -778,6 +908,46 @@ class Library:
             )
             return True
 
+    def prune_automatic_pending(self, queue_id: int) -> int:
+        """Drop parked tracks still pending in a generated radio queue.
+
+        Call only while owning the queue-delivery lease, never for manually
+        selected playlists or reaction review lists.
+        """
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            queue = db.execute(
+                "SELECT cursor,source_kind FROM queues WHERE id=?", (queue_id,)
+            ).fetchone()
+            if queue is None:
+                raise ValueError("Queue not found")
+            if queue["source_kind"] not in {"balanced", "discover", "favorites"}:
+                return 0
+            cursor = int(queue["cursor"])
+            current = [int(row[0]) for row in db.execute(
+                """SELECT track_id FROM queue_items WHERE queue_id=?
+                   AND position>=? ORDER BY position""",
+                (queue_id, cursor),
+            )]
+            suppressed = {
+                int(row[0]) for row in db.execute(
+                    """SELECT track_id FROM track_verdicts
+                       WHERE status IN ('never','later','interesting')"""
+                )
+            }
+            pending = [tid for tid in current if tid not in suppressed]
+            if len(pending) == len(current):
+                return 0
+            db.execute(
+                "DELETE FROM queue_items WHERE queue_id=? AND position>=?",
+                (queue_id, cursor),
+            )
+            db.executemany(
+                "INSERT INTO queue_items(queue_id,position,track_id) VALUES(?,?,?)",
+                [(queue_id, cursor+i, tid) for i,tid in enumerate(pending)],
+            )
+            return len(current) - len(pending)
+
     def peek_queue(self, queue_id, size=10):
         if not 1 <= size <= 10:
             raise ValueError("Telegram batch must contain 1..10 tracks")
@@ -973,60 +1143,29 @@ class Library:
     VERDICT_STATUSES = frozenset(("maybe", "add", "never", "later", "interesting"))
 
     def set_track_verdict(self, track_id: int, status: str) -> None:
-        """Replace the decision; synchronize strong yes/no with existing likes."""
+        """Keep five decisions exclusive across all local/linked tables."""
         if status not in self.VERDICT_STATUSES or type(track_id) is not int or track_id < 1:
             raise ValueError("Invalid music decision")
         with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM tracks WHERE id=?", (track_id,)).fetchone() is None:
                 raise ValueError("Track not found")
-            db.execute(
-                """INSERT INTO track_verdicts(track_id,status) VALUES(?,?)
-                   ON CONFLICT(track_id) DO UPDATE SET
-                   status=excluded.status, updated_at=CURRENT_TIMESTAMP""",
-                (track_id, status),
-            )
-            liked = self.liked_id()
-            if status == "add":
-                db.execute("DELETE FROM dislikes WHERE track_id=?", (track_id,))
-                db.execute(
-                    """INSERT OR IGNORE INTO playlist_tracks(playlist_id,track_id,position)
-                       VALUES(?,?,(SELECT COALESCE(MAX(position),0)+1
-                                   FROM playlist_tracks WHERE playlist_id=?))""",
-                    (liked, track_id, liked),
-                )
-            else:
-                db.execute(
-                    "DELETE FROM playlist_tracks WHERE playlist_id=? AND track_id=?",
-                    (liked, track_id),
-                )
-                if status == "never":
-                    db.execute("INSERT OR IGNORE INTO dislikes(track_id) VALUES(?)", (track_id,))
-                else:
-                    db.execute("DELETE FROM dislikes WHERE track_id=?", (track_id,))
-            # One confirmed MusicBrainz recording is one decision even if it
-            # was later uploaded as playable Telegram audio.
-            db.execute(
-                """INSERT INTO catalog_verdicts(mbid,status)
-                   SELECT mbid,? FROM track_recording_links WHERE track_id=?
-                   ON CONFLICT(mbid) DO UPDATE SET
-                    status=excluded.status, updated_at=CURRENT_TIMESTAMP""",
-                (status, track_id),
-            )
+            self._apply_verdict(db, track_id, status)
 
     def set_catalog_verdict(self, mbid: str, status: str) -> None:
-        """Store metadata-only discovery decision, never invent audio."""
+        """Catalog-only ratings remain decisions, not imaginary Telegram audio."""
         if status not in self.VERDICT_STATUSES or not isinstance(mbid, str):
             raise ValueError("Invalid music decision")
         with self.con() as db:
-            exists = db.execute(
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute(
                 "SELECT 1 FROM catalog_candidates WHERE mbid=?", (mbid,)
-            ).fetchone()
-            if not exists:
+            ).fetchone() is None:
                 raise ValueError("Recording not found in catalog")
             db.execute(
                 """INSERT INTO catalog_verdicts(mbid,status) VALUES(?,?)
                    ON CONFLICT(mbid) DO UPDATE SET
-                     status=excluded.status,updated_at=CURRENT_TIMESTAMP""",
+                    status=excluded.status,updated_at=CURRENT_TIMESTAMP""",
                 (mbid, status),
             )
             record = db.execute(
@@ -1038,8 +1177,8 @@ class Library:
                     "SELECT track_id FROM catalog_audio_assets WHERE mbid=?",
                     (mbid,),
                 ).fetchone()
-        if record is not None:
-            self.set_track_verdict(int(record["track_id"]), status)
+            if record is not None:
+                self._apply_verdict(db, int(record["track_id"]), status)
 
     def track_verdicts(self) -> dict[int, str]:
         with self.con() as db:
@@ -1064,49 +1203,77 @@ class Library:
                 )
             }
 
-    def verdict_items(self, status: str, limit: int = 10000) -> list[dict]:
-        """Both playable Telegram files and catalog-only discoveries, newest first.
+    _VERDICT_ITEM_QUERY = """
+        SELECT source,track_id,mbid,title,artist,updated_at FROM (
+            SELECT 'local' AS source,t.id AS track_id,l.mbid,t.title,t.artist,
+                   v.updated_at
+            FROM track_verdicts v
+            JOIN tracks t ON t.id=v.track_id
+            LEFT JOIN track_recording_links l ON l.track_id=t.id
+            WHERE v.status=?
+            UNION ALL
+            SELECT 'catalog' AS source,
+                   COALESCE(l.track_id,a.track_id) AS track_id,
+                   v.mbid,c.title,c.artist,v.updated_at
+            FROM catalog_verdicts v
+            JOIN catalog_candidates c ON c.mbid=v.mbid
+            LEFT JOIN track_recording_links l ON l.mbid=v.mbid
+            LEFT JOIN catalog_audio_assets a ON a.mbid=v.mbid
+            WHERE v.status=? AND NOT EXISTS(
+              SELECT 1 FROM track_verdicts tv
+              WHERE tv.track_id=COALESCE(l.track_id,a.track_id))
+        )
+    """
 
-        Playability is based exclusively on a confirmed Telegram file_id link.
-        """
-        if status not in self.VERDICT_STATUSES or not 1 <= limit <= 10000:
+    def verdict_items(
+        self, status: str, limit: int = 10000, offset: int = 0,
+    ) -> list[dict]:
+        """SQL-paginated mixed library + metadata-only playlist."""
+        if (status not in self.VERDICT_STATUSES
+                or type(limit) is not int or not 1 <= limit <= 10000
+                or type(offset) is not int or offset < 0):
             raise ValueError("Invalid verdict list")
-        linked = self.resolved_catalog_tracks()
         with self.con() as db:
-            local = [
-                {"source": "local", "track_id": int(r["id"]),
-                 "mbid": r["mbid"], "title": r["title"],
-                 "artist": r["artist"], "updated_at": r["updated_at"]}
-                for r in db.execute(
-                    """SELECT t.id,t.title,t.artist,l.mbid,v.updated_at
-                       FROM track_verdicts v JOIN tracks t ON t.id=v.track_id
-                       LEFT JOIN track_recording_links l ON l.track_id=t.id
-                       WHERE v.status=? ORDER BY v.updated_at DESC,t.id DESC""",
-                    (status,),
-                )
-            ]
-            explicit_local = {
-                int(r["track_id"])
-                for r in db.execute("SELECT track_id FROM track_verdicts")
-            }
-            catalog = [
-                {"source": "catalog", "track_id": linked.get(str(r["mbid"])),
-                 "mbid": r["mbid"], "title": r["title"],
-                 "artist": r["artist"], "updated_at": r["updated_at"]}
-                for r in db.execute(
-                    """SELECT c.mbid,c.title,c.artist,v.updated_at
-                       FROM catalog_verdicts v JOIN catalog_candidates c ON c.mbid=v.mbid
-                       WHERE v.status=? ORDER BY v.updated_at DESC,c.mbid""",
-                    (status,),
-                )
-                if linked.get(str(r["mbid"])) not in explicit_local
-            ]
-        all_items = local + catalog
-        all_items.sort(key=lambda r: (r["updated_at"], r["source"] == "local"), reverse=True)
-        return all_items[:limit]
+            return [dict(row) for row in db.execute(
+                self._VERDICT_ITEM_QUERY +
+                " ORDER BY updated_at DESC,source DESC,mbid LIMIT ? OFFSET ?",
+                (status, status, limit, offset),
+            )]
 
     def verdict_counts(self) -> dict[str, int]:
-        return {status: len(self.verdict_items(status)) for status in self.VERDICT_STATUSES}
+        """Actual unbounded counts, independent of any page size."""
+        query = (
+            "SELECT COUNT(*) FROM (" + self._VERDICT_ITEM_QUERY + ")"
+        )
+        with self.con() as db:
+            return {
+                status: int(db.execute(query, (status,status)).fetchone()[0])
+                for status in self.VERDICT_STATUSES
+            }
+
+    def verdict_playable_ids(self, status: str, limit: int = 10000) -> list[int]:
+        if status not in self.VERDICT_STATUSES or not 1 <= limit <= 10000:
+            raise ValueError("Invalid verdict playlist")
+        query = (
+            "SELECT DISTINCT track_id FROM (" + self._VERDICT_ITEM_QUERY +
+            ") WHERE track_id IS NOT NULL ORDER BY updated_at DESC LIMIT ?"
+        )
+        with self.con() as db:
+            return [int(row[0]) for row in db.execute(
+                query, (status, status, limit),
+            )]
+
+    def catalog_preference_artists(self) -> list[tuple[str, str]]:
+        """Positive external decisions not already represented by a local file."""
+        with self.con() as db:
+            return [(row["artist"], row["status"]) for row in db.execute(
+                """SELECT c.artist,v.status FROM catalog_verdicts v
+                   JOIN catalog_candidates c ON c.mbid=v.mbid
+                   LEFT JOIN track_recording_links l ON l.mbid=v.mbid
+                   LEFT JOIN catalog_audio_assets a ON a.mbid=v.mbid
+                   WHERE v.status IN ('add','maybe')
+                     AND COALESCE(l.track_id,a.track_id) IS NULL"""
+            )]
 
     def remember_candidates(self, candidates) -> None:
         """Catalog metadata only: no Telegram file_id, no playable asset implied."""
@@ -1215,6 +1382,7 @@ class Library:
                      linked_at=CURRENT_TIMESTAMP""",
                 (track_id, mbid),
             )
+            self._reconcile_recording_verdict(db, track_id, mbid)
 
     def linked_candidate_tracks(self) -> dict[str, int]:
         with self.con() as db:
@@ -1259,6 +1427,7 @@ class Library:
                     linked_at=CURRENT_TIMESTAMP""",
                 (track_id, mbid),
             )
+            self._reconcile_recording_verdict(db, track_id, mbid)
             return dict(candidate)
 
     def unlink_recording_match(self, track_id: int) -> bool:
@@ -1382,6 +1551,12 @@ class Library:
                 raise ValueError("This audio is already linked to another recording")
             if prior_asset is not None and int(prior_asset["track_id"]) != track_id:
                 raise ValueError("This recording already has another Telegram audio")
+            other_identity = db.execute(
+                "SELECT track_id FROM track_recording_links WHERE mbid=? AND track_id<>? LIMIT 1",
+                (mbid, track_id),
+            ).fetchone()
+            if other_identity is not None:
+                raise ValueError("This recording is already confirmed for another audio")
             db.execute(
                 """INSERT INTO catalog_audio_assets(mbid,track_id) VALUES(?,?)
                    ON CONFLICT(mbid) DO UPDATE SET
@@ -1395,6 +1570,7 @@ class Library:
                    provenance='import',linked_at=CURRENT_TIMESTAMP""",
                 (track_id, mbid),
             )
+            self._reconcile_recording_verdict(db, track_id, mbid)
             # A plain /yt import initially uses the YouTube channel and
             # video title. On later *explicit* identification, promote only
             # untouched metadata, never overwrite user-edited names.

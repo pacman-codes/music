@@ -263,6 +263,9 @@ async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
             return
         try:
             try:
+                # Honor decisions made AFTER a Wave was assembled, while
+                # preserving manually selected playlists and review queues.
+                db.prune_automatic_pending(queue_id)
                 batch = db.peek_queue(queue_id, size=10)
                 # A stale/duplicate "Ещё 10" must not advance the radio again.
                 # A command starting a *new* queue intentionally has no expected cursor.
@@ -333,8 +336,8 @@ async def deliver_queue(bot: Bot, db: Library, chat_id: int, queue_id: int,
                 f"✅ {batch.label}: последние {count} треков отправлены."
             )
             notice += (
-                "\n⭐ Выбери песню для оценки 1–10. "
-                "Пропуски и дослушивания отмечаются только вручную."
+                "\n🧭 Выбери песню и одну из пяти реакций. "
+                "Оценки 1–10 и ручные отметки прослушивания — по желанию."
             )
             try:
                 await bot.send_message(
@@ -450,12 +453,12 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         if not valid_status(status) or not 0 <= page <= 1000:
             await message.answer("Некорректный список.")
             return
-        entries = db.verdict_items(status)
+        total = db.verdict_counts()[status]
         page_size = 8
-        page_count = max(1, (len(entries) + page_size - 1) // page_size)
+        page_count = max(1, (total + page_size - 1) // page_size)
         page = min(page, page_count - 1)
-        shown = entries[page * page_size:(page + 1) * page_size]
-        lines = [f"{LABELS[status]} — {len(entries)} треков · {page+1}/{page_count}"]
+        shown = db.verdict_items(status, limit=page_size, offset=page*page_size)
+        lines = [f"{LABELS[status]} — {total} треков · {page+1}/{page_count}"]
         rows: list[list[InlineKeyboardButton]] = []
         for i, entry in enumerate(shown, start=page * page_size + 1):
             artist = str(entry["artist"]).replace("\n", " ").replace("\r", " ")
@@ -485,7 +488,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         if nav:
             rows.append(nav)
         rows.append([button("🧭 Все пять списков", "vhome")])
-        if any(entry["track_id"] is not None for entry in entries):
+        if db.verdict_playable_ids(status, limit=1):
             rows.append([button("▶ Слушать доступные в Telegram", f"vplay:{status}")])
         await message.answer(
             "\n".join(lines)[:3900], reply_markup=keyboard(rows),
@@ -533,10 +536,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         if not valid_status(status):
             await callback.answer("Неверный плейлист", show_alert=True)
             return
-        items = db.verdict_items(status)
-        track_ids = list(dict.fromkeys(
-            item["track_id"] for item in items if item["track_id"] is not None
-        ))
+        track_ids = db.verdict_playable_ids(status)
         if not track_ids:
             await callback.answer("Пока нет загруженных аудиофайлов", show_alert=True)
             return

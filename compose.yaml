@@ -27,6 +27,11 @@ services:
     command: ["uvicorn", "music_bot.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8085"]
     restart: unless-stopped
     env_file: .env
+    # Only the Telegram bot worker may sync private taste snapshots to GitHub.
+    # Compose environment overrides the env_file values in this web container.
+    environment:
+      MUSIC_PROFILE_GITHUB_REPO: ""
+      MUSIC_PROFILE_GITHUB_TOKEN: ""
     volumes:
       - music_data:/app/data
     ports:
