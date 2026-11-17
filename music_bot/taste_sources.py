@@ -247,5 +247,7 @@ def parse_youtube_export(data: bytes, filename: str) -> tuple[list[SourceSong], 
     except UnicodeDecodeError as exc:
         raise TasteSourceError("Файл должен быть в UTF-8") from exc
     if filename.lower().endswith(".csv"):
-        return parse_youtube_csv(raw), True
+        # Takeout Music Library Songs is not identical to the liked-videos playlist.
+        # Even a complete CSV must not erase independently imported favorites.
+        return parse_youtube_csv(raw), False
     return parse_youtube_page_text(raw), False
