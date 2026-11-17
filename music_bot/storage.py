@@ -1386,6 +1386,18 @@ class Library:
                 (provider,limit,offset),
             )]
 
+    def taste_export_tracks(self, provider: str) -> list[dict]:
+        """Complete liked metadata for owner's private taste export."""
+        if provider not in {"yandex", "youtube_music"}:
+            raise ValueError("Unknown music source")
+        with self.con() as db:
+            return [dict(row) for row in db.execute(
+                """SELECT external_id,title,artist,source_url,liked_at
+                   FROM taste_tracks WHERE provider=? AND active=1
+                   ORDER BY last_seen_at DESC,external_id""",
+                (provider,),
+            )]
+
     def taste_artist_scores(self) -> list[tuple[str, float]]:
         """External favorites are positive *likes*, never invented plays."""
         with self.con() as db:
@@ -1394,6 +1406,9 @@ class Library:
                    FROM taste_tracks WHERE active=1
                    ORDER BY liked_at DESC"""
             ).fetchall()
+        from datetime import datetime, timedelta, timezone
+        recent_cutoff = (datetime.now(timezone.utc) -
+                         timedelta(days=180)).date().isoformat()
         seen = set()
         weights = {}
         names = {}
@@ -1406,7 +1421,9 @@ class Library:
             names.setdefault(artist,row["artist"])
             # Cap individual artists to prevent bulk imports drowning explicit
             # ratings. Recency only matters when the source supplied a date.
-            weights[artist] = min(4.0, weights.get(artist,0.0) + 0.30)
+            recent = bool(row["liked_at"] and row["liked_at"][:10] >= recent_cutoff)
+            weights[artist] = min(4.0, weights.get(artist,0.0)
+                                  + (0.40 if recent else 0.25))
         return [(names[k],v) for k,v in sorted(
             weights.items(),key=lambda pair:(-pair[1],pair[0]))]
 
