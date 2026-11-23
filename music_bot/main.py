@@ -6,7 +6,7 @@ import logging
 import sqlite3
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.types import (
     BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaAudio, Message, WebAppInfo,
@@ -1269,6 +1269,29 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
     return router
 
 
+
+async def await_telegram_ready(bot: Bot) -> None:
+    """Respect Bot API flood control before entering aiogram's polling loop.
+
+    Dispatcher.start_polling() calls bot.me() during startup. If getMe is
+    rate-limited, an uncaught TelegramRetryAfter otherwise exits the process;
+    Docker immediately restarts it and can prolong the flood window.
+    Calling bot.me() here also caches the result for start_polling().
+    """
+    while True:
+        try:
+            await bot.me()
+            return
+        except TelegramRetryAfter as exc:
+            # Give the server the requested cooldown plus a small margin,
+            # without ever turning a transient 429 into a hot restart loop.
+            delay = max(1, int(exc.retry_after) + 1)
+            logger.warning(
+                "Telegram getMe rate-limited; retrying after %s seconds", delay
+            )
+            await asyncio.sleep(delay)
+
+
 async def main():
     logging.basicConfig(level=logging.INFO)
     config = load_settings()
@@ -1293,6 +1316,7 @@ async def main():
         profile_github_token=config.profile_github_token,
     ))
     try:
+        await await_telegram_ready(bot)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await catalog.close()
