@@ -113,3 +113,46 @@ def test_plain_query_searches_without_command_and_offers_sources(tmp_path):
     assert markup.inline_keyboard[0][1].url.startswith("https://www.youtube.com/watch?")
     assert db.get_youtube_video(ID)
     assert not db.all_tracks()
+
+
+def test_album_search_and_ordered_tracklist(tmp_path):
+    import asyncio
+    from music_bot.albums import album_query, find_albums, album_tracks
+    from music_bot.telegram_youtube import album_page
+    from music_bot.catalog import CatalogTrack
+    a = "8a49dba0-253a-4535-b87f-78bb035336ce"
+    b = "f3bba4cd-8018-468b-902e-bc8f029593e5"
+    c = "8e74dd9d-e5a3-4acd-918a-c36a0f8cda84"
+    credit = [{"name": "Artist"}]
+    release = {"id": a, "title": "Album Name", "artist-credit": credit,
+               "release-group": {"id": a, "primary-type": "Album"},
+               "track-count": 2, "status": "Official"}
+
+    class Catalog:
+        async def _json(self, provider, path, params, **kw):
+            if path == "/ws/2/release/":
+                return {"releases": [release]}
+            assert path == "/ws/2/release/" + a
+            return {**release, "media": [{"tracks": [
+                {"title": "Second in alphabet", "recording": {"id": b}},
+                {"title": "First in alphabet", "recording": {"id": c}},
+            ]}]}
+
+    assert album_query("Artist альбом Album Name") == ("Artist Album Name", True)
+    catalog = Catalog()
+    albums = asyncio.run(find_albums(catalog, "Artist Album Name", exact=True))
+    assert [x.mbid for x in albums] == [a]
+    assert asyncio.run(find_albums(catalog, "Wrong Artist Album Name", exact=True)) == []
+    title, artist, tracks = asyncio.run(album_tracks(catalog, a))
+    assert [x.mbid for x in tracks] == [b, c]
+    db = Library(tmp_path / "music.db")
+    text, markup = album_page(db, a, title, artist, tracks, 0)
+    assert "1. Second" in text and "2. First" in text
+    callbacks = {v.callback_data for row in markup.inline_keyboard for v in row}
+    assert f"albtrack:{b}" in callbacks and f"albumplay:{a}" not in callbacks
+    db.remember_candidates(tracks)
+    for i, tr in enumerate(tracks):
+        saved = db.add_track(f"file{i}", f"uid{i}", tr.title, tr.artist)
+        db.confirm_recording_match(saved.id, tr.mbid)
+    _, markup = album_page(db, a, title, artist, tracks, 0)
+    assert f"albumplay:{a}" in {v.callback_data for row in markup.inline_keyboard for v in row}
