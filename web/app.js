@@ -271,6 +271,25 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
     } else {
       controls.append(element("span", "catalog-unavailable", "Пока без аудио"));
     }
+    if (!item.local_track_id) {
+      const query = encodeURIComponent((item.artist + " " + item.title).trim());
+      for (const [label, url] of [
+        ["Яндекс Музыка ↗", "https://music.yandex.ru/search?text=" + query],
+        ["YouTube Music ↗", "https://music.youtube.com/search?q=" + query],
+      ]) {
+        const link = element("a", "catalog-link", label);
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        if (tg?.openLink) {
+          link.addEventListener("click", event => {
+            event.preventDefault();
+            tg.openLink(url);
+          });
+        }
+        controls.append(link);
+      }
+    }
     const toMatch = matchingTrackId ?? item.possible_match_track_id;
     if (toMatch && item.local_track_id == null) {
       controls.append(action("🔗 Это та запись", async () => {
