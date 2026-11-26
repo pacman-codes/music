@@ -156,3 +156,48 @@ def test_album_search_and_ordered_tracklist(tmp_path):
         db.confirm_recording_match(saved.id, tr.mbid)
     _, markup = album_page(db, a, title, artist, tracks, 0)
     assert f"albumplay:{a}" in {v.callback_data for row in markup.inline_keyboard for v in row}
+
+
+def test_album_artist_and_title_are_both_required():
+    import asyncio
+    from music_bot.albums import find_albums
+    wanted = "4faf8ad3-4169-4a0f-8dd0-50da0dfc8c91"
+    def release(mbid, artist, title, count=13):
+        return {"id": mbid, "title": title, "artist-credit": [{"name": artist}],
+                "release-group": {"id": mbid, "primary-type": "Album"},
+                "track-count": count, "status": "Official"}
+    wrong = release("8a49dba0-253a-4535-b87f-78bb035336ce", "Jude Frankum", "SOMA", 2)
+    right = release(wanted, "Skrillex", "SOMA")
+    other_title = release("f3bba4cd-8018-468b-902e-bc8f029593e5", "Skrillex", "Other Album")
+
+    class Catalog:
+        async def _json(self, provider, path, params, **kwargs):
+            assert provider == "mb" and path == "/ws/2/release/"
+            assert '(artist:"Skrillex" AND release:"SOMA")' in params["query"]
+            assert '(artist:"SOMA" AND release:"Skrillex")' in params["query"]
+            return {"releases": [wrong, other_title, right]}
+
+    for exact in (True, False):
+        rows = asyncio.run(find_albums(Catalog(), "Skrillex SOMA", exact=exact))
+        assert [r.mbid for r in rows] == [wanted]
+
+    class NoMatch:
+        async def _json(self, *args, **kwargs):
+            return {"releases": [wrong, other_title]}
+
+    assert asyncio.run(find_albums(NoMatch(), "Skrillex SOMA", exact=False)) == []
+
+
+def test_album_search_handles_multiword_artist_and_reversed_order():
+    import asyncio
+    from music_bot.albums import find_albums
+    release = {"id": "8a49dba0-253a-4535-b87f-78bb035336ce", "title": "Mezzanine",
+               "artist-credit": [{"name": "Massive Attack"}],
+               "release-group": {"primary-type": "Album"},
+               "track-count": 11, "status": "Official"}
+    class Catalog:
+        async def _json(self, provider, path, params, **kwargs):
+            assert '(artist:"Massive Attack" AND release:"Mezzanine")' in params["query"]
+            return {"releases": [release]}
+    for query in ("Massive Attack Mezzanine", "Mezzanine Massive Attack"):
+        assert len(asyncio.run(find_albums(Catalog(), query, exact=False))) == 1
