@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 HELP = """🎵 music — личный плеер
 
-Отправь аудио, чтобы добавить трек в библиотеку.
+Напиши исполнителя и название песни обычным сообщением — поиск без команд.\nОтправь аудио, чтобы добавить трек в библиотеку.
 /library — последние треки
 /search Текст — поиск в своей библиотеке
 /play ID — слушать конкретную песню в Telegram
@@ -1262,14 +1262,15 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
     install_import_handlers(router, db, owner_id, media_hosts)
     install_fingerprint_handlers(router, db, fingerprint_recognizer)
     install_taste_handlers(router, db)
-    install_youtube_handlers(
-        router, db, owner_id, search_enabled=youtube_search_enabled,
-        download_enabled=youtube_download_enabled,
-    )
     if anime_catalog is not None:
         install_anime_handlers(router, db, anime_catalog)
     if screen_catalog is not None:
         install_screen_handlers(router, db, screen_catalog)
+    # Plain text music search is a fallback after all explicit command handlers.
+    install_youtube_handlers(
+        router, db, owner_id, search_enabled=youtube_search_enabled,
+        download_enabled=youtube_download_enabled,
+    )
     return router
 
 
