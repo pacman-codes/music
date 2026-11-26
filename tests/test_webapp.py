@@ -35,6 +35,23 @@ def test_good_init_data_and_owner():
     assert verify_init_data(raw, TOKEN, OWNER)["id"] == OWNER
 
 
+def test_init_data_with_third_party_signature_field():
+    raw = signed_init_data(extra={"signature": "offline-test_signature"})
+    assert verify_init_data(raw, TOKEN, OWNER)["id"] == OWNER
+    with pytest.raises(InvalidInitData):
+        verify_init_data(raw.replace("offline-test_signature", "tampered"), TOKEN, OWNER)
+
+
+def test_api_accepts_signed_init_data_with_signature(tmp_path):
+    app = create_app(Settings(TOKEN, OWNER, tmp_path / "music.db"))
+    raw = signed_init_data(extra={"signature": "offline-test_signature"})
+    with TestClient(app) as client:
+        assert client.get("/api/sources", headers={"X-Telegram-Init-Data": raw}).status_code == 200
+        assert client.get("/api/sources", headers={
+            "X-Telegram-Init-Data": raw.replace("offline-test_signature", "tampered")
+        }).status_code == 401
+
+
 @pytest.mark.parametrize("bad", [
     lambda raw: raw + "&query_id=duplicate",
     lambda raw: raw.replace("Tester", "Attacker"),

@@ -32,8 +32,7 @@ def verify_init_data(
     supplied = data.pop("hash", None)
     if not supplied or len(supplied) != 64:
         raise InvalidInitData("Missing initData hash")
-    # Telegram's Ed25519 third-party 'signature' is not part of bot HMAC check.
-    data.pop("signature", None)
+    # Bot-token HMAC includes every received field except hash, including signature.
     check_string = "\n".join(f"{key}={value}" for key, value in sorted(data.items()))
     secret = hmac.new(b"WebAppData", bot_token.encode("utf-8"),
                       hashlib.sha256).digest()
