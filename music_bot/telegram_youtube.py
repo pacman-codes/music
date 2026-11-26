@@ -18,6 +18,7 @@ from aiogram.types import (
 
 from music_bot.catalog import CatalogError, MusicCatalog, normalize, valid_mbid
 from music_bot.personalized import personalized_discovery
+from music_bot.albums import album_query, find_albums, album_tracks
 from music_bot.verdicts import LABELS, yandex_search_url
 from music_bot.source_matching import suggest_sources
 from music_bot.storage import Library
@@ -147,9 +148,23 @@ def cached_audio_for_query(db: Library, query: str):
 
 async def plain_music_search(message: Message, bot: Bot, db: Library,
                              worker: YouTubeSource, *, search_enabled: bool,
-                             download_enabled: bool) -> None:
+                             download_enabled: bool,
+                             catalog: MusicCatalog | None = None) -> None:
     query = (message.text or "").strip()
     if query.startswith("/") or not 2 <= len(query) <= 90:
+        return
+    clean_query, explicit_album = album_query(query)
+    albums = []
+    if catalog is not None and explicit_album:
+        try:
+            albums = await find_albums(catalog, clean_query, exact=False)
+        except (CatalogError, ValueError):
+            await message.answer("Каталог альбомов временно недоступен или запрос слишком короткий.")
+            return
+        if not albums:
+            await message.answer("Не нашёл альбом. Укажи исполнителя и название.")
+            return
+        await message.answer("💿 Альбомы и EP:", reply_markup=album_search_keyboard(albums))
         return
     track = cached_audio_for_query(db, query)
     if track is not None:
@@ -175,7 +190,12 @@ async def plain_music_search(message: Message, bot: Bot, db: Library,
         except (YouTubeError, ValueError):
             await message.answer("Поиск временно недоступен.")
             return
-        if not videos:
+        if catalog is not None:
+            try:
+                albums = await find_albums(catalog, query, exact=True)
+            except (CatalogError, ValueError):
+                pass  # An album lookup outage must not break ordinary song search.
+        if not videos and not albums:
             await message.answer("Не нашёл песню. Попробуй указать исполнителя и название.")
             return
         db.remember_youtube_videos(videos)
@@ -200,7 +220,10 @@ async def plain_music_search(message: Message, bot: Bot, db: Library,
                     text=f"🎧 Получить {i} (есть разрешение)",
                     callback_data=f"ytget:{video.video_id}"))
             controls.append(row)
-        if download_enabled:
+        if albums:
+            lines.append("Также найден альбом с таким названием:")
+            controls.extend(album_search_keyboard(albums).inline_keyboard)
+        if download_enabled and videos:
             lines.append("Выбери верную версию, если её загрузка разрешена.")
         await message.answer("\n".join(lines),
                              reply_markup=InlineKeyboardMarkup(inline_keyboard=controls))
@@ -208,9 +231,63 @@ async def plain_music_search(message: Message, bot: Bot, db: Library,
         db.release_media_import("taste", "plain-music-search", lease)
 
 
+def album_search_keyboard(albums):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"💿 {a.artist[:18]} — {a.title[:30]} ({a.track_count})",
+            callback_data=f"album:{a.mbid}:0",
+        )] for a in albums
+    ])
+
+
+def saved_album_ids(db: Library, tracks):
+    resolved = db.resolved_catalog_tracks()
+    ids = []
+    for track in tracks:
+        ident = resolved.get(track.mbid)
+        if ident is None or db.get_track(ident) is None:
+            # An album edition is not proof that a title-only match is the same
+            # recording; only confirmed MBID-linked audio is used for the queue.
+            return []
+        ids.append(ident)
+    return ids if len(set(ids)) == len(ids) else []
+
+
+def album_page(db: Library, mbid: str, title: str, artist: str, tracks, page: int):
+    size = 8
+    pages = (len(tracks) + size - 1) // size
+    if not 0 <= page < pages:
+        raise ValueError("Invalid album page")
+    lines = [f"💿 {artist} — {title}", f"{len(tracks)} треков · {page+1}/{pages}"]
+    rows = []
+    resolved = db.resolved_catalog_tracks()
+    for i, track in enumerate(tracks[page*size:(page+1)*size], page*size+1):
+        local = resolved.get(track.mbid)
+        lines.append(f"{i}. {track.title[:140]}" + (" ✓" if local else ""))
+        rows.append([InlineKeyboardButton(
+            text=f"{'▶' if local else '🔎'} {i}. {track.title[:35]}",
+            callback_data=f"play:{local}" if local else f"albtrack:{track.mbid}",
+        )])
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton(text="←", callback_data=f"album:{mbid}:{page-1}"))
+    if page+1 < pages:
+        nav.append(InlineKeyboardButton(text="→", callback_data=f"album:{mbid}:{page+1}"))
+    if nav:
+        rows.append(nav)
+    if saved_album_ids(db, tracks):
+        rows.append([InlineKeyboardButton(text="▶ Слушать весь сохранённый альбом",
+                                          callback_data=f"albumplay:{mbid}")])
+    rows.append([InlineKeyboardButton(text="Альбом в MusicBrainz ↗",
+                                      url="https://musicbrainz.org/release/" + mbid)])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
                              search_enabled: bool, download_enabled: bool,
-                             source: YouTubeSource | None = None) -> None:
+                             source: YouTubeSource | None = None,
+                             catalog: MusicCatalog | None = None,
+                             play_album=None) -> None:
     """Router inherits the global private-chat OwnerOnly middleware."""
     worker = source or YouTubeSource()
     download_lock = asyncio.Lock()
@@ -244,16 +321,11 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
             reply_markup=youtube_keyboard(videos, download_enabled),
         )
 
-    @router.message(Command("ytfor"))
-    async def youtube_for_recording(message: Message):
+    async def show_recording_sources(message: Message, mbid: str):
         if not search_enabled:
             await message.answer("YouTube-поиск выключен в .env.")
             return
-        parts=(message.text or "").split()
-        if len(parts)!=2 or not valid_mbid(parts[1]):
-            await message.answer("Пример: /ytfor MBID найденной записи MusicBrainz")
-            return
-        recording=db.get_candidate(parts[1].lower())
+        recording=db.get_candidate(mbid.lower())
         if recording is None:
             await message.answer("Сначала найди запись через /find.")
             return
@@ -283,6 +355,62 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
                 download_enabled, recording["mbid"],
             ),
         )
+
+    @router.message(Command("ytfor"))
+    async def youtube_for_recording(message: Message):
+        parts=(message.text or "").split()
+        if len(parts)!=2 or not valid_mbid(parts[1]):
+            await message.answer("Пример: /ytfor MBID найденной записи MusicBrainz")
+            return
+        await show_recording_sources(message, parts[1])
+
+    if catalog is not None:
+        @router.callback_query(F.data.startswith("album:"))
+        async def open_album(callback: CallbackQuery):
+            parts = (callback.data or "").split(":")
+            if len(parts) != 3 or not valid_mbid(parts[1]) or not parts[2].isdigit():
+                await callback.answer("Неверный альбом", show_alert=True)
+                return
+            await callback.answer()
+            if not isinstance(callback.message, Message):
+                return
+            try:
+                title, artist, tracks = await album_tracks(catalog, parts[1])
+                db.remember_candidates(tracks)
+                text, markup = album_page(db, parts[1], title, artist, tracks, int(parts[2]))
+            except (CatalogError, ValueError):
+                await callback.message.answer("Не удалось открыть трек-лист.")
+                return
+            await callback.message.answer(text, reply_markup=markup)
+
+        @router.callback_query(F.data.startswith("albtrack:"))
+        async def album_track(callback: CallbackQuery):
+            mbid = (callback.data or "").partition(":")[2]
+            if not valid_mbid(mbid):
+                await callback.answer("Неверная запись", show_alert=True)
+                return
+            await callback.answer()
+            if isinstance(callback.message, Message):
+                await show_recording_sources(callback.message, mbid)
+
+        @router.callback_query(F.data.startswith("albumplay:"))
+        async def play_saved_album(callback: CallbackQuery, bot: Bot):
+            mbid = (callback.data or "").partition(":")[2]
+            if not valid_mbid(mbid) or play_album is None:
+                await callback.answer("Альбом недоступен", show_alert=True)
+                return
+            await callback.answer()
+            if not isinstance(callback.message, Message):
+                return
+            try:
+                title, artist, tracks = await album_tracks(catalog, mbid)
+                ids = saved_album_ids(db, tracks)
+                if not ids:
+                    await callback.message.answer("Не все записи этого издания сохранены.")
+                    return
+                await play_album(bot, callback.message.chat.id, ids, f"{artist} — {title}")
+            except (CatalogError, ValueError, TelegramAPIError):
+                await callback.message.answer("Не удалось отправить альбом.")
 
     async def fetch(bot: Bot, video_id: str, chat_id: int,
                     recording_mbid: str | None = None):
@@ -365,4 +493,4 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
     async def plain_search(message: Message, bot: Bot):
         await plain_music_search(message, bot, db, worker,
                                  search_enabled=search_enabled,
-                                 download_enabled=download_enabled)
+                                 download_enabled=download_enabled, catalog=catalog)
