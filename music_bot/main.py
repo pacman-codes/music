@@ -1266,10 +1266,15 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         install_anime_handlers(router, db, anime_catalog)
     if screen_catalog is not None:
         install_screen_handlers(router, db, screen_catalog)
+    async def play_album(bot: Bot, chat_id: int, ids: list[int], label: str):
+        queue_id = db.create_queue(ids, label, "playlist")
+        await deliver_queue(bot, db, chat_id, queue_id, send_lock)
+
     # Plain text music search is a fallback after all explicit command handlers.
     install_youtube_handlers(
         router, db, owner_id, search_enabled=youtube_search_enabled,
-        download_enabled=youtube_download_enabled,
+        download_enabled=youtube_download_enabled, catalog=catalog,
+        play_album=play_album,
     )
     return router
 
