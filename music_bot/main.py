@@ -22,7 +22,7 @@ from music_bot.telegram_screen import install_screen_handlers
 from music_bot.telegram_catalog import install_catalog_handlers
 from music_bot.telegram_import import install_import_handlers
 from music_bot.telegram_fingerprint import install_fingerprint_handlers
-from music_bot.telegram_youtube import install_youtube_handlers
+from music_bot.telegram_youtube import install_youtube_handlers, offer_discovery_audio
 from music_bot.telegram_taste import install_taste_handlers
 from music_bot.selection import DYNAMIC_MODES, select_wave_batch
 from music_bot.wrapped import wrapped_summary
@@ -96,7 +96,7 @@ HELP = """🎵 music — личный плеер
 /qremove ПОЗИЦИЯ — убрать из очереди
 /qfilter rating 7|liked on|today on — фильтры радио
 /continue — продолжить последнюю очередь после сбоя кнопок
-/discover — открытия среди сохранённых треков
+/discover — новая музыка по вкусу (при включённом YouTube-источнике) или открытия среди сохранённых
 
 Нативный Telegram-плеер играет присланные аудиофайлы.
 Бот не видит события реального прослушивания и пропусков.
@@ -377,6 +377,10 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
     send_lock = asyncio.Lock()
 
     async def start_wave(bot: Bot, chat_id: int, mode: str = "balanced") -> None:
+        if (mode == "discover" and catalog is not None
+                and youtube_search_enabled and youtube_download_enabled):
+            await offer_discovery_audio(bot, db, chat_id, catalog)
+            return
         names = {"balanced": "Моя волна", "discover": "Открытия", "favorites": "Любимое"}
         tracks = select_wave_batch(db, mode, count=10)
         if not tracks:
