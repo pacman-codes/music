@@ -112,6 +112,12 @@ class Library:
               mbid TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL,
               artist_mbid TEXT, duration_ms INTEGER, variant INTEGER NOT NULL DEFAULT 0,
               last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS discovery_recent_suggestions (
+              normalized_title TEXT NOT NULL, normalized_artist TEXT NOT NULL,
+              suggested_at INTEGER NOT NULL,
+              PRIMARY KEY(normalized_title, normalized_artist));
+            CREATE INDEX IF NOT EXISTS discovery_recent_time
+              ON discovery_recent_suggestions(suggested_at);
             CREATE TABLE IF NOT EXISTS discovery_wishlist (
               mbid TEXT PRIMARY KEY REFERENCES catalog_candidates(mbid) ON DELETE CASCADE,
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -1433,6 +1439,52 @@ class Library:
                 """SELECT normalized_title,normalized_artist FROM taste_tracks
                    WHERE active=1"""
             )}
+
+    def recent_discovery_identities(self, *, now: int | None = None) -> set[tuple[str, str]]:
+        """Recent generated suggestions, not actual impressions or plays."""
+        import time
+        timestamp = int(time.time()) if now is None else now
+        with self.con() as db:
+            return {(str(row[0]), str(row[1])) for row in db.execute(
+                """SELECT normalized_title,normalized_artist
+                   FROM discovery_recent_suggestions WHERE suggested_at > ?""",
+                (timestamp - 86400,),
+            )}
+
+    def reserve_discovery_suggestions(self, candidates, limit: int, *,
+                                      now: int | None = None) -> list:
+        """Atomically select fresh suggestions across the bot and Mini App.
+
+        Only record the generated batch. No playback event or rating is created.
+        Expire old entries and bound retained metadata.
+        """
+        import time
+        from music_bot.catalog import normalized_identity
+        if not 1 <= limit <= 20:
+            raise ValueError("Invalid discovery size")
+        timestamp = int(time.time()) if now is None else now
+        selected = []
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("DELETE FROM discovery_recent_suggestions WHERE suggested_at <= ?",
+                       (timestamp - 86400,))
+            for song in candidates:
+                title, artist = normalized_identity(song.title, song.artist)
+                if not title or not artist:
+                    continue
+                row = db.execute(
+                    """INSERT OR IGNORE INTO discovery_recent_suggestions
+                       (normalized_title,normalized_artist,suggested_at) VALUES(?,?,?)""",
+                    (title, artist, timestamp),
+                )
+                if row.rowcount:
+                    selected.append(song)
+                if len(selected) >= limit:
+                    break
+            db.execute("""DELETE FROM discovery_recent_suggestions WHERE rowid IN (
+                SELECT rowid FROM discovery_recent_suggestions
+                ORDER BY suggested_at DESC,rowid DESC LIMIT -1 OFFSET 5000)""")
+        return selected
 
     def remember_candidates(self, candidates) -> None:
         """Catalog metadata only: no Telegram file_id, no playable asset implied."""
