@@ -120,9 +120,9 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
 
 def choose_discovery_seeds(db: Library, count: int = 3, *,
                            rng: random.Random | None = None) -> list[ArtistSeed]:
-    """Keep a strong anchor and sample distinct artists across the profile.
+    """Sample distinct artists with softened positive preference weights.
 
-    Tied top scores rotate rather than always favoring alphabetical names.
+    No compulsory anchor: a favorite should not dominate every request.
     The API request budget remains unchanged; these are artist-level signals,
     not inferred genres or confirmed listening events.
     """
@@ -133,12 +133,11 @@ def choose_discovery_seeds(db: Library, count: int = 3, *,
     if len(pool) <= count:
         return pool
     rng = rng or random.Random()
-    top = [seed for seed in pool if seed.score == pool[0].score]
-    anchor = rng.choice(top)
-    selected = [anchor]
-    pool.remove(anchor)
+    selected = []
     while len(selected) < count:
-        candidate = rng.choices(pool, weights=[seed.score for seed in pool], k=1)[0]
+        candidate = rng.choices(
+            pool, weights=[seed.score ** 0.65 for seed in pool], k=1,
+        )[0]
         selected.append(candidate)
         pool.remove(candidate)
     return selected
@@ -195,6 +194,7 @@ async def personalized_discovery(
 
     known_ids = db.confirmed_recording_ids()
     decided_mbids = set(db.catalog_verdicts())
+    recent_names = db.recent_discovery_identities()
     own_tracks = db.all_tracks(10000)
     own_names = ({normalized_identity(t.title, t.artist) for t in own_tracks}
                  | db.taste_identities())
@@ -217,7 +217,7 @@ async def personalized_discovery(
         try:
             found = await catalog.artist_radio(
                 seed.name, difficulty=difficulty,
-                limit=min(20, max(8, limit)),
+                limit=20,
             )
         except CatalogError:
             errors += 1
@@ -227,6 +227,7 @@ async def personalized_discovery(
             song for song in found
             if song.mbid not in known_ids and song.mbid not in decided_mbids
             and not song.variant
+            and normalized_identity(song.title, song.artist) not in recent_names
             and normalized_identity(song.title, song.artist) not in own_names
             and normalized_identity(song.title, song.artist) not in suppressed_names
             and normalize(song.artist) not in excluded_artists
@@ -239,4 +240,7 @@ async def personalized_discovery(
     # An item suggested by multiple different preferred artists is usually
     # a stronger bridge than a recommendation from only one seed. Reciprocal
     # rank fusion joins their rankings, then softens artist repetition.
-    return used_seeds, fuse_artist_radio(pools, limit=limit)
+    # Reserve only the selected batch, atomically across all discovery clients.
+    # Overlapping requests may get fewer results, but do not repeat identities.
+    ranked = fuse_artist_radio(pools, limit=50)
+    return used_seeds, db.reserve_discovery_suggestions(ranked, limit)
