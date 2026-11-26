@@ -18,7 +18,7 @@ def test_external_result_message_is_not_a_false_playback_queue():
     markup = catalog_keyboard([item])
     assert markup.inline_keyboard[0][0].callback_data == f"wish:{MBID}"
     assert not any(
-        b.callback_data.startswith(("play:", "audio:"))
+        (b.callback_data or "").startswith(("play:", "audio:"))
         for row in markup.inline_keyboard for b in row
     )
 
@@ -50,7 +50,7 @@ def test_identify_keyboard_contains_only_existing_mbid_and_track_id():
     markup=catalog_keyboard(
         [CatalogTrack(mbid, "Roads", "Portishead")], match_track_id=12
     )
-    callbacks=[b.callback_data for row in markup.inline_keyboard for b in row]
+    callbacks=[b.callback_data for row in markup.inline_keyboard for b in row if b.callback_data]
     assert f"match:12:{mbid}" in callbacks
     assert f"wish:{mbid}" in callbacks
     assert all(len(value.encode("utf-8")) <= 64 for value in callbacks)
@@ -69,14 +69,14 @@ def test_catalog_play_buttons_only_for_confirmed_telegram_files(tmp_path):
     without = catalog_keyboard([known, unlinked],
                                linked=db.resolved_catalog_tracks())
     assert all(
-        not btn.callback_data.startswith("play:")
+        not (btn.callback_data or "").startswith("play:")
         for row in without.inline_keyboard for btn in row
     )
 
     db.confirm_recording_match(saved.id, MBID)
     linked = catalog_keyboard([known, unlinked],
                               linked=db.resolved_catalog_tracks())
-    buttons = [btn.callback_data for row in linked.inline_keyboard for btn in row]
+    buttons = [btn.callback_data for row in linked.inline_keyboard for btn in row if btn.callback_data]
     assert f"play:{saved.id}" in buttons
     assert f"wish:{MBID}" in buttons
     assert f"wish:{unlinked.mbid}" in buttons
@@ -86,6 +86,16 @@ def test_catalog_play_buttons_only_for_confirmed_telegram_files(tmp_path):
     # as a different local track from search suggestions.
     suggestions = catalog_keyboard([known], match_track_id=999, linked=db.resolved_catalog_tracks())
     assert not any(
-        btn.callback_data.startswith("match:")
+        (btn.callback_data or "").startswith("match:")
         for row in suggestions.inline_keyboard for btn in row
     )
+
+
+def test_unlinked_catalog_has_encoded_search_links_not_playback():
+    from urllib.parse import parse_qs, urlsplit
+    markup = catalog_keyboard([CatalogTrack(MBID, "A & B", "Artist #1")])
+    urls = [urlsplit(b.url) for row in markup.inline_keyboard for b in row if b.url]
+    assert {u.hostname for u in urls} == {"music.yandex.ru", "music.youtube.com"}
+    for u in urls:
+        assert u.scheme == "https" and u.path == "/search"
+        assert list(parse_qs(u.query).values()) == [["Artist #1 A & B"]]
