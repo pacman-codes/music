@@ -59,15 +59,46 @@ def parse_album(item) -> Album | None:
                  group["id"].lower() if valid_mbid(group.get("id")) else item["id"].lower())
 
 
+def release_search_expression(text: str, *, allow_title_only: bool) -> str:
+    """Search artist and release fields together, not a bare title search.
+
+    Try both artist/title orders without guessing where a multiword name ends.
+    Keep the number of Lucene clauses bounded by the 90-character input limit.
+    """
+    parts = text.split()
+    def quote(value: str) -> str:
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    clauses = []
+    for split in range(1, len(parts)):
+        left, right = quote(" ".join(parts[:split])), quote(" ".join(parts[split:]))
+        clauses.extend((f"(artist:{left} AND release:{right})",
+                        f"(artist:{right} AND release:{left})"))
+    if allow_title_only:
+        clauses.append(f"release:{quote(text)}")
+    if not clauses:
+        return f"release:{quote(text)}"
+    return " OR ".join(clauses)
+
+
 async def find_albums(catalog: MusicCatalog, text: str, *, exact: bool) -> list[Album]:
-    if not 2 <= len(text.strip()) <= 90:
+    text = " ".join(text.split())
+    if not 2 <= len(text) <= 90:
         raise ValueError("Invalid album query")
-    escaped = re.sub(r'([+\-!(){}\[\]^"~*?:\\/])', r'\\\1', text.strip())
+    wanted = words(text)
+    if not wanted:
+        return []
+    # With an explicit album request, permit a single-word title search.
+    # Multiword requests require both the artist and the full release title;
+    # never silently drop an artist supplied by the owner.
+    title_only = not exact and len(wanted) == 1
+    if exact and len(wanted) == 1:
+        return []
+    expression = release_search_expression(text, allow_title_only=title_only)
     payload = await catalog._json("mb", "/ws/2/release/",
-                                  {"query": escaped, "fmt": "json", "limit": 25})
+                                  {"query": expression, "fmt": "json", "limit": 50},
+                                  ttl=3600)
     if not isinstance(payload, dict) or not isinstance(payload.get("releases"), list):
         raise CatalogError("Некорректный ответ каталога альбомов")
-    wanted = words(text)
     seen = set()
     results = []
     for raw in payload["releases"]:
@@ -75,7 +106,7 @@ async def find_albums(catalog: MusicCatalog, text: str, *, exact: bool) -> list[
         if album is None or album.group in seen:
             continue
         a, b = words(album.artist), words(album.title)
-        if exact and wanted not in {a+b, b+a}:
+        if wanted not in {a+b, b+a} and not (title_only and wanted == b):
             continue
         seen.add(album.group)
         results.append(album)
