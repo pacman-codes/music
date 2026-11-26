@@ -51,5 +51,8 @@ def test_for_you_favorites_and_auth(tmp_path):
         assert payload["seed_artists"]==["Portishead"]
         assert payload["results"][0]["playable"] is False
         assert "file_id" not in response.text
-        assert catalog.called==[("Portishead","hard",15)]
+        assert catalog.called==[("Portishead","hard",20)]
         assert client.post(f"/api/discovery/wishlist/{A}",headers=auth()).status_code==200
+        again=client.get("/api/discovery/for-you?difficulty=hard",headers=auth())
+        assert again.status_code==200
+        assert again.json()["results"]==[]
