@@ -6,6 +6,7 @@ Only search-produced video IDs, not arbitrary URLs, enter yt-dlp.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -15,7 +16,7 @@ from aiogram.types import (
     InlineKeyboardMarkup, Message,
 )
 
-from music_bot.catalog import CatalogError, MusicCatalog, valid_mbid
+from music_bot.catalog import CatalogError, MusicCatalog, normalize, valid_mbid
 from music_bot.personalized import personalized_discovery
 from music_bot.verdicts import LABELS, yandex_search_url
 from music_bot.source_matching import suggest_sources
@@ -118,6 +119,93 @@ async def offer_discovery_audio(bot: Bot, db: Library, chat_id: int,
                                reply_markup=InlineKeyboardMarkup(inline_keyboard=controls))
     finally:
         db.release_media_import("taste", "audio-discovery", lease)
+
+
+def query_words(value: str) -> tuple[str, ...]:
+    return tuple(re.findall(r"\w+", normalize(value)))
+
+
+def cached_audio_for_query(db: Library, query: str):
+    """Only return an unambiguous exact title + artist match, not a remix guess."""
+    wanted = query_words(query)
+    if not wanted:
+        return None
+    matches = []
+    for track in db.all_tracks(10000):
+        artist = query_words(track.artist)
+        title = query_words(track.title)
+        if not artist or not title:
+            continue
+        # Some previously imported YouTube titles already include the artist.
+        clean_title = title[len(artist):] if title[:len(artist)] == artist else title
+        if not clean_title:
+            continue
+        if wanted in {artist + clean_title, clean_title + artist}:
+            matches.append(track)
+    return matches[0] if len(matches) == 1 else None
+
+
+async def plain_music_search(message: Message, bot: Bot, db: Library,
+                             worker: YouTubeSource, *, search_enabled: bool,
+                             download_enabled: bool) -> None:
+    query = (message.text or "").strip()
+    if query.startswith("/") or not 2 <= len(query) <= 90:
+        return
+    track = cached_audio_for_query(db, query)
+    if track is not None:
+        try:
+            await bot.send_audio(message.chat.id, track.file_id,
+                                 title=track.title[:64], performer=track.artist[:64],
+                                 reply_markup=audio_reaction_keyboard(track.id))
+        except TelegramAPIError:
+            await message.answer("Telegram не смог отправить сохранённый файл.")
+            return
+        db.record_single_send(track.id)
+        return
+    if not search_enabled:
+        await message.answer("Песня не найдена в сохранённых файлах. Внешний поиск отключён.")
+        return
+    lease = db.acquire_media_import("taste", "plain-music-search", ttl=60)
+    if lease is None:
+        await message.answer("Уже ищу другую песню.")
+        return
+    try:
+        try:
+            videos = await worker.search(query, limit=6)
+        except (YouTubeError, ValueError):
+            await message.answer("Поиск временно недоступен.")
+            return
+        if not videos:
+            await message.answer("Не нашёл песню. Попробуй указать исполнителя и название.")
+            return
+        db.remember_youtube_videos(videos)
+        # A cached source may now have a playable Telegram file. Reuse it only
+        # if the plain text matches its stored artist/title unambiguously.
+        track = cached_audio_for_query(db, query)
+        if track is not None:
+            await bot.send_audio(message.chat.id, track.file_id,
+                                 title=track.title[:64], performer=track.artist[:64],
+                                 reply_markup=audio_reaction_keyboard(track.id))
+            db.record_single_send(track.id)
+            return
+        top = videos[:3]
+        lines = ["🎵 Нашёл:"]
+        controls = []
+        for i, video in enumerate(top, 1):
+            lines.append(f"{i}. {video.title} · {video.channel}"[:240])
+            row = [InlineKeyboardButton(text=f"Открыть {i} ↗",
+                     url=f"https://www.youtube.com/watch?v={validate_video_id(video.video_id)}")]
+            if download_enabled:
+                row.insert(0, InlineKeyboardButton(
+                    text=f"🎧 Получить {i} (есть разрешение)",
+                    callback_data=f"ytget:{video.video_id}"))
+            controls.append(row)
+        if download_enabled:
+            lines.append("Выбери верную версию, если её загрузка разрешена.")
+        await message.answer("\n".join(lines),
+                             reply_markup=InlineKeyboardMarkup(inline_keyboard=controls))
+    finally:
+        db.release_media_import("taste", "plain-music-search", lease)
 
 
 def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
@@ -272,3 +360,9 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
             return
         await callback.answer("Запрос на загрузку принят")
         await fetch(bot, raw, owner_id, recording_mbid=mbid)
+
+    @router.message(F.text, ~F.text.startswith("/"))
+    async def plain_search(message: Message, bot: Bot):
+        await plain_music_search(message, bot, db, worker,
+                                 search_enabled=search_enabled,
+                                 download_enabled=download_enabled)
