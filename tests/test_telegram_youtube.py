@@ -17,7 +17,7 @@ def test_owner_protected_routes_are_registered(tmp_path):
     router=Router()
     install_youtube_handlers(router,db,42,
                              search_enabled=False,download_enabled=False)
-    assert len(router.message.handlers)==3
+    assert len(router.message.handlers)==4
     assert len(router.callback_query.handlers)==1
 
 
@@ -66,3 +66,50 @@ def test_discovery_finds_source_without_manual_query_but_requires_choice(tmp_pat
     assert db.get_candidate(mbid)
     assert db.get_youtube_video(ID)
     assert len(db.all_tracks()) == 1  # no silent import, no fake file
+
+
+def test_plain_query_reuses_exact_cached_audio(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from music_bot.telegram_youtube import plain_music_search, cached_audio_for_query
+    db = Library(tmp_path / "music.db")
+    track = db.add_track("real-file", "unique", "Artist - Song", "Artist")
+    assert cached_audio_for_query(db, "Song Artist").id == track.id
+    assert cached_audio_for_query(db, "Artist — Song (live)") is None
+
+    class Bot:
+        async def send_audio(self, chat_id, file, **kwargs):
+            assert chat_id == 42 and file == "real-file"
+            assert kwargs["reply_markup"]
+
+    class Source:
+        async def search(self, *args, **kwargs):
+            raise AssertionError("Do not search or download cached files")
+
+    msg = SimpleNamespace(text="Artist Song", chat=SimpleNamespace(id=42))
+    asyncio.run(plain_music_search(msg, Bot(), db, Source(),
+                                   search_enabled=True, download_enabled=True))
+
+
+def test_plain_query_searches_without_command_and_offers_sources(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from music_bot.telegram_youtube import plain_music_search
+    db = Library(tmp_path / "music.db")
+
+    class Source:
+        async def search(self, query, *, limit):
+            assert query == "Artist Song"
+            return [VideoCandidate(ID, "Artist Song", "Artist", 100)]
+
+    answers = []
+    async def answer(text, **kwargs):
+        answers.append((text, kwargs))
+    msg = SimpleNamespace(text="Artist Song", chat=SimpleNamespace(id=42), answer=answer)
+    asyncio.run(plain_music_search(msg, None, db, Source(),
+                                   search_enabled=True, download_enabled=True))
+    markup = answers[-1][1]["reply_markup"]
+    assert markup.inline_keyboard[0][0].callback_data == f"ytget:{ID}"
+    assert markup.inline_keyboard[0][1].url.startswith("https://www.youtube.com/watch?")
+    assert db.get_youtube_video(ID)
+    assert not db.all_tracks()
