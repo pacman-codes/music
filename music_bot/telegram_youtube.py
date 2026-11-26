@@ -188,8 +188,7 @@ async def plain_music_search(message: Message, bot: Bot, db: Library,
         try:
             videos = await worker.search(query, limit=6)
         except (YouTubeError, ValueError):
-            await message.answer("Поиск временно недоступен.")
-            return
+            videos = []
         if catalog is not None:
             try:
                 albums = await find_albums(catalog, query, exact=True)
@@ -208,8 +207,13 @@ async def plain_music_search(message: Message, bot: Bot, db: Library,
                                  reply_markup=audio_reaction_keyboard(track.id))
             db.record_single_send(track.id)
             return
-        top = videos[:3]
-        lines = ["🎵 Нашёл:"]
+        # Do not offer album reviews, reactions or production tutorials as audio.
+        noise = re.compile(r"\b(?:album review|track review|reaction|tutorial|deconstruction)\b", re.I)
+        top = [video for video in videos if not noise.search(video.title)][:3]
+        if not top and not albums:
+            await message.answer("Не нашёл подходящую музыкальную запись.")
+            return
+        lines = ["🎵 Нашёл:" if top else "💿 Нашёл релиз:"]
         controls = []
         for i, video in enumerate(top, 1):
             lines.append(f"{i}. {video.title} · {video.channel}"[:240])
@@ -223,7 +227,7 @@ async def plain_music_search(message: Message, bot: Bot, db: Library,
         if albums:
             lines.append("Также найден альбом с таким названием:")
             controls.extend(album_search_keyboard(albums).inline_keyboard)
-        if download_enabled and videos:
+        if download_enabled and top:
             lines.append("Выбери верную версию, если её загрузка разрешена.")
         await message.answer("\n".join(lines),
                              reply_markup=InlineKeyboardMarkup(inline_keyboard=controls))
