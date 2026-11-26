@@ -13,6 +13,8 @@ from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normaliz
 from music_bot.personalized import personalized_discovery
 from music_bot.weekly import weekly_discovery
 from music_bot.storage import Library
+from music_bot.verdicts import yandex_search_url
+from urllib.parse import quote
 
 
 def catalog_keyboard(rows: list[CatalogTrack], *,
@@ -42,6 +44,14 @@ def catalog_keyboard(rows: list[CatalogTrack], *,
             text=f"🧭 Оценить: {track.artist[:14]} — {track.title[:22]}",
             callback_data=f"vopen:c:{track.mbid}",
         )])
+        if playable_id is None:
+            query = quote(f"{track.artist} {track.title}".strip(), safe="")
+            controls.append([
+                InlineKeyboardButton(text=f"Яндекс ↗ {track.title[:20]}",
+                                     url=yandex_search_url(track.artist, track.title)),
+                InlineKeyboardButton(text="YouTube Music ↗",
+                                     url="https://music.youtube.com/search?q=" + query),
+            ])
     return InlineKeyboardMarkup(inline_keyboard=controls)
 
 
@@ -63,7 +73,7 @@ def format_catalog(rows: list[CatalogTrack], title: str) -> str:
     for i, item in enumerate(rows[:8], 1):
         variant = " [другая версия]" if item.variant else ""
         lines.append(f"{i}. {item.artist} — {item.title}{variant}"[:250])
-    lines.append("🧭 Оценить — один из пяти списков. ▶ только если аудио уже загружено.")
+    lines.append("🧭 Оценить — один из пяти списков. ↗ — поиск в музыкальном сервисе; ▶ — загруженное аудио.")
     return "\n".join(lines)[:3800]
 
 
