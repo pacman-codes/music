@@ -1,10 +1,11 @@
 """Live-feedback-based personal discovery across multiple LB radio seeds."""
 import asyncio
+import random
 
 import pytest
 
 from music_bot.catalog import CatalogError, CatalogTrack
-from music_bot.personalized import personalized_discovery, ranked_seed_artists
+from music_bot.personalized import choose_discovery_seeds, personalized_discovery, ranked_seed_artists
 from music_bot.storage import Library
 
 A="8a49dba0-253a-4535-b87f-78bb035336ce"
@@ -105,3 +106,29 @@ def test_empty_profile_and_arguments(db):
         asyncio.run(personalized_discovery(db,catalog,difficulty="bad"))
     with pytest.raises(ValueError):
         asyncio.run(personalized_discovery(db,catalog,limit=200))
+
+
+def test_discovery_rotates_across_large_taste_profile(db):
+    from music_bot.taste_sources import SourceSong
+    songs = [SourceSong(str(i), "Song " + str(i), "Artist " + str(i),
+                        "https://music.yandex.ru/track/" + str(i))
+             for i in range(1, 21)]
+    db.sync_taste_source("yandex", songs, complete=False)
+    rng = random.Random(42)
+    seen = set()
+    for _ in range(30):
+        seeds = choose_discovery_seeds(db, rng=rng)
+        assert len({seed.name for seed in seeds}) == 3
+        seen.update(seed.name for seed in seeds)
+    assert len(seen) > 10
+    assert db.playback_stats() == {}
+    assert db.ratings() == {}
+
+
+def test_discovery_keeps_strong_anchor(db):
+    add(db, "Anchor", "Favorite", score=10, liked=True)
+    for i in range(5):
+        add(db, "Other" + str(i), "Artist " + str(i), score=7)
+    seeds = choose_discovery_seeds(db, rng=random.Random(7))
+    assert seeds[0].name == "Favorite"
+    assert len({seed.name for seed in seeds}) == 3
