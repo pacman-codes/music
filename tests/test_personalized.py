@@ -125,10 +125,37 @@ def test_discovery_rotates_across_large_taste_profile(db):
     assert db.ratings() == {}
 
 
-def test_discovery_keeps_strong_anchor(db):
+def test_discovery_favorite_is_weighted_but_not_mandatory(db):
     add(db, "Anchor", "Favorite", score=10, liked=True)
     for i in range(5):
         add(db, "Other" + str(i), "Artist " + str(i), score=7)
-    seeds = choose_discovery_seeds(db, rng=random.Random(7))
-    assert seeds[0].name == "Favorite"
-    assert len({seed.name for seed in seeds}) == 3
+    rng = random.Random(7)
+    batches = [choose_discovery_seeds(db, rng=rng) for _ in range(100)]
+    assert all(len({seed.name for seed in seeds}) == 3 for seeds in batches)
+    assert any("Favorite" not in {seed.name for seed in seeds} for seeds in batches)
+    first = [seeds[0].name for seeds in batches]
+    assert first.count("Favorite") > first.count("Artist 0")
+
+
+def test_repeated_discovery_uses_fresh_candidates(db):
+    add(db, "Seed", "Portishead", score=10, liked=True)
+    catalog = FakeRadio()
+    _, first = asyncio.run(personalized_discovery(db, catalog, limit=2))
+    _, second = asyncio.run(personalized_discovery(db, catalog, limit=2))
+    _, third = asyncio.run(personalized_discovery(db, catalog, limit=2))
+    assert len(first) == 2
+    assert len(second) == 1
+    assert not ({song.mbid for song in first} & {song.mbid for song in second})
+    assert third == []
+    assert db.playback_stats() == {}
+    assert db.ratings()  # only the original explicit rating
+
+
+def test_suggestion_history_shared_and_expires(db):
+    song = CatalogTrack(A, "Roads", "Portishead")
+    alias = CatalogTrack(B, "ROADS", "PORTISHEAD")
+    assert db.reserve_discovery_suggestions([song], 1, now=100000) == [song]
+    other = Library(db.path)
+    assert other.reserve_discovery_suggestions([alias], 1, now=100001) == []
+    assert other.recent_discovery_identities(now=100001) == {("roads", "portishead")}
+    assert other.reserve_discovery_suggestions([alias], 1, now=186400) == [alias]
