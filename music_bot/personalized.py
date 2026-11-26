@@ -6,6 +6,7 @@ exists. The default is up to 3 seed artists and 20 candidate records.
 """
 from __future__ import annotations
 
+import random
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -23,14 +24,12 @@ class ArtistSeed:
     score: float
 
 
-def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
-    """Choose up to three diverse artists using explicit ratings and favorites.
+def _all_ranked_seed_artists(db: Library) -> list[ArtistSeed]:
+    """Rank the entire positive artist profile using explicit ratings and favorites.
 
     A low-rated or frequently skipped *favorite* remains in "Мне нравится",
     but should not automatically become a positive seed for new discoveries.
     """
-    if not 1 <= count <= 5:
-        raise ValueError("Seed count must be between 1 and 5")
     likes = db.liked_ids()
     ratings = db.ratings()
     dislikes = db.disliked_ids()
@@ -108,8 +107,41 @@ def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
         ArtistSeed(representative[key], round(weight, 2))
         for key, weight in sorted(
             artist_scores.items(), key=lambda item: (-item[1], item[0])
-        )[:count]
+        )
     ]
+
+
+def ranked_seed_artists(db: Library, count: int = 3) -> list[ArtistSeed]:
+    """Return the strongest seeds for stable profile and weekly summaries."""
+    if not 1 <= count <= 5:
+        raise ValueError("Seed count must be between 1 and 5")
+    return _all_ranked_seed_artists(db)[:count]
+
+
+def choose_discovery_seeds(db: Library, count: int = 3, *,
+                           rng: random.Random | None = None) -> list[ArtistSeed]:
+    """Keep a strong anchor and sample distinct artists across the profile.
+
+    Tied top scores rotate rather than always favoring alphabetical names.
+    The API request budget remains unchanged; these are artist-level signals,
+    not inferred genres or confirmed listening events.
+    """
+    if not 1 <= count <= 3:
+        raise ValueError("Seed count must be between 1 and 3")
+    pool = [seed for seed in _all_ranked_seed_artists(db)
+            if 2 <= len(seed.name) <= 90 and seed.score > 0]
+    if len(pool) <= count:
+        return pool
+    rng = rng or random.Random()
+    top = [seed for seed in pool if seed.score == pool[0].score]
+    anchor = rng.choice(top)
+    selected = [anchor]
+    pool.remove(anchor)
+    while len(selected) < count:
+        candidate = rng.choices(pool, weights=[seed.score for seed in pool], k=1)[0]
+        selected.append(candidate)
+        pool.remove(candidate)
+    return selected
 
 
 def strongly_negative_artists(
@@ -157,7 +189,7 @@ async def personalized_discovery(
         raise ValueError("Unknown discovery difficulty")
     if not 1 <= limit <= 20 or not 1 <= max_seeds <= 3:
         raise ValueError("Invalid discovery size")
-    seeds = ranked_seed_artists(db, count=max_seeds)
+    seeds = choose_discovery_seeds(db, count=max_seeds)
     if not seeds:
         return [], []
 
