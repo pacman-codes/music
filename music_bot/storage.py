@@ -645,6 +645,38 @@ class Library:
                    WHERE p.playlist_id=? ORDER BY p.position LIMIT ?""",
                 (playlist_id,limit))]
 
+    def playlist_page(self, playlist_id: int, page: int, size: int = 8):
+        if not 0 <= page <= 100000 or not 1 <= size <= 30:
+            raise ValueError("Invalid playlist page")
+        with self.con() as db:
+            total = db.execute("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id=?",
+                               (playlist_id,)).fetchone()[0]
+            pages = max(1, (total + size - 1) // size)
+            page = min(page, pages - 1)
+            rows = db.execute(
+                """SELECT t.* FROM tracks t JOIN playlist_tracks p ON t.id=p.track_id
+                   WHERE p.playlist_id=? ORDER BY p.position,t.id LIMIT ? OFFSET ?""",
+                (playlist_id, size, page * size))
+            return total, page, pages, [self.track(row) for row in rows]
+
+    def shift_playlist_track(self, playlist_id: int, track_id: int, delta: int) -> bool:
+        if delta not in (-1, 1):
+            raise ValueError("Invalid move")
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            order = [row[0] for row in db.execute(
+                "SELECT track_id FROM playlist_tracks WHERE playlist_id=? ORDER BY position,track_id",
+                (playlist_id,))]
+            if track_id not in order:
+                raise ValueError("Track not found in playlist")
+            index = order.index(track_id)
+            target = index + delta
+            if not 0 <= target < len(order):
+                return False
+            order[index], order[target] = order[target], order[index]
+            self._rewrite_positions(db, playlist_id, order)
+            return True
+
     def liked_ids(self):
         # Do not inherit playlist_tracks()'s display limit of 1000.
         with self.con() as db:
@@ -860,7 +892,8 @@ class Library:
     def edit_queue(self, queue_id: int, action: str, *,
                    track_id: int | None = None, position: int | None = None,
                    to_position: int | None = None,
-                   expected_cursor: int | None = None) -> dict:
+                   expected_cursor: int | None = None,
+                   expected_track_id: int | None = None) -> dict:
         """Atomically edit ONLY not-yet-sent queue items (0-based positions).
 
         New tracks may be inserted at the front or appended. Moving/removing
@@ -906,6 +939,8 @@ class Library:
                 if type(position) is not int or not cursor <= position < cursor+len(pending):
                     raise ValueError("Cannot edit an already sent or missing position")
                 current_idx = position - cursor
+                if expected_track_id is not None and pending[current_idx] != expected_track_id:
+                    raise ValueError("Queue changed; refresh the pending list")
                 if action == "remove":
                     pending.pop(current_idx)
                 else:
