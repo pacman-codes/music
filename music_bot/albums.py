@@ -178,14 +178,7 @@ async def find_albums(catalog: MusicCatalog, text: str, *, exact: bool) -> list[
     except CatalogError:
         # Primary unavailable: use the independent storefront.
         return await _find_itunes_albums(catalog, text, exact=exact)
-    if rows:
-        return rows
-    # A healthy MusicBrainz negative result is authoritative for the primary
-    # catalog, but a release may be listed only in the storefront.
-    try:
-        return await _find_itunes_albums(catalog, text, exact=exact)
-    except CatalogError:
-        return []
+    return rows
 
 
 @dataclass(frozen=True)
