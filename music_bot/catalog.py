@@ -22,6 +22,7 @@ import httpx
 
 MUSICBRAINZ = "https://musicbrainz.org"
 LISTENBRAINZ = "https://api.listenbrainz.org"
+ITUNES = "https://itunes.apple.com"
 USER_AGENT = "music-personal-bot/0.4.0 (https://github.com/pacman-codes/music)"
 MAX_RESPONSE_BYTES = 1_000_000
 ALBUM_STALE_SECONDS = 7 * 86400
@@ -165,7 +166,7 @@ class CatalogCache:
         Reserve a slot under BEGIN IMMEDIATE before contacting MusicBrainz.
         Returns seconds to sleep; skipping a reserved slot is harmless.
         """
-        if provider not in {"mb", "anilist", "tmdb", "acoustid"} or not 0.3 <= interval <= 5.0:
+        if provider not in {"mb", "anilist", "tmdb", "acoustid", "itunes"} or not 0.3 <= interval <= 5.0:
             raise ValueError("Unsupported rate-limit provider")
         timestamp = time.time() if now is None else now
         with closing(self._db()) as db:
@@ -233,6 +234,7 @@ class MusicCatalog:
             trust_env=False,
         )
         self._mb_lock = asyncio.Lock()
+        self._itunes_lock = asyncio.Lock()
 
     async def close(self) -> None:
         if self._owned_client:
@@ -240,10 +242,12 @@ class MusicCatalog:
 
     async def _json(self, provider: str, path: str, params: dict[str, Any],
                     ttl: int = 86400) -> Any:
-        if provider not in {"mb", "lb"} or not path.startswith("/") or "//" in path:
+        if provider not in {"mb", "lb", "itunes"} or not path.startswith("/") or "//" in path:
             raise ValueError("Unsupported upstream")
         # Never construct a hostname from user input or accept upstream redirects.
-        root = MUSICBRAINZ if provider == "mb" else LISTENBRAINZ
+        if provider == "itunes" and path not in {"/search", "/lookup"}:
+            raise ValueError("Unsupported iTunes endpoint")
+        root = {"mb": MUSICBRAINZ, "lb": LISTENBRAINZ, "itunes": ITUNES}[provider]
         key = json.dumps([provider, path, sorted(params.items())],
                          sort_keys=True, separators=(",", ":"))
         cached = self.cache.get(key)
@@ -268,6 +272,15 @@ class MusicCatalog:
                             logger.warning("MusicBrainz release lookup failed; using cached metadata")
                             return stale
                     raise
+        elif provider == "itunes":
+            async with self._itunes_lock:
+                cached = self.cache.get(key)
+                if cached is not None:
+                    return cached
+                wait = self.cache.reserve_request_slot("itunes", interval=3.1)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                value = await self._fetch(root + path, params)
         else:
             value = await self._fetch(root + path, params)
         self.cache.put(key, value, ttl)
@@ -292,7 +305,11 @@ class MusicCatalog:
                     output.extend(chunk)
                     if len(output) > MAX_RESPONSE_BYTES:
                         raise CatalogError("Слишком большой ответ музыкального каталога")
-                if "json" not in response.headers.get("content-type", ""):
+                content_type = response.headers.get("content-type", "").lower()
+                # iTunes Search API sometimes serves JSON as JavaScript.
+                apple_json = response.url.host == "itunes.apple.com" and (
+                    "javascript" in content_type or "text/plain" in content_type)
+                if "json" not in content_type and not apple_json:
                     raise CatalogError("Каталог прислал некорректный формат")
                 return json.loads(output)
         except (httpx.HTTPError, ValueError) as exc:

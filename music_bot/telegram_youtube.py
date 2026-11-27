@@ -18,7 +18,7 @@ from aiogram.types import (
 
 from music_bot.catalog import CatalogError, MusicCatalog, normalize, valid_mbid
 from music_bot.personalized import personalized_discovery
-from music_bot.albums import album_query, find_albums, album_tracks
+from music_bot.albums import album_query, find_albums, album_tracks, valid_album_id, valid_itunes_id
 from music_bot.verdicts import LABELS, yandex_search_url
 from music_bot.source_matching import suggest_sources
 from music_bot.storage import Library
@@ -162,7 +162,7 @@ async def plain_music_search(message: Message, bot: Bot, db: Library,
             await message.answer("Укажи название альбома и исполнителя (от 2 до 90 символов).")
             return
         except CatalogError:
-            await message.answer("MusicBrainz временно недоступен. Попробуй позже или открой сохранённые альбомы: /albums.")
+            await message.answer("Каталоги альбомов временно недоступны. Попробуй позже или открой сохранённые альбомы: /albums.")
             return
         if not albums:
             await message.answer("Не нашёл альбом. Укажи исполнителя и название.")
@@ -255,7 +255,7 @@ async def show_album_results(message: Message, db: Library, catalog: MusicCatalo
         album = albums[0]
         try:
             title, artist, tracks = await album_tracks(catalog, album.mbid)
-            db.remember_candidates(tracks)
+            db.remember_candidates([track for track in tracks if valid_mbid(track.mbid)])
             text, markup = album_page(db, album.mbid, title, artist, tracks, 0)
         except (CatalogError, ValueError):
             # Keep the release button so the user can retry a transient lookup.
@@ -313,6 +313,8 @@ async def edit_album_message(message: Message, text: str, markup: InlineKeyboard
 
 
 def saved_album_ids(db: Library, tracks):
+    if any(not valid_mbid(track.mbid) for track in tracks):
+        return []
     resolved = db.resolved_catalog_tracks()
     ids = []
     for track in tracks:
@@ -331,6 +333,8 @@ def album_page(db: Library, mbid: str, title: str, artist: str, tracks, page: in
     if not 0 <= page < pages:
         raise ValueError("Invalid album page")
     lines = [f"💿 {artist} — {title}", f"{len(tracks)} треков" + (f" · {page+1}/{pages}" if pages > 1 else "")]
+    if valid_itunes_id(mbid):
+        lines.append("Источник: iTunes (резервный каталог)")
     rows = []
     resolved = db.resolved_catalog_tracks()
     for i, track in enumerate(tracks[page*size:(page+1)*size], page*size+1):
@@ -338,7 +342,9 @@ def album_page(db: Library, mbid: str, title: str, artist: str, tracks, page: in
         lines.append(f"{i}. {track.title[:140]}" + (" ✓" if local else ""))
         rows.append([InlineKeyboardButton(
             text=f"{'▶' if local else '🔎'} {i}. {track.title[:35]}",
-            callback_data=f"play:{local}" if local else f"albtrack:{track.mbid}",
+            callback_data=(f"play:{local}" if local else
+                           f"italbtrack:{mbid}:{i-1}" if valid_itunes_id(mbid)
+                           else f"albtrack:{track.mbid}"),
         )])
     nav = []
     if page:
@@ -356,8 +362,12 @@ def album_page(db: Library, mbid: str, title: str, artist: str, tracks, page: in
         callback_data=f"{'albumdel' if saved else 'albumadd'}:{mbid}:{page}",
     )])
     rows.append([InlineKeyboardButton(text="💿 Мои альбомы", callback_data="albumlist:0")])
-    rows.append([InlineKeyboardButton(text="Альбом в MusicBrainz ↗",
-                                      url="https://musicbrainz.org/release/" + mbid)])
+    if valid_itunes_id(mbid):
+        rows.append([InlineKeyboardButton(text="Альбом в Apple Music ↗",
+                                          url="https://music.apple.com/us/album/" + mbid[3:])])
+    else:
+        rows.append([InlineKeyboardButton(text="Альбом в MusicBrainz ↗",
+                                          url="https://musicbrainz.org/release/" + mbid)])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -399,11 +409,11 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
             reply_markup=youtube_keyboard(videos, download_enabled),
         )
 
-    async def show_recording_sources(message: Message, mbid: str):
+    async def show_recording_sources(message: Message, mbid: str, *, store_recording=None):
         if not search_enabled:
             await message.answer("YouTube-поиск выключен в .env.")
             return
-        recording=db.get_candidate(mbid.lower())
+        recording = store_recording if store_recording is not None else db.get_candidate(mbid.lower())
         if recording is None:
             await message.answer("Сначала найди запись через /find.")
             return
@@ -430,7 +440,7 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
             text[:3800],
             reply_markup=youtube_keyboard(
                 [item.video for item in ranked],
-                download_enabled, recording["mbid"],
+                download_enabled, recording["mbid"] if store_recording is None else None,
             ),
         )
 
@@ -465,7 +475,7 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
         @router.callback_query(F.data.startswith("albumadd:") | F.data.startswith("albumdel:"))
         async def change_album_collection(callback: CallbackQuery):
             parts = (callback.data or "").split(":")
-            if (len(parts) != 3 or not valid_mbid(parts[1])
+            if (len(parts) != 3 or not valid_album_id(parts[1])
                     or not parts[2].isascii() or not parts[2].isdigit()
                     or len(parts[2]) > 2):
                 await callback.answer("Неверный альбом", show_alert=True)
@@ -479,7 +489,7 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
                 title, artist, tracks = await album_tracks(catalog, mbid)
                 if not 0 <= page < (len(tracks) + 14) // 15:
                     raise ValueError("Invalid album page")
-                db.remember_candidates(tracks)
+                db.remember_candidates([track for track in tracks if valid_mbid(track.mbid)])
                 if parts[0] == "albumadd":
                     db.save_album(mbid, title, artist, len(tracks))
                 else:
@@ -493,7 +503,7 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
         @router.callback_query(F.data.startswith("album:"))
         async def open_album(callback: CallbackQuery):
             parts = (callback.data or "").split(":")
-            if len(parts) != 3 or not valid_mbid(parts[1]) or not parts[2].isdigit():
+            if len(parts) != 3 or not valid_album_id(parts[1]) or not parts[2].isascii() or not parts[2].isdigit() or len(parts[2]) > 2:
                 await callback.answer("Неверный альбом", show_alert=True)
                 return
             await callback.answer()
@@ -501,12 +511,36 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
                 return
             try:
                 title, artist, tracks = await album_tracks(catalog, parts[1])
-                db.remember_candidates(tracks)
+                db.remember_candidates([track for track in tracks if valid_mbid(track.mbid)])
                 text, markup = album_page(db, parts[1], title, artist, tracks, int(parts[2]))
             except (CatalogError, ValueError):
                 await callback.message.answer("Не удалось открыть трек-лист.")
                 return
             await edit_album_message(callback.message, text, markup)
+
+        @router.callback_query(F.data.startswith("italbtrack:"))
+        async def store_album_track(callback: CallbackQuery):
+            parts = (callback.data or "").split(":")
+            if (len(parts) != 3 or not valid_itunes_id(parts[1])
+                    or not parts[2].isascii() or not parts[2].isdigit()
+                    or len(parts[2]) > 2):
+                await callback.answer("Неверная запись", show_alert=True)
+                return
+            await callback.answer()
+            if not isinstance(callback.message, Message):
+                return
+            try:
+                _, _, tracks = await album_tracks(catalog, parts[1])
+                index = int(parts[2])
+                if not 0 <= index < len(tracks):
+                    raise ValueError("Invalid track index")
+                track = tracks[index]
+            except (CatalogError, ValueError):
+                await callback.message.answer("Не удалось открыть запись iTunes.")
+                return
+            await show_recording_sources(callback.message, track.mbid, store_recording={
+                "title": track.title, "artist": track.artist, "duration_ms": track.duration_ms,
+            })
 
         @router.callback_query(F.data.startswith("albtrack:"))
         async def album_track(callback: CallbackQuery):

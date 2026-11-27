@@ -217,3 +217,55 @@ def test_album_cache_survives_temporary_upstream_failure(tmp_path):
     asyncio.run(scenario())
     cache.put("cleanup", {}, 60, now=now+8*86400)
     assert cache.get(key, now=now+8*86400, max_stale=7*86400) is None
+
+
+def test_itunes_fallback_keeps_provider_ids_separate(tmp_path):
+    from music_bot.albums import find_albums, album_tracks, valid_album_id, StoreTrack
+    from music_bot.storage import Library
+    from music_bot.telegram_youtube import album_page, saved_album_ids
+    release = {"wrapperType": "collection", "collectionType": "Album",
+               "collectionId": 123, "collectionName": "SOMA",
+               "artistName": "Skrillex", "trackCount": 2}
+    wrong = {**release, "collectionId": 999, "artistName": "Other"}
+    def song(i, title):
+        return {"wrapperType": "track", "kind": "song", "collectionId": 123,
+                "trackId": 200+i, "trackName": title, "artistName": "Skrillex",
+                "discNumber": 1, "trackNumber": i, "trackTimeMillis": 120000}
+    calls = []
+    def handle(request):
+        calls.append(request.url.host)
+        if request.url.host == "musicbrainz.org":
+            return httpx.Response(503)
+        assert request.url.host == "itunes.apple.com"
+        if request.url.path == "/search":
+            assert request.url.params["entity"] == "album"
+            return httpx.Response(200, json={"results": [wrong, release]})
+        assert request.url.path == "/lookup"
+        assert request.url.params["id"] == "123"
+        return httpx.Response(200, json={"results": [
+            release, song(2, "Second"), song(1, "First"),
+        ]})
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            catalog = MusicCatalog(tmp_path / "music.db", http)
+            rows = await find_albums(catalog, "Skrillex SOMA", exact=True)
+            assert [r.mbid for r in rows] == ["it-123"]
+            title, artist, tracks = await album_tracks(catalog, "it-123")
+            assert (title, artist) == ("SOMA", "Skrillex")
+            assert [t.title for t in tracks] == ["First", "Second"]
+            assert all(isinstance(t, StoreTrack) for t in tracks)
+            assert all(valid_album_id(t.mbid) for t in tracks)
+            db = Library(tmp_path / "music.db")
+            assert db.save_album("it-123", title, artist, 2)
+            assert db.get_saved_album("it-123")["title"] == "SOMA"
+            text, markup = album_page(db, "it-123", title, artist, tracks, 0)
+            assert "iTunes" in text
+            callbacks = {b.callback_data for row in markup.inline_keyboard for b in row}
+            assert "italbtrack:it-123:0" in callbacks
+            assert "albumdel:it-123:0" in callbacks
+            assert "albumplay:it-123" not in callbacks
+            assert not saved_album_ids(db, tracks)
+            assert not db.all_tracks()
+    asyncio.run(scenario())
+    assert calls == ["musicbrainz.org", "itunes.apple.com", "itunes.apple.com"]
