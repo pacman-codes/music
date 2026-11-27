@@ -902,7 +902,7 @@ def create_app(config: Settings | None = None,
     async def missing_album_suggestions(release_id: str, start: int = Query(0, ge=0, le=100)):
         if not settings.youtube_search_enabled:
             raise HTTPException(409, detail="YouTube-поиск отключён")
-        _, _, rows = await load_album(release_id)
+        _, _, _, rows = await load_album(release_id)
         try:
             return await album_missing_suggestions(db, yt_source, rows, start)
         except ValueError as exc:
@@ -914,7 +914,7 @@ def create_app(config: Settings | None = None,
     async def album_track_suggestions(release_id: str, position: int):
         if not settings.youtube_search_enabled:
             raise HTTPException(409, detail="YouTube-поиск отключён")
-        _, _, rows = await load_album(release_id)
+        _, _, _, rows = await load_album(release_id)
         if not 0 <= position < len(rows):
             raise HTTPException(404, detail="Трек альбома не найден")
         track = rows[position]
