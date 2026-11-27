@@ -742,10 +742,11 @@ class Library:
                 "SELECT track_id FROM sent_history ORDER BY id DESC LIMIT ?", (limit,)
             )}
 
-    def create_queue(self, track_ids, label, source_kind):
+    def create_queue(self, track_ids, label, source_kind, *, preserve_duplicates=False):
         # Fixed snapshots: removing a track from a playlist doesn't silently
-        # rewrite an already created listening queue.
-        ids = list(dict.fromkeys(track_ids))
+        # rewrite an already created listening queue. History replay can preserve
+        # intentional repeats from an earlier delivery.
+        ids = list(track_ids) if preserve_duplicates else list(dict.fromkeys(track_ids))
         if not ids:
             raise ValueError("Cannot create empty queue")
         with self.con() as db:
@@ -797,6 +798,41 @@ class Library:
                 "INSERT OR IGNORE INTO weekly_digest_receipts(week_key) VALUES(?)",
                 (week_key,),
             ).rowcount)
+
+    def recent_deliveries(self, *, before: int | None = None, limit: int = 9) -> list[dict]:
+        """Most recent successful delivery of each distinct track, not listens."""
+        if not 1 <= limit <= 100 or (before is not None and before <= 0):
+            raise ValueError("Invalid history page")
+        with self.con() as db:
+            return [dict(row) for row in db.execute(
+                """SELECT h.id AS delivery_id,h.sent_at,t.id AS track_id,t.title,t.artist
+                   FROM (SELECT MAX(id) AS latest_id FROM sent_history GROUP BY track_id) recent
+                   JOIN sent_history h ON h.id=recent.latest_id
+                   JOIN tracks t ON t.id=h.track_id
+                   WHERE (? IS NULL OR h.id<?)
+                   ORDER BY h.id DESC LIMIT ?""", (before,before,limit))]
+
+    def recent_delivered_queues(self, *, before: int | None = None, limit: int = 9) -> list[dict]:
+        if not 1 <= limit <= 100 or (before is not None and before <= 0):
+            raise ValueError("Invalid history page")
+        with self.con() as db:
+            return [dict(row) for row in db.execute(
+                """SELECT q.id AS queue_id,q.label,q.source_kind,
+                          COUNT(h.id) AS delivered_count,MAX(h.id) AS last_delivery_id,
+                          MAX(h.sent_at) AS sent_at
+                   FROM queues q JOIN sent_history h ON h.queue_id=q.id
+                   GROUP BY q.id
+                   HAVING (? IS NULL OR MAX(h.id)<?)
+                   ORDER BY last_delivery_id DESC LIMIT ?""", (before,before,limit))]
+
+    def delivered_queue_tracks(self, queue_id: int, *, limit: int = 1001) -> list[Track]:
+        """Replay the actual delivered order, not the queue's unsent tail."""
+        if not 1 <= limit <= 1001:
+            raise ValueError("Invalid replay limit")
+        with self.con() as db:
+            return [self.track(row) for row in db.execute(
+                """SELECT t.* FROM sent_history h JOIN tracks t ON t.id=h.track_id
+                   WHERE h.queue_id=? ORDER BY h.id LIMIT ?""", (queue_id,limit))]
 
     def latest_queue_id(self) -> int | None:
         """Return the latest persisted listening queue (owner-only bot)."""
