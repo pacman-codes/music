@@ -1,6 +1,7 @@
 """Album metadata and exact release matching, never a source of audio files."""
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -123,6 +124,25 @@ def valid_album_id(value: str) -> bool:
     return valid_mbid(value) or valid_itunes_id(value)
 
 
+RELEASE_LOOKUP_PARAMS = {"fmt": "json", "inc": "recordings+artist-credits+release-groups"}
+
+
+def cached_album_group(catalog: MusicCatalog, release_id: str) -> str | None:
+    """Reuse the already cached release detail; never issue cover metadata requests."""
+    if not valid_mbid(release_id):
+        return None
+    cache = getattr(catalog, "cache", None)
+    if cache is None:
+        return None
+    key = json.dumps(["mb", "/ws/2/release/" + release_id.lower(),
+                      sorted(RELEASE_LOOKUP_PARAMS.items())],
+                     sort_keys=True, separators=(",", ":"))
+    payload = cache.get(key, max_stale=7*86400)
+    group = payload.get("release-group") if isinstance(payload, dict) else None
+    ident = group.get("id") if isinstance(group, dict) else None
+    return ident if valid_mbid(ident) else None
+
+
 def album_cover_urls(release_id: str, group_id: str | None = None) -> list[str]:
     """Public CAA thumbnail URLs; never accept arbitrary upstream image URLs."""
     if not valid_mbid(release_id):
@@ -242,7 +262,7 @@ async def album_tracks(catalog: MusicCatalog, mbid: str) -> tuple[str, str, list
     if not valid_mbid(mbid):
         raise ValueError("Invalid release MBID")
     payload = await catalog._json("mb", "/ws/2/release/" + mbid.lower(),
-                                  {"fmt": "json", "inc": "recordings+artist-credits+release-groups"},
+                                  RELEASE_LOOKUP_PARAMS,
                                   ttl=7*86400)
     if not isinstance(payload, dict) or not isinstance(payload.get("media"), list):
         raise CatalogError("Не удалось получить трек-лист")
