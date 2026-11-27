@@ -80,7 +80,7 @@ def release_search_expression(text: str, *, allow_title_only: bool) -> str:
     return " OR ".join(clauses)
 
 
-async def find_albums(catalog: MusicCatalog, text: str, *, exact: bool) -> list[Album]:
+async def _find_mb_albums(catalog: MusicCatalog, text: str, *, exact: bool) -> list[Album]:
     text = " ".join(text.split())
     if not 2 <= len(text) <= 90:
         raise ValueError("Invalid album query")
@@ -115,7 +115,126 @@ async def find_albums(catalog: MusicCatalog, text: str, *, exact: bool) -> list[
     return results
 
 
-async def album_tracks(catalog: MusicCatalog, mbid: str) -> tuple[str, str, list[CatalogTrack]]:
+def valid_itunes_id(value: str) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"it-[1-9][0-9]{0,18}", value) is not None
+
+
+def valid_album_id(value: str) -> bool:
+    return valid_mbid(value) or valid_itunes_id(value)
+
+
+def _apple_id(value) -> str | None:
+    if type(value) is int and 0 < value < 10**19:
+        return f"it-{value}"
+    return None
+
+
+def _apple_album(row) -> Album | None:
+    if not isinstance(row, dict) or row.get("wrapperType") != "collection" or row.get("collectionType") != "Album":
+        return None
+    ident = _apple_id(row.get("collectionId"))
+    title, artist, count = row.get("collectionName"), row.get("artistName"), row.get("trackCount")
+    if not ident or not isinstance(title, str) or not title.strip() or not isinstance(artist, str) or not artist.strip():
+        return None
+    if type(count) is not int or not 2 <= count <= 100:
+        return None
+    date = row.get("releaseDate")
+    return Album(ident, title.strip()[:180], artist.strip()[:180],
+                 date[:10] if isinstance(date, str) else "", count, ident)
+
+
+async def _find_itunes_albums(catalog: MusicCatalog, text: str, *, exact: bool) -> list[Album]:
+    wanted = words(text)
+    title_only = not exact and len(wanted) == 1
+    payload = await catalog._json("itunes", "/search", {
+        "term": text, "country": "US", "media": "music", "entity": "album", "limit": 50,
+    }, ttl=3600)
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        raise CatalogError("Некорректный ответ iTunes")
+    result = []
+    seen = set()
+    for raw in payload["results"]:
+        album = _apple_album(raw)
+        if album is None or album.mbid in seen:
+            continue
+        a, b = words(album.artist), words(album.title)
+        if wanted not in {a+b, b+a} and not (title_only and wanted == b):
+            continue
+        seen.add(album.mbid)
+        result.append(album)
+        if len(result) == 4:
+            break
+    return result
+
+
+async def find_albums(catalog: MusicCatalog, text: str, *, exact: bool) -> list[Album]:
+    text = " ".join(text.split())
+    if not 2 <= len(text) <= 90:
+        raise ValueError("Invalid album query")
+    if not words(text) or (exact and len(words(text)) == 1):
+        return []
+    try:
+        rows = await _find_mb_albums(catalog, text, exact=exact)
+    except CatalogError:
+        # Primary unavailable: use the independent storefront.
+        return await _find_itunes_albums(catalog, text, exact=exact)
+    if rows:
+        return rows
+    # A healthy MusicBrainz negative result is authoritative for the primary
+    # catalog, but a release may be listed only in the storefront.
+    try:
+        return await _find_itunes_albums(catalog, text, exact=exact)
+    except CatalogError:
+        return []
+
+
+@dataclass(frozen=True)
+class StoreTrack:
+    # Provider-specific ID; never a MusicBrainz recording or confirmed audio.
+    mbid: str
+    title: str
+    artist: str
+    duration_ms: int | None
+
+
+async def _itunes_album_tracks(catalog: MusicCatalog, ident: str) -> tuple[str, str, list[StoreTrack]]:
+    payload = await catalog._json("itunes", "/lookup", {
+        "id": ident[3:], "country": "US", "entity": "song", "limit": 200,
+    }, ttl=7*86400)
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        raise CatalogError("Некорректный трек-лист iTunes")
+    rows = payload["results"]
+    album = next((a for row in rows if (a := _apple_album(row)) and a.mbid == ident), None)
+    if album is None:
+        raise CatalogError("Альбом iTunes недоступен")
+    ordered = {}
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict) or row.get("wrapperType") != "track" or row.get("kind") != "song":
+            continue
+        if _apple_id(row.get("collectionId")) != ident:
+            continue
+        track_id = _apple_id(row.get("trackId"))
+        title, artist = row.get("trackName"), row.get("artistName")
+        disc, number = row.get("discNumber"), row.get("trackNumber")
+        if (not track_id or not isinstance(title, str) or not title.strip()
+                or not isinstance(artist, str) or not artist.strip()
+                or type(disc) is not int or type(number) is not int or not 1 <= disc <= 100
+                or not 1 <= number <= 100 or (disc, number) in ordered or track_id in seen):
+            raise CatalogError("Некорректный трек-лист iTunes")
+        length = row.get("trackTimeMillis")
+        if type(length) is not int or not 0 < length <= 14_400_000:
+            length = None
+        ordered[disc, number] = StoreTrack(track_id, title[:250], artist[:250], length)
+        seen.add(track_id)
+    if len(ordered) != album.track_count:
+        raise CatalogError("Неполный трек-лист iTunes")
+    return album.title, album.artist, [ordered[key] for key in sorted(ordered)]
+
+
+async def album_tracks(catalog: MusicCatalog, mbid: str) -> tuple[str, str, list[CatalogTrack | StoreTrack]]:
+    if valid_itunes_id(mbid):
+        return await _itunes_album_tracks(catalog, mbid)
     if not valid_mbid(mbid):
         raise ValueError("Invalid release MBID")
     payload = await catalog._json("mb", "/ws/2/release/" + mbid.lower(),
