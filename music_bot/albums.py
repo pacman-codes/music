@@ -123,6 +123,17 @@ def valid_album_id(value: str) -> bool:
     return valid_mbid(value) or valid_itunes_id(value)
 
 
+def album_cover_urls(release_id: str, group_id: str | None = None) -> list[str]:
+    """Public CAA thumbnail URLs; never accept arbitrary upstream image URLs."""
+    if not valid_mbid(release_id):
+        return []
+    root = "https://coverartarchive.org"
+    urls = [f"{root}/release/{release_id.lower()}/front-250"]
+    if valid_mbid(group_id):
+        urls.append(f"{root}/release-group/{group_id.lower()}/front-250")
+    return urls
+
+
 def _apple_id(value) -> str | None:
     if type(value) is int and 0 < value < 10**19:
         return f"it-{value}"
