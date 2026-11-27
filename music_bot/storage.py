@@ -147,6 +147,10 @@ class Library:
               mbid TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL,
               track_count INTEGER NOT NULL CHECK(track_count BETWEEN 1 AND 100),
               added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS album_audio_links (
+              recording_id TEXT PRIMARY KEY,
+              track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+              confirmed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS playlists(
               id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
               kind TEXT NOT NULL DEFAULT 'custom' CHECK (kind IN ('liked','custom')));
@@ -407,6 +411,40 @@ class Library:
     def liked_id(self):
         with self.con() as db:
             return db.execute("SELECT id FROM playlists WHERE kind='liked'").fetchone()[0]
+
+    def album_audio_links(self) -> dict[str, int]:
+        """Album-only explicit associations, not MusicBrainz identity claims."""
+        with self.con() as db:
+            return {str(row[0]): int(row[1]) for row in db.execute(
+                "SELECT recording_id,track_id FROM album_audio_links")}
+
+    def confirm_album_audio(self, recording_id: str, track_id: int) -> bool:
+        from music_bot.albums import valid_album_id
+        if not valid_album_id(recording_id) or type(track_id) is not int or track_id <= 0:
+            raise ValueError("Invalid album audio association")
+        recording_id = recording_id.lower()
+        with self.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute("SELECT 1 FROM tracks WHERE id=?", (track_id,)).fetchone():
+                raise ValueError("Track not found")
+            current = db.execute(
+                "SELECT track_id FROM album_audio_links WHERE recording_id=?",
+                (recording_id,)).fetchone()
+            if current is not None:
+                if current["track_id"] != track_id:
+                    raise ValueError("Remove previous album association first")
+                return False
+            db.execute("INSERT INTO album_audio_links(recording_id,track_id) VALUES(?,?)",
+                       (recording_id, track_id))
+            return True
+
+    def unlink_album_audio(self, recording_id: str) -> bool:
+        from music_bot.albums import valid_album_id
+        if not valid_album_id(recording_id):
+            raise ValueError("Invalid recording ID")
+        with self.con() as db:
+            return bool(db.execute("DELETE FROM album_audio_links WHERE recording_id=?",
+                                   (recording_id.lower(),)).rowcount)
 
     def save_album(self, mbid: str, title: str, artist: str, track_count: int) -> bool:
         from music_bot.albums import valid_album_id

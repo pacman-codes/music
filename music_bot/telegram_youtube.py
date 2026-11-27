@@ -315,9 +315,12 @@ async def edit_album_message(message: Message, text: str, markup: InlineKeyboard
 def album_track_ids(db: Library, tracks) -> list[int | None]:
     """One position per album track; never use unconfirmed title matches."""
     resolved = db.resolved_catalog_tracks()
+    manual = db.album_audio_links()
     ids = []
     for track in tracks:
         ident = resolved.get(track.mbid) if valid_mbid(track.mbid) else None
+        if ident is None or db.get_track(ident) is None:
+            ident = manual.get(track.mbid)
         ids.append(ident if ident is not None and db.get_track(ident) is not None else None)
     return ids
 

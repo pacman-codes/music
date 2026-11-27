@@ -194,3 +194,65 @@ def test_batch_pagination_and_errors_do_not_block_other_tracks(tmp_path):
     assert [r["position"] for r in result["results"]] == [3, 4]
     assert result["next_position"] is None
     assert not db.all_tracks()
+
+
+def test_album_library_link_is_explicit_and_shared(tmp_path):
+    from music_bot.albums import StoreTrack
+    from music_bot.telegram_youtube import album_track_ids, saved_album_ids
+    from music_bot.catalog import CatalogTrack
+
+    class AppleCatalog:
+        async def _json(self, provider, path, params, **kwargs):
+            assert provider == "itunes" and path == "/lookup"
+            return {"results": [
+                {"wrapperType": "collection", "collectionType": "Album",
+                 "collectionId": 100, "collectionName": "Album", "artistName": "Artist",
+                 "trackCount": 2},
+                *[{"wrapperType": "track", "kind": "song", "collectionId": 100,
+                   "trackId": ident, "trackName": name, "artistName": "Artist",
+                   "discNumber": 1, "trackNumber": number, "trackTimeMillis": 120000}
+                  for number, ident, name in [(1, 101, "First"), (2, 102, "Second")]]
+            ]}
+
+    cfg = Settings(TOKEN, OWNER, tmp_path / "music.db")
+    lib = Library(cfg.db_path)
+    first = lib.add_track("file-first", "uid-first", "First", "Artist")
+    second = lib.add_track("file-second", "uid-second", "Second", "Artist")
+    # Local title matches alone cannot authorize album playback.
+    tracks = [StoreTrack("it-101", "First", "Artist", 120000),
+              StoreTrack("it-102", "Second", "Artist", 120000)]
+    assert album_track_ids(lib, tracks) == [None, None]
+    with TestClient(create_app(cfg, catalog=AppleCatalog())) as client:
+        path = "/api/albums/it-100"
+        endpoint = path + "/tracks/0/library-link"
+        body = {"recording_id": "it-101", "track_id": first.id}
+        assert client.post(endpoint, json=body).status_code == 401
+        assert client.post(endpoint, json=body, headers=auth(999)).status_code == 401
+        hdr = auth()
+        assert client.post(endpoint, headers=hdr, json={**body, "recording_id": "it-102"}).status_code == 409
+        assert client.post(endpoint, headers=hdr, json={**body, "track_id": 9999}).status_code == 404
+        assert client.post(endpoint, headers=hdr, json=body).json()["changed"]
+        assert not client.post(endpoint, headers=hdr, json=body).json()["changed"]
+        assert client.post(endpoint, headers=hdr, json={**body, "track_id": second.id}).status_code == 409
+        assert client.post(path + "/tracks/1/library-link", headers=hdr,
+                           json={"recording_id": "it-102", "track_id": second.id}).json()["changed"]
+        detail = client.get(path, headers=hdr).json()
+        assert detail["playable"] and detail["available_count"] == 2
+        assert detail["tracks"][0]["album_linked"]
+        assert "file_id" not in detail
+        assert saved_album_ids(Library(cfg.db_path), tracks) == [first.id, second.id]
+        assert lib.resolved_catalog_tracks() == {}
+        assert client.delete(endpoint + "?recording_id=it-101").status_code == 401
+        assert client.delete(endpoint + "?recording_id=it-102", headers=hdr).status_code == 409
+        assert client.delete(endpoint + "?recording_id=it-101", headers=hdr).json()["removed"]
+        assert lib.get_track(first.id) is not None
+        assert not client.get(path, headers=hdr).json()["playable"]
+
+    # A verified MusicBrainz link always takes precedence over album-only links.
+    mb = CatalogTrack(FIRST, "First", "Artist")
+    lib.confirm_album_audio(FIRST, second.id)
+    lib.remember_candidates([mb])
+    lib.confirm_recording_match(first.id, FIRST)
+    assert album_track_ids(lib, [mb]) == [first.id]
+    lib.unlink_album_audio(FIRST)
+    assert album_track_ids(lib, [mb]) == [first.id]
