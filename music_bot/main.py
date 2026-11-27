@@ -268,6 +268,7 @@ def playlist_page(db: Library, playlist_id: int, page: int = 0):
     if total:
         rows.append([button("▶ Слушать", f"plstart:{playlist_id}:all"),
                      button("🔀 Перемешать", f"plstart:{playlist_id}:shuffle")])
+        rows.append([button("📻 Радио по плейлисту", f"plradio:{playlist_id}:medium")])
     else:
         lines.append("Пока пусто. Добавь треки из медиатеки.")
     for i, t in enumerate(tracks, page * PLAYLIST_PAGE_SIZE + 1):
