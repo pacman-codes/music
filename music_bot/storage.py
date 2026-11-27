@@ -143,6 +143,10 @@ class Library:
               linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE INDEX IF NOT EXISTS track_recording_by_mbid
               ON track_recording_links(mbid);
+            CREATE TABLE IF NOT EXISTS artist_collection (
+              mbid TEXT PRIMARY KEY, name TEXT NOT NULL, disambiguation TEXT NOT NULL,
+              saved INTEGER NOT NULL DEFAULT 0 CHECK(saved IN (0,1)),
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS saved_albums (
               mbid TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL,
               track_count INTEGER NOT NULL CHECK(track_count BETWEEN 1 AND 100),
@@ -411,6 +415,57 @@ class Library:
     def liked_id(self):
         with self.con() as db:
             return db.execute("SELECT id FROM playlists WHERE kind='liked'").fetchone()[0]
+
+    def remember_artists(self, artists) -> None:
+        from music_bot.catalog import valid_mbid
+        with self.con() as db:
+            for artist in artists:
+                if not valid_mbid(artist.mbid) or not artist.name.strip():
+                    raise ValueError("Invalid artist")
+                db.execute(
+                    """INSERT INTO artist_collection(mbid,name,disambiguation)
+                       VALUES(?,?,?) ON CONFLICT(mbid) DO UPDATE SET
+                       name=excluded.name,disambiguation=excluded.disambiguation""",
+                    (artist.mbid.lower(), artist.name[:180], artist.disambiguation[:180]))
+
+    def get_artist(self, mbid: str) -> dict | None:
+        with self.con() as db:
+            row = db.execute("SELECT * FROM artist_collection WHERE mbid=?", (mbid,)).fetchone()
+            return dict(row) if row else None
+
+    def set_artist_saved(self, mbid: str, saved: bool) -> bool:
+        with self.con() as db:
+            row = db.execute(
+                """UPDATE artist_collection SET saved=?,updated_at=CURRENT_TIMESTAMP
+                   WHERE mbid=? AND saved<>?""", (int(saved),mbid,int(saved)))
+            return bool(row.rowcount)
+
+    def saved_artists(self, *, offset=0, limit=9) -> list[dict]:
+        if offset < 0 or not 1 <= limit <= 100:
+            raise ValueError("Invalid artist page")
+        with self.con() as db:
+            return [dict(row) for row in db.execute(
+                """SELECT * FROM artist_collection WHERE saved=1
+                   ORDER BY updated_at DESC,mbid LIMIT ? OFFSET ?""", (limit,offset))]
+
+    def artist_library_tracks(self, mbid: str, name: str, *, limit=1001) -> list[Track]:
+        """Confirmed artist identity first; otherwise exact unlinked local credit."""
+        from music_bot.catalog import normalize
+        if not 1 <= limit <= 1001:
+            raise ValueError("Invalid artist track limit")
+        result = []
+        with self.con() as db:
+            for row in db.execute(
+                """SELECT t.*,c.artist_mbid FROM tracks t
+                   LEFT JOIN track_recording_links l ON l.track_id=t.id
+                   LEFT JOIN catalog_candidates c ON c.mbid=l.mbid
+                   ORDER BY t.id DESC"""):
+                if row["artist_mbid"] == mbid or (
+                        not row["artist_mbid"] and normalize(row["artist"]) == normalize(name)):
+                    result.append(self.track(row))
+                    if len(result) >= limit:
+                        break
+        return result
 
     def album_audio_links(self) -> dict[str, int]:
         """Album-only explicit associations, not MusicBrainz identity claims."""
