@@ -807,6 +807,188 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             return
         await callback.answer("Добавлено ✅" if added else "Уже в плейлисте")
 
+    @router.callback_query(F.data.startswith("plopen:"))
+    async def open_playlist_button(callback: CallbackQuery):
+        try:
+            _, pid, page = (callback.data or "").split(":")
+            pid, page = int(pid), int(page)
+            if pid <= 0 or not 0 <= page <= 100000:
+                raise ValueError()
+        except ValueError:
+            await callback.answer("Неверная страница", show_alert=True)
+            return
+        await callback.answer()
+        if (message := callback_message(callback)) is not None:
+            await show_playlist_page(message, pid, page, edit=True)
+
+    @router.callback_query(F.data.startswith("plstart:"))
+    async def start_playlist_button(callback: CallbackQuery, bot: Bot):
+        try:
+            _, pid, mode = (callback.data or "").split(":")
+            pid = int(pid)
+            if pid <= 0:
+                raise ValueError()
+        except ValueError:
+            await callback.answer("Неверный плейлист", show_alert=True)
+            return
+        await callback.answer()
+        if (message := callback_message(callback)) is not None:
+            await start_playlist(bot, message.chat.id, pid, mode)
+
+    @router.callback_query(F.data.startswith("pltrack:"))
+    async def playlist_track_menu(callback: CallbackQuery):
+        try:
+            _, pid, tid, page = (callback.data or "").split(":")
+            pid, tid, page = int(pid), int(tid), int(page)
+            if not 0 <= page <= 100000 or not db.get_playlist(pid):
+                raise ValueError()
+            track = next((t for t in db.playlist_tracks(pid) if t.id == tid), None)
+            if track is None:
+                raise ValueError()
+        except ValueError:
+            await callback.answer("Трек не найден", show_alert=True)
+            return
+        await callback.answer()
+        if (message := callback_message(callback)) is not None:
+            await message.answer(f"🎵 {track.artist} — {track.title}"[:3500], reply_markup=keyboard([
+                [button("▶ Только этот трек", f"play:{tid}"),
+                 button("▶ С этого трека", f"plstart:{pid}:{tid}")],
+                [button("⏭ Следующим", f"enqueue:next:{tid}"),
+                 button("＋ В конец", f"enqueue:append:{tid}")],
+                [button("⬆ Выше", f"plshift:{pid}:{tid}:-1:{page}"),
+                 button("⬇ Ниже", f"plshift:{pid}:{tid}:1:{page}")],
+                [button("＋ В плейлист", f"chooseadd:{tid}"),
+                 button("🧭 Реакция", f"vopen:l:{tid}")],
+                [button("Убрать из плейлиста", f"plremove:{pid}:{tid}:{page}")],
+                [button("← Назад", f"plopen:{pid}:{page}")],
+            ]))
+
+    @router.callback_query(F.data.startswith("plshift:") | F.data.startswith("plremove:"))
+    async def edit_playlist_track(callback: CallbackQuery):
+        try:
+            action, *parts = (callback.data or "").split(":")
+            if action == "plshift":
+                pid, tid, delta, page = map(int, parts)
+                if not 0 <= page <= 100000:
+                    raise ValueError()
+                changed = db.shift_playlist_track(pid, tid, delta)
+            else:
+                pid, tid, page = map(int, parts)
+                if not 0 <= page <= 100000:
+                    raise ValueError()
+                changed = db.remove_from(pid, tid)
+        except ValueError:
+            await callback.answer("Плейлист или трек недоступен", show_alert=True)
+            return
+        await callback.answer("Готово" if changed else "Без изменений")
+        if (message := callback_message(callback)) is not None:
+            await show_playlist_page(message, pid, page, edit=True)
+
+    @router.callback_query(F.data.startswith("enqueue:"))
+    async def enqueue_button(callback: CallbackQuery):
+        try:
+            _, action, raw = (callback.data or "").split(":")
+            tid = int(raw)
+            if action not in {"next", "append"} or db.get_track(tid) is None:
+                raise ValueError()
+            qid = db.latest_queue_id()
+            if qid is None:
+                qid = db.create_queue([tid], "Ручная очередь", "playlist")
+            else:
+                db.edit_queue(qid, action, track_id=tid)
+        except ValueError:
+            await callback.answer("Не удалось изменить очередь", show_alert=True)
+            return
+        await callback.answer("Добавлено в очередь")
+    
+    @router.callback_query(F.data.startswith("qsend:"))
+    async def queue_send_button(callback: CallbackQuery, bot: Bot):
+        try:
+            _, qid, cursor = (callback.data or "").split(":")
+            qid, cursor = int(qid), int(cursor)
+            if qid <= 0 or cursor < 0:
+                raise ValueError()
+        except ValueError:
+            await callback.answer("Неверная очередь", show_alert=True)
+            return
+        await callback.answer()
+        if (message := callback_message(callback)) is not None:
+            await deliver_queue(bot, db, message.chat.id, qid, send_lock, expected_cursor=cursor)
+
+    @router.callback_query(F.data.startswith("pldelete:"))
+    async def playlist_delete_prompt(callback: CallbackQuery):
+        try:
+            pid = int((callback.data or "").partition(":")[2])
+            info = db.get_playlist(pid)
+            if not info or info["kind"] != "custom":
+                raise ValueError()
+        except ValueError:
+            await callback.answer("Плейлист недоступен", show_alert=True)
+            return
+        await callback.answer()
+        if (message := callback_message(callback)) is not None:
+            await message.answer(f"Удалить «{info['name']}»? Аудио останется в библиотеке.",
+                reply_markup=keyboard([[button("Да, удалить", f"confirmdelete:{pid}"),
+                                        button("Отмена", f"plopen:{pid}:0")]]))
+
+    @router.callback_query((F.data == "plnew") | F.data.startswith("plnew:"))
+    async def playlist_create_prompt(callback: CallbackQuery):
+        raw = (callback.data or "").partition(":")[2]
+        try:
+            tid = int(raw) if raw else 0
+            if tid and db.get_track(tid) is None:
+                raise ValueError()
+        except ValueError:
+            await callback.answer("Трек недоступен", show_alert=True)
+            return
+        await callback.answer()
+        if (message := callback_message(callback)) is not None:
+            await message.answer(f"📂 Название нового плейлиста (трек #{tid}):\nОтветь на это сообщение.",
+                                 reply_markup=ForceReply(selective=True, input_field_placeholder="Название"))
+
+    @router.callback_query(F.data.startswith("plrename:"))
+    async def playlist_rename_prompt(callback: CallbackQuery):
+        try:
+            pid = int((callback.data or "").partition(":")[2])
+            info = db.get_playlist(pid)
+            if not info or info["kind"] != "custom":
+                raise ValueError()
+        except ValueError:
+            await callback.answer("Плейлист недоступен", show_alert=True)
+            return
+        await callback.answer()
+        if (message := callback_message(callback)) is not None:
+            await message.answer(f"✏ Новое название плейлиста #{pid}:\nОтветь на это сообщение.",
+                                 reply_markup=ForceReply(selective=True, input_field_placeholder="Название"))
+
+    @router.message(F.text, F.reply_to_message.text.regexp(
+        r"^(📂 Название нового плейлиста \(трек #\d+\):|✏ Новое название плейлиста #\d+:)"))
+    async def playlist_name_reply(message: Message, bot: Bot):
+        import re
+        reply = message.reply_to_message
+        if not reply or not reply.from_user or reply.from_user.id != bot.id:
+            return
+        prompt = reply.text or ""
+        name = (message.text or "").strip()
+        match = re.search(r"#(\d+)", prompt)
+        if match is None:
+            return
+        ident = int(match.group(1))
+        try:
+            if prompt.startswith("📂"):
+                if ident and db.get_track(ident) is None:
+                    raise ValueError()
+                pid = db.create_playlist(name)
+                if ident:
+                    db.add_to(pid, ident)
+            else:
+                pid = ident
+                db.rename_playlist(pid, name)
+        except (ValueError, sqlite3.IntegrityError):
+            await message.answer("Не удалось сохранить название. Оно должно быть уникальным и не длиннее 80 символов.")
+            return
+        await show_playlist_page(message, pid)
+
     @router.callback_query(F.data.startswith("more:"))
     async def more(callback: CallbackQuery, bot: Bot):
         message = callback_message(callback)
