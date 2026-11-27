@@ -295,7 +295,8 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
             return
         finally:
             db.release_media_import("taste", "playlist-radio", lease)
-        rows = [row for row in rows if row.mbid not in db.catalog_verdicts()]
+        decided = db.catalog_verdicts()
+        rows = [row for row in rows if row.mbid not in decided]
         db.remember_candidates(rows)
         controls = []
         lines = [f"📻 Радио · {info['name'][:80]}"]
