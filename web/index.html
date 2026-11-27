@@ -10,6 +10,7 @@
   <script src="/assets/navigation.js" defer></script>
   <script src="/assets/app.js" defer></script>
   <script src="/assets/artists.js" defer></script>
+  <script src="/assets/collections.js" defer></script>
   <script src="/assets/queue.js" defer></script>
   <script src="/assets/decisions.js" defer></script>
   <script src="/assets/sources.js" defer></script>
@@ -45,8 +46,26 @@
         <button data-route="search" type="button"><span class="shortcut-icon">⌕</span><strong>Открытия</strong><small>Новая музыка</small></button>
         <button data-route="queue" type="button"><span class="shortcut-icon">≡</span><strong>Очередь</strong><small>Следующие песни</small></button>
         <button data-route="artists" type="button"><span class="shortcut-icon">◎</span><strong>Исполнители</strong><small>Избранное и дискографии</small></button>
+        <button data-route="history" type="button"><span class="shortcut-icon">↶</span><strong>История</strong><small>Последние песни</small></button>
+        <button data-route="smart" type="button"><span class="shortcut-icon">✦</span><strong>Умные плейлисты</strong><small>Подборки из медиатеки</small></button>
       </div>
       <p class="playback-note">Аудио отправляется в чат с ботом и воспроизводится в плеере Telegram.</p>
+    </section>
+    <section id="history-section" data-screen="history">
+      <div class="heading"><h2>История</h2><button id="history-refresh" type="button">Обновить</button></div>
+      <p class="catalog-hint">Успешные отправки в Telegram, а не фактические прослушивания.</p>
+      <div class="collection-switch" role="group" aria-label="Вид истории">
+        <button id="history-tracks" type="button" aria-pressed="true">Песни</button>
+        <button id="history-queues" type="button" aria-pressed="false">Подборки</button>
+      </div>
+      <div id="history-status" class="catalog-caption" role="status"></div>
+      <div id="history-results" class="list"></div>
+    </section>
+    <section id="smart-section" data-screen="smart">
+      <div class="heading"><h2>Умные плейлисты</h2><button id="smart-refresh" type="button">Обновить</button></div>
+      <p class="catalog-hint">Подборки обновляются при открытии и содержат сохранённое аудио.</p>
+      <div id="smart-status" class="catalog-caption" role="status"></div>
+      <div id="smart-results" class="list"></div>
     </section>
     <section id="queue-section" data-screen="queue">
       <div class="heading">
@@ -211,6 +230,7 @@
       </div>
     </section>
     <section data-screen="library" id="playlists-section">
+      <div class="actions collection-links"><button type="button" data-route="smart">✦ Умные плейлисты</button><button type="button" data-route="history">История</button></div>
       <div class="heading"><h2>Плейлисты</h2><div class="actions"><button type="button" data-route="artists">Исполнители</button><button type="button" id="create">＋ Новый</button></div></div>
       <div id="playlists" class="list"></div>
     </section>
