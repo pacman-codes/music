@@ -25,6 +25,7 @@ from music_bot.telegram_import import install_import_handlers
 from music_bot.telegram_fingerprint import install_fingerprint_handlers
 from music_bot.telegram_youtube import install_youtube_handlers, offer_discovery_audio, show_saved_albums
 from music_bot.telegram_taste import install_taste_handlers
+from music_bot.telegram_history import install_history_handlers
 from music_bot.selection import DYNAMIC_MODES, select_wave_batch
 from music_bot.wrapped import wrapped_summary
 from music_bot.profile_export import export_profile, profile_json_bytes
@@ -151,6 +152,7 @@ def home_keyboard(webapp_url: str | None = None) -> InlineKeyboardMarkup:
          button("▶ Продолжить", "nav:continue")],
         [button("⏭ Очередь", "nav:queue"), button("🔎 Поиск", "nav:search")],
     ]
+    rows.append([button("🕘 История", "hist:tracks:0")])
     if webapp_url:
         rows.insert(0, [
             InlineKeyboardButton(
@@ -228,7 +230,7 @@ def queue_feedback_keyboard(tracks: tuple[Track, ...], queue_id: int,
         rows.append([button("▶️ Ещё 10", f"more:{queue_id}:{next_cursor}")])
     rows.append([button("🌊 Новая волна", "nav:wave"),
                  button("📂 Плейлисты", "nav:playlists")])
-    rows.append([button("⏭ Очередь", "nav:queue")])
+    rows.append([button("⏭ Очередь", "nav:queue"), button("🕘 История", "hist:tracks:0")])
     return keyboard(rows)
 
 
@@ -1547,6 +1549,11 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
     async def play_album(bot: Bot, chat_id: int, ids: list[int], label: str):
         queue_id = db.create_queue(ids, label, "playlist")
         await deliver_queue(bot, db, chat_id, queue_id, send_lock)
+
+    async def send_history_queue(bot: Bot, chat_id: int, queue_id: int):
+        await deliver_queue(bot, db, chat_id, queue_id, send_lock)
+
+    install_history_handlers(router, db, send_history_queue)
 
     # Plain text music search is a fallback after all explicit command handlers.
     install_youtube_handlers(
