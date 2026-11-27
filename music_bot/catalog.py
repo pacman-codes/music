@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import sqlite3
 import time
@@ -23,6 +24,8 @@ MUSICBRAINZ = "https://musicbrainz.org"
 LISTENBRAINZ = "https://api.listenbrainz.org"
 USER_AGENT = "music-personal-bot/0.4.0 (https://github.com/pacman-codes/music)"
 MAX_RESPONSE_BYTES = 1_000_000
+ALBUM_STALE_SECONDS = 7 * 86400
+logger = logging.getLogger(__name__)
 VERSION_WORDS = ("live", "remix", "karaoke", "nightcore", "sped up",
                  "slowed", "instrumental", "cover version", "demo")
 
@@ -182,12 +185,12 @@ class CatalogCache:
             db.commit()
         return max(0.0, reserved - timestamp)
 
-    def get(self, key: str, now: int | None = None) -> Any | None:
+    def get(self, key: str, now: int | None = None, *, max_stale: int = 0) -> Any | None:
         timestamp = int(time.time()) if now is None else now
         with closing(self._db()) as db:
             row = db.execute(
                 "SELECT payload FROM external_catalog_cache "
-                "WHERE cache_key=? AND expires_at>?", (key, timestamp)
+                "WHERE cache_key=? AND expires_at>?", (key, timestamp - max_stale)
             ).fetchone()
         if row is None:
             return None
@@ -204,8 +207,13 @@ class CatalogCache:
         if len(payload.encode("utf-8")) > MAX_RESPONSE_BYTES:
             raise CatalogError("Слишком большой ответ музыкального каталога")
         with closing(self._db()) as db, db:
-            db.execute("DELETE FROM external_catalog_cache WHERE expires_at<=?",
-                       (timestamp,))
+            # Keep expired release metadata briefly for outage-only fallback.
+            # Other providers retain their existing expiration semantics.
+            db.execute(
+                """DELETE FROM external_catalog_cache WHERE expires_at<=?
+                   AND (cache_key NOT LIKE ? OR expires_at<=?)""",
+                (timestamp, '["mb","/ws/2/release/%', timestamp - ALBUM_STALE_SECONDS),
+            )
             db.execute(
                 """INSERT INTO external_catalog_cache(cache_key,payload,expires_at)
                    VALUES(?,?,?) ON CONFLICT(cache_key) DO UPDATE SET
@@ -251,7 +259,15 @@ class MusicCatalog:
                 wait = self.cache.reserve_request_slot("mb", interval=1.10)
                 if wait > 0:
                     await asyncio.sleep(wait)
-                value = await self._fetch(root + path, params)
+                try:
+                    value = await self._fetch(root + path, params)
+                except CatalogError:
+                    if path.startswith("/ws/2/release/"):
+                        stale = self.cache.get(key, max_stale=ALBUM_STALE_SECONDS)
+                        if isinstance(stale, dict) and (stale.get("releases") or stale.get("media")):
+                            logger.warning("MusicBrainz release lookup failed; using cached metadata")
+                            return stale
+                    raise
         else:
             value = await self._fetch(root + path, params)
         self.cache.put(key, value, ttl)
@@ -267,6 +283,7 @@ class MusicCatalog:
                 if response.status_code == 204:
                     return {}
                 if response.status_code != 200:
+                    logger.warning("Music catalog HTTP %s from %s", response.status_code, response.url.host)
                     raise CatalogError("Музыкальный каталог временно недоступен")
                 if int(response.headers.get("content-length", "0")) > MAX_RESPONSE_BYTES:
                     raise CatalogError("Слишком большой ответ музыкального каталога")
@@ -279,6 +296,7 @@ class MusicCatalog:
                     raise CatalogError("Каталог прислал некорректный формат")
                 return json.loads(output)
         except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("Music catalog request failed: %s", type(exc).__name__)
             raise CatalogError("Нет соединения с музыкальным каталогом") from exc
 
     async def search(self, text: str, limit: int = 15,
