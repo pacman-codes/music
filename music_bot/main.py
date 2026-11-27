@@ -766,6 +766,19 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             await callback.answer("Оценка должна быть от 1 до 10", show_alert=True)
             return
         await callback.answer(f"Оценено на {score}/10 ⭐")
+        message = callback_message(callback)
+        if message is not None and (message.text or "").startswith("⭐ Оценка ·"):
+            track_id = int(raw_track)
+            track = db.get_track(track_id)
+            if track is not None:
+                markup = rating_keyboard(track_id)
+                markup.inline_keyboard.append([button("← К действиям трека", f"vopen:l:{track_id}")])
+                await render_chat_panel(message,
+                    f"⭐ Оценка · {track.artist} — {track.title} (#{track_id}). "
+                    f"Оценка: {score}/10.\n"
+                    "Пропуск и дослушивание здесь отмечаются вручную; "
+                    "Telegram не сообщает о них автоматически.",
+                    markup, edit=True)
 
     @router.callback_query(F.data.startswith("listen:"))
     async def listen_button(callback: CallbackQuery):
@@ -1095,7 +1108,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                 text, markup = album_collection_page(db)
                 await render_chat_panel(message, text, markup, edit=True)
         elif action == "verdicts":
-            await show_decisions(message)
+            await show_decisions(message, edit=True)
         elif action == "library":
             await show_library(message, edit=True)
         elif action == "continue":
