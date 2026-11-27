@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import sqlite3
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
-from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter, TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import (
-    BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaAudio, Message, WebAppInfo,
+    BufferedInputFile, CallbackQuery, ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaAudio, Message, WebAppInfo,
 )
 
 from music_bot.anime import AniListCatalog
@@ -148,6 +149,7 @@ def home_keyboard(webapp_url: str | None = None) -> InlineKeyboardMarkup:
          button("💿 Мои альбомы", "nav:albums")],
         [button("🎵 Библиотека", "nav:library"),
          button("▶ Продолжить", "nav:continue")],
+        [button("⏭ Очередь", "nav:queue"), button("🔎 Поиск", "nav:search")],
     ]
     if webapp_url:
         rows.insert(0, [
@@ -169,6 +171,8 @@ def track_keyboard(track_id: int) -> InlineKeyboardMarkup:
         [button("🧠 Интересно, но не слушать", f"vset:l:{track_id}:interesting")],
         [button("⭐ Доп. оценка 1–10", f"rateopen:{track_id}"),
          button("➕ В свой плейлист", f"chooseadd:{track_id}")],
+        [button("⏭ Следующим", f"enqueue:next:{track_id}"),
+         button("＋ В конец очереди", f"enqueue:append:{track_id}")],
     ])
 
 
@@ -224,7 +228,55 @@ def queue_feedback_keyboard(tracks: tuple[Track, ...], queue_id: int,
         rows.append([button("▶️ Ещё 10", f"more:{queue_id}:{next_cursor}")])
     rows.append([button("🌊 Новая волна", "nav:wave"),
                  button("📂 Плейлисты", "nav:playlists")])
+    rows.append([button("⏭ Очередь", "nav:queue")])
     return keyboard(rows)
+
+
+PLAYLIST_PAGE_SIZE = 8
+
+
+def playlist_page(db: Library, playlist_id: int, page: int = 0):
+    info = db.get_playlist(playlist_id)
+    if info is None:
+        raise ValueError("Playlist not found")
+    total, page, pages, tracks = db.playlist_page(playlist_id, page, PLAYLIST_PAGE_SIZE)
+    lines = [f"📂 {info['name']} · {total} треков",
+             f"Страница {page+1}/{pages}"]
+    rows = []
+    if total:
+        rows.append([button("▶ Слушать", f"plstart:{playlist_id}:all"),
+                     button("🔀 Перемешать", f"plstart:{playlist_id}:shuffle")])
+    else:
+        lines.append("Пока пусто. Добавь треки из медиатеки.")
+    for i, t in enumerate(tracks, page * PLAYLIST_PAGE_SIZE + 1):
+        lines.append(f"{i}. {t.artist[:45]} — {t.title[:90]}")
+        rows.append([button(f"▶ {i}. {t.title[:36]}", f"plstart:{playlist_id}:{t.id}"),
+                     button("⋯", f"pltrack:{playlist_id}:{t.id}:{page}")])
+    nav = []
+    if page:
+        nav.append(button("←", f"plopen:{playlist_id}:{page-1}"))
+    if page+1 < pages:
+        nav.append(button("→", f"plopen:{playlist_id}:{page+1}"))
+    if nav:
+        rows.append(nav)
+    if info["kind"] == "custom":
+        rows.append([button("✏ Переименовать", f"plrename:{playlist_id}"),
+                     button("🗑 Удалить", f"pldelete:{playlist_id}")])
+    rows.append([button("📂 Все плейлисты", "nav:playlists"),
+                 button("🏠 Меню", "nav:home")])
+    return "\n".join(lines), keyboard(rows)
+
+
+def playlist_track_order(db: Library, playlist_id: int, mode: str = "all") -> list[int]:
+    tracks = db.playlist_tracks(playlist_id)
+    ids = [t.id for t in tracks]
+    if mode == "shuffle":
+        random.shuffle(ids)
+    elif mode != "all":
+        if not mode.isascii() or not mode.isdigit() or len(mode) > 18 or int(mode) not in ids:
+            raise ValueError("Track not found in playlist")
+        ids = ids[ids.index(int(mode)):]
+    return ids
 
 
 def parse_more_callback(data: str) -> tuple[int, int] | None:
@@ -393,39 +445,48 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         queue_id = db.create_queue([t.id for t in tracks], names[mode], mode)
         await deliver_queue(bot, db, chat_id, queue_id, send_lock)
 
-    async def start_playlist(bot: Bot, chat_id: int, playlist_id: int) -> None:
+    async def start_playlist(bot: Bot, chat_id: int, playlist_id: int, mode: str = "all") -> None:
         playlist = db.get_playlist(playlist_id)
         if not playlist:
             await bot.send_message(chat_id, "Плейлист не найден.")
             return
-        tracks = db.playlist_tracks(playlist_id)
-        if not tracks:
+        try:
+            ids = playlist_track_order(db, playlist_id, mode)
+        except ValueError:
+            await bot.send_message(chat_id, "Трек больше не находится в плейлисте.")
+            return
+        if not ids:
             await bot.send_message(chat_id, "Плейлист пуст.")
             return
-        queue_id = db.create_queue(
-            [t.id for t in tracks], playlist["name"], "playlist",
-        )
+        label = playlist["name"] + (" · случайный порядок" if mode == "shuffle" else "")
+        queue_id = db.create_queue(ids, label, "playlist")
         await deliver_queue(bot, db, chat_id, queue_id, send_lock)
+
+    async def show_playlist_page(message: Message, playlist_id: int, page: int = 0, *, edit=False):
+        try:
+            text, markup = playlist_page(db, playlist_id, page)
+        except ValueError:
+            await message.answer("Плейлист не найден.")
+            return
+        if edit:
+            try:
+                await message.edit_text(text, reply_markup=markup)
+                return
+            except TelegramBadRequest as exc:
+                if "message is not modified" in str(exc).lower():
+                    return
+        await message.answer(text, reply_markup=markup)
 
     async def show_playlists(message: Message) -> None:
         playlists = db.playlists()
-        counts = db.verdict_counts()
-        text = "\n".join(
-            f"#{p['id']} · {p['name']} ({p['count']})" for p in playlists[:30]
-        )
-        rows = [
-            [button(f"{LABELS[status]} ({counts[status]})", f"vlist:{status}:0")]
-            for status in STATUSES
-        ]
-        rows.append([button("💿 Мои альбомы", "nav:albums")])
-        rows.extend(
-            [button(f"▶️ {p['name'][:40]}", f"playlist:{p['id']}")]
-            for p in playlists[:20]
-        )
-        await message.answer(
-            "🧭 Пять реакций + обычные плейлисты:\n" + text,
-            reply_markup=keyboard(rows),
-        )
+        rows = [[button(f"{'❤️' if p['kind']=='liked' else '📂'} {p['name'][:38]} · {p['count']}",
+                        f"plopen:{p['id']}:0"),
+                 button("▶", f"playlist:{p['id']}")] for p in playlists[:30]]
+        rows.append([button("＋ Создать плейлист", "plnew")])
+        rows.append([button("💿 Альбомы", "nav:albums"), button("🧭 Реакции", "nav:verdicts")])
+        rows.append([button("🏠 Меню", "nav:home")])
+        await message.answer("📂 Мои плейлисты\nНажми название, чтобы открыть треки, или ▶ для запуска.",
+                             reply_markup=keyboard(rows))
 
     async def show_library(message: Message) -> None:
         tracks = db.all_tracks(20)
@@ -436,16 +497,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         )
 
     async def show_liked(message: Message) -> None:
-        tracks = db.playlist_tracks(db.liked_id(), 30)
-        rows = (
-            [[button("▶️ Слушать понравившиеся", f"playlist:{db.liked_id()}")]]
-            + quick_play_buttons(tracks, limit=6)
-        )
-        await message.answer(
-            format_tracks(tracks, "❤️ Мне нравится:") if tracks
-            else "Список понравившихся пока пуст.",
-            reply_markup=keyboard(rows) if tracks else None,
-        )
+        await show_playlist_page(message, db.liked_id())
 
     async def show_decisions(message: Message) -> None:
         counts = db.verdict_counts()
@@ -738,13 +790,11 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         await callback.answer()
         if message is None:
             return
-        if not custom:
-            await message.answer("Сначала создай подборку: /newplaylist Название")
-            return
         rows = [
             [button(f"➕ {p['name'][:40]}", f"doadd:{p['id']}:{track_id}")]
             for p in custom
         ]
+        rows.append([button("＋ Новый плейлист", f"plnew:{track_id}")])
         await message.answer("В какой плейлист добавить?", reply_markup=keyboard(rows))
 
     @router.callback_query(F.data.startswith("doadd:"))
@@ -794,7 +844,13 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         if message is None:
             return
         action = callback.data.split(":", 1)[1]
-        if action == "wave":
+        if action == "home":
+            await message.answer("🎵 LAIN · Твоя медиатека", reply_markup=home_keyboard(webapp_url))
+        elif action == "search":
+            await message.answer("Напиши исполнителя и название песни обычным сообщением.")
+        elif action == "queue":
+            await queue_cmd(message)
+        elif action == "wave":
             await start_wave(bot, message.chat.id)
         elif action == "discover":
             await start_wave(bot, message.chat.id, "discover")
@@ -926,17 +982,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         if not ids:
             await message.answer("Пример: /playlist 2")
             return
-        info = db.get_playlist(ids[0])
-        if not info:
-            await message.answer("Плейлист не найден")
-            return
-        tracks = db.playlist_tracks(ids[0], 25)
-        await message.answer(
-            format_tracks(tracks, f"📂 {info['name']}:") if tracks
-            else f"Плейлист «{info['name']}» пуст.",
-            reply_markup=keyboard([[button("▶️ Слушать", f"playlist:{ids[0]}")]])
-            if tracks else None,
-        )
+        await show_playlist_page(message, ids[0])
 
     @router.message(Command("renameplaylist"))
     async def renameplaylist(message: Message):
@@ -1049,7 +1095,11 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                 f"не отправлялось сегодня={filters['no_repeat_today']}."
             )
         text += "\n/next ID · /append ID · /qmove 11 13 · /qremove 13 · /continue"
-        await message.answer(text[:3900])
+        rows = []
+        if state["pending_total"] or state["is_dynamic"]:
+            rows.append([button("▶ Следующая порция", f"qsend:{qid}:{state['cursor']}")])
+        rows.append([button("↻ Обновить", "nav:queue"), button("📂 Плейлисты", "nav:playlists")])
+        await message.answer(text[:3900], reply_markup=keyboard(rows))
 
     @router.message(Command("next", "append"))
     async def queue_add_cmd(message: Message):
