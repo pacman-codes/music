@@ -761,6 +761,56 @@ async function findAlbumBatch(album, panel, start=0) {
   }
   panel.append(action("↻ Обновить готовность альбома", () => openAlbum(album.mbid)));
 }
+async function chooseAlbumAudio(album, position, panel) {
+  const track = album.tracks[position];
+  const request = albumRequest;
+  panel.replaceChildren();
+  const form = element("form", "catalog-form");
+  const input = element("input");
+  input.type = "search";
+  input.maxLength = 100;
+  input.value = track.title.slice(0, 100);
+  input.placeholder = "Название или исполнитель в медиатеке";
+  input.setAttribute("aria-label", "Поиск аудио в медиатеке");
+  const submit = element("button", "", "Найти");
+  submit.type = "submit";
+  form.append(input, submit);
+  const results = element("div", "list");
+  panel.append(form, results);
+  let searchNumber = 0;
+  async function search() {
+    const number = ++searchNumber;
+    results.replaceChildren(element("div", "catalog-caption", "Ищу в медиатеке…"));
+    try {
+      const rows = await api("/api/tracks?q=" + encodeURIComponent(input.value.trim()));
+      if (request !== albumRequest || number !== searchNumber) return;
+      results.replaceChildren();
+      if (!rows.length) results.append(element("div", "empty", "Не найдено. Попробуй другое название."));
+      for (const local of rows) {
+        const card = element("div", "item");
+        const info = element("div", "info");
+        info.append(element("div", "name", local.title), element("div", "sub", local.artist));
+        card.append(info, action("▶", async () => {
+          await post("/api/tracks/" + local.id + "/play");
+          toast("Отправлено в Telegram");
+        }), action("Связать", async () => {
+          if (!window.confirm("Это именно нужная версия?\n" + local.artist + " — " + local.title +
+              "\nТрек альбома: " + track.artist + " — " + track.title)) return;
+          await post(albumPath(album.mbid) + "/tracks/" + position + "/library-link",
+            {recording_id: track.recording_id, track_id: local.id});
+          toast("Аудио связано с альбомом");
+          if (request === albumRequest) await openAlbum(album.mbid);
+        }));
+        results.append(card);
+      }
+    } catch (error) {
+      if (request === albumRequest && number === searchNumber)
+        results.replaceChildren(element("div", "catalog-caption", error.message));
+    }
+  }
+  form.addEventListener("submit", event => { event.preventDefault(); search(); });
+  await search();
+}
 async function openAlbum(id) {
   const request = ++albumRequest;
   albumView = "detail";
@@ -810,7 +860,18 @@ async function openAlbum(id) {
       }));
     } else {
       if (youtubeSearchEnabled) row.append(action("🔎 Найти", () => findAlbumTrack(album, i)));
-      else row.append(element("span", "catalog-unavailable", "Нет аудио"));
+      const picker = element("div", "list");
+      row.append(action("Из библиотеки", () => chooseAlbumAudio(album, i, picker)));
+      host.append(row, picker);
+      return;
+    }
+    if (track.album_linked) {
+      row.append(action("Отвязать", async () => {
+        if (!window.confirm("Убрать связь с альбомом? Сам аудиофайл останется в библиотеке.")) return;
+        await api(albumPath(id) + "/tracks/" + i + "/library-link?recording_id=" +
+          encodeURIComponent(track.recording_id), {method:"DELETE"});
+        await openAlbum(id);
+      }));
     }
     host.append(row);
   });
