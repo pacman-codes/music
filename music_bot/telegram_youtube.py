@@ -158,8 +158,11 @@ async def plain_music_search(message: Message, bot: Bot, db: Library,
     if catalog is not None and explicit_album:
         try:
             albums = await find_albums(catalog, clean_query, exact=False)
-        except (CatalogError, ValueError):
-            await message.answer("Каталог альбомов временно недоступен или запрос слишком короткий.")
+        except ValueError:
+            await message.answer("Укажи название альбома и исполнителя (от 2 до 90 символов).")
+            return
+        except CatalogError:
+            await message.answer("MusicBrainz временно недоступен. Попробуй позже или открой сохранённые альбомы: /albums.")
             return
         if not albums:
             await message.answer("Не нашёл альбом. Укажи исполнителя и название.")
