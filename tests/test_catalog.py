@@ -184,3 +184,36 @@ def test_cross_process_musicbrainz_rate_limit_reserves_distinct_slots(tmp_path):
     assert mini_app.reserve_request_slot("mb", now=106.0) == pytest.approx(0.0)
     with pytest.raises(ValueError):
         bot.reserve_request_slot("lb", now=100.0)
+
+
+def test_album_cache_survives_temporary_upstream_failure(tmp_path):
+    import json
+    import time
+    from music_bot.albums import find_albums, release_search_expression
+
+    params = {"query": release_search_expression("Skrillex SOMA", allow_title_only=False),
+              "fmt": "json", "limit": 50}
+    key = json.dumps(["mb", "/ws/2/release/", sorted(params.items())],
+                     sort_keys=True, separators=(",", ":"))
+    payload = {"releases": [{
+        "id": A, "title": "SOMA", "artist-credit": [{"name": "Skrillex"}],
+        "release-group": {"id": B, "primary-type": "Album"},
+        "track-count": 13, "status": "Official",
+    }]}
+    now = int(time.time())
+    cache = CatalogCache(tmp_path / "cache.db")
+    cache.put(key, payload, 3600, now=now-7200)
+    cache.put("unrelated", {}, 60, now=now)
+    assert cache.get(key, now=now) is None
+    assert cache.get(key, now=now, max_stale=7*86400) == payload
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(503))) as http:
+            catalog = MusicCatalog(tmp_path / "cache.db", http)
+            rows = await find_albums(catalog, "Skrillex SOMA", exact=True)
+            assert [row.mbid for row in rows] == [A]
+
+    asyncio.run(scenario())
+    cache.put("cleanup", {}, 60, now=now+8*86400)
+    assert cache.get(key, now=now+8*86400, max_stale=7*86400) is None
