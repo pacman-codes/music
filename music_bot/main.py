@@ -257,7 +257,7 @@ def queue_feedback_keyboard(tracks: tuple[Track, ...], queue_id: int,
 PLAYLIST_PAGE_SIZE = 8
 
 
-def playlist_page(db: Library, playlist_id: int, page: int = 0):
+def playlist_page(db: Library, playlist_id: int, page: int = 0, *, radio_enabled: bool = True):
     info = db.get_playlist(playlist_id)
     if info is None:
         raise ValueError("Playlist not found")
@@ -268,7 +268,8 @@ def playlist_page(db: Library, playlist_id: int, page: int = 0):
     if total:
         rows.append([button("▶ Слушать", f"plstart:{playlist_id}:all"),
                      button("🔀 Перемешать", f"plstart:{playlist_id}:shuffle")])
-        rows.append([button("📻 Радио по плейлисту", f"plradio:{playlist_id}:medium")])
+        if radio_enabled:
+            rows.append([button("📻 Радио по плейлисту", f"plradio:{playlist_id}:medium")])
     else:
         lines.append("Пока пусто. Добавь треки из медиатеки.")
     for i, t in enumerate(tracks, page * PLAYLIST_PAGE_SIZE + 1):
@@ -487,7 +488,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
 
     async def show_playlist_page(message: Message, playlist_id: int, page: int = 0, *, edit=False):
         try:
-            text, markup = playlist_page(db, playlist_id, page)
+            text, markup = playlist_page(db, playlist_id, page, radio_enabled=catalog is not None)
         except ValueError:
             await message.answer("Плейлист не найден.")
             return
