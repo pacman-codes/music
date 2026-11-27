@@ -16,7 +16,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from music_bot.anime import AniListCatalog, AniListError
-from music_bot.albums import find_albums, album_tracks, valid_album_id, valid_itunes_id
+from music_bot.albums import (
+    find_albums, album_tracks, valid_album_id, valid_itunes_id,
+    album_cover_urls, cached_album_group,
+)
 from music_bot.telegram_youtube import saved_album_ids
 from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normalize, normalized_identity, valid_mbid
 from music_bot.config import Settings, load_settings
@@ -838,7 +841,10 @@ def create_app(config: Settings | None = None,
     @app.get("/api/albums", dependencies=[auth])
     async def saved_album_list(offset: int = Query(0, ge=0, le=100000)):
         rows = db.saved_albums(offset=offset, limit=21)
-        return {"results": rows[:20], "has_more": len(rows) > 20}
+        return {"results": [
+            {**row, "cover_urls": album_cover_urls(
+                row["mbid"], cached_album_group(catalog_client, row["mbid"]))}
+            for row in rows[:20]], "has_more": len(rows) > 20}
 
     @app.get("/api/albums/search", dependencies=[auth])
     async def search_album(q: str = Query(min_length=2, max_length=90)):
@@ -848,7 +854,8 @@ def create_app(config: Settings | None = None,
             raise HTTPException(422, detail="Некорректный запрос") from exc
         except CatalogError as exc:
             raise HTTPException(502, detail="Каталоги альбомов недоступны") from exc
-        return {"results": [{**asdict(row), "saved": db.get_saved_album(row.mbid) is not None}
+        return {"results": [{**asdict(row), "saved": db.get_saved_album(row.mbid) is not None,
+                             "cover_urls": album_cover_urls(row.mbid, row.group)}
                             for row in rows]}
 
     @app.get("/api/albums/{release_id}", dependencies=[auth])
@@ -864,6 +871,7 @@ def create_app(config: Settings | None = None,
                            "duration_ms": row.duration_ms, "local_track_id": local})
         return {"mbid": ident, "title": title, "artist": artist,
                 "provider": "itunes" if valid_itunes_id(ident) else "musicbrainz",
+                "cover_urls": album_cover_urls(ident, cached_album_group(catalog_client, ident)),
                 "saved": db.get_saved_album(ident) is not None,
                 "track_count": len(rows), "tracks": tracks,
                 "playable": bool(saved_album_ids(db, rows))}
