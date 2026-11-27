@@ -6,6 +6,7 @@ Existing v0.1 databases are upgraded additively with CREATE IF NOT EXISTS.
 from __future__ import annotations
 
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -143,6 +144,10 @@ class Library:
               linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE INDEX IF NOT EXISTS track_recording_by_mbid
               ON track_recording_links(mbid);
+            CREATE TABLE IF NOT EXISTS saved_albums (
+              mbid TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL,
+              track_count INTEGER NOT NULL CHECK(track_count BETWEEN 1 AND 100),
+              added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS playlists(
               id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
               kind TEXT NOT NULL DEFAULT 'custom' CHECK (kind IN ('liked','custom')));
@@ -403,6 +408,35 @@ class Library:
     def liked_id(self):
         with self.con() as db:
             return db.execute("SELECT id FROM playlists WHERE kind='liked'").fetchone()[0]
+
+    def save_album(self, mbid: str, title: str, artist: str, track_count: int) -> bool:
+        mbid = str(uuid.UUID(mbid))
+        title, artist = title.strip(), artist.strip()
+        if not title or not artist or not 1 <= track_count <= 100:
+            raise ValueError("Invalid album")
+        with self.con() as db:
+            return bool(db.execute(
+                """INSERT OR IGNORE INTO saved_albums(mbid,title,artist,track_count)
+                   VALUES(?,?,?,?)""",
+                (mbid, title[:180], artist[:180], track_count),
+            ).rowcount)
+
+    def get_saved_album(self, mbid: str) -> dict | None:
+        with self.con() as db:
+            row = db.execute("SELECT * FROM saved_albums WHERE mbid=?", (mbid,)).fetchone()
+            return dict(row) if row else None
+
+    def remove_saved_album(self, mbid: str) -> bool:
+        with self.con() as db:
+            return bool(db.execute("DELETE FROM saved_albums WHERE mbid=?", (mbid,)).rowcount)
+
+    def saved_albums(self, *, offset: int = 0, limit: int = 11) -> list[dict]:
+        if offset < 0 or not 1 <= limit <= 100:
+            raise ValueError("Invalid album page")
+        with self.con() as db:
+            return [dict(row) for row in db.execute(
+                """SELECT * FROM saved_albums ORDER BY added_at DESC, rowid DESC
+                   LIMIT ? OFFSET ?""", (limit, offset))]
 
     def playlists(self):
         with self.con() as db:
