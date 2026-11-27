@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from music_bot.artists import artist_by_id, artist_discography, group_album, search_artists
 from music_bot.catalog import CatalogError, normalize, valid_mbid
@@ -36,7 +36,7 @@ def artist_home(db: Library, page=0):
         nav.append(b("→", f"artistlist:{page+1}"))
     if nav:
         rows.append(nav)
-    rows.append([b("🏠 Меню", "nav:home")])
+    rows.append([b("🔎 Найти исполнителя", "artistsearch"), b("🏠 Меню", "nav:home")])
     return "\n".join(lines), markup(rows)
 
 
@@ -108,6 +108,19 @@ def install_artist_handlers(router: Router, db: Library, catalog, send_queue, re
         else:
             text, controls = artist_home(db)
             await render_panel(message, text, controls)
+
+    @router.callback_query(F.data == "artistsearch")
+    async def artist_search_prompt(callback: CallbackQuery):
+        await callback.answer()
+        if isinstance(callback.message, Message):
+            await callback.message.answer("👤 Поиск исполнителя: ответь названием артиста.",
+                reply_markup=ForceReply(input_field_placeholder="Имя исполнителя"))
+
+    @router.message(F.text, F.reply_to_message.text == "👤 Поиск исполнителя: ответь названием артиста.")
+    async def artist_search_reply(message: Message, bot: Bot):
+        reply = message.reply_to_message
+        if reply is not None and reply.from_user is not None and reply.from_user.id == bot.id:
+            await search(message, message.text or "")
 
     @router.callback_query(F.data.startswith("artistlist:"))
     async def list_button(callback: CallbackQuery):
