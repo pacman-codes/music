@@ -333,6 +333,53 @@ def saved_album_ids(db: Library, tracks):
     return ids
 
 
+ALBUM_SEARCH_BATCH = 3
+
+
+async def album_missing_suggestions(db: Library, worker: YouTubeSource, tracks,
+                                    start: int = 0) -> dict:
+    """Bounded sequential lookups, shared between chat and Mini App.
+    This only searches metadata; never downloads or confirms a recording.
+    """
+    if not 0 <= start <= len(tracks):
+        raise ValueError("Invalid album search position")
+    key = "album-source-search"
+    lease = db.acquire_media_import("taste", key, ttl=90)
+    if lease is None:
+        raise YouTubeError("Уже идёт подбор источников альбома")
+    try:
+        linked = album_track_ids(db, tracks)
+        missing = [i for i in range(start, len(tracks)) if linked[i] is None]
+        selected = missing[:ALBUM_SEARCH_BATCH]
+        results = []
+        for position in selected:
+            track = tracks[position]
+            recording_id = track.mbid if valid_mbid(track.mbid) else None
+            if recording_id:
+                db.remember_candidates([track])
+            recording = {"title": track.title, "artist": track.artist,
+                         "duration_ms": track.duration_ms}
+            entry = {"position": position, "title": track.title,
+                     "artist": track.artist, "suggestions": [], "error": False}
+            try:
+                videos = await asyncio.wait_for(
+                    worker.search(f"{track.artist} {track.title}"[:90], limit=6), timeout=12)
+            except (TimeoutError, YouTubeError, ValueError):
+                entry["error"] = True
+            else:
+                db.remember_youtube_videos(videos)
+                entry["suggestions"] = [
+                    {**item.public(), "recording_mbid": recording_id}
+                    for item in suggest_sources(recording, videos, limit=3)]
+            results.append(entry)
+        return {"results": results, "next_position": missing[ALBUM_SEARCH_BATCH]
+                if len(missing) > ALBUM_SEARCH_BATCH else None,
+                "remaining": max(0, len(missing) - len(selected)),
+                "auto_imported": False}
+    finally:
+        db.release_media_import("taste", key, lease)
+
+
 def album_page(db: Library, mbid: str, title: str, artist: str, tracks, page: int):
     size = 15
     pages = (len(tracks) + size - 1) // size
@@ -372,6 +419,8 @@ def album_page(db: Library, mbid: str, title: str, artist: str, tracks, page: in
         track = tracks[first]
         rows.append([InlineKeyboardButton(text=f"🔎 Найти следующий: {track.title[:32]}",
                                           callback_data=f"albumnext:{mbid}")])
+        rows.append([InlineKeyboardButton(text="🔎 Подобрать недостающие (по 3)",
+                                          callback_data=f"albbatch:{mbid}:0")])
     rows.append([InlineKeyboardButton(text="↻ Обновить альбом", callback_data=f"album:{mbid}:{page}")])
     saved = db.get_saved_album(mbid) is not None
     rows.append([InlineKeyboardButton(
@@ -594,6 +643,61 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
                     })
             except (CatalogError, ValueError):
                 await callback.message.answer("Не удалось найти следующую запись.")
+
+        @router.callback_query(F.data.startswith("albbatch:"))
+        async def album_batch(callback: CallbackQuery):
+            parts = (callback.data or "").split(":")
+            if (len(parts) != 3 or not valid_album_id(parts[1])
+                    or not parts[2].isascii() or not parts[2].isdigit()
+                    or len(parts[2]) > 3 or int(parts[2]) > 100):
+                await callback.answer("Неверная позиция", show_alert=True)
+                return
+            if not search_enabled:
+                await callback.answer("YouTube-поиск выключен", show_alert=True)
+                return
+            await callback.answer()
+            if not isinstance(callback.message, Message):
+                return
+            mbid = parts[1].lower()
+            try:
+                _, _, tracks = await album_tracks(catalog, mbid)
+                await callback.message.answer("🔎 Подбираю до трёх недостающих записей…")
+                result = await album_missing_suggestions(db, worker, tracks, int(parts[2]))
+            except (CatalogError, ValueError, YouTubeError):
+                await callback.message.answer("Не удалось подобрать источники. Попробуй ещё раз.")
+                return
+            for entry in result["results"]:
+                lines = [f"🎵 {entry['position']+1}. {entry['artist']} — {entry['title']}"]
+                buttons = []
+                for i, suggestion in enumerate(entry["suggestions"], 1):
+                    warnings = ", ".join(suggestion["warnings"])
+                    lines.append(f"{i}. {suggestion['title'][:140]} · {suggestion['channel'][:60]} "
+                                 f"({round(suggestion['match_score']*100)}%)"
+                                 + (f" — {warnings}" if warnings else ""))
+                    vid = suggestion["video_id"]
+                    buttons.append([InlineKeyboardButton(text=f"▶ YouTube {i}",
+                        url=f"https://www.youtube.com/watch?v={vid}")])
+                    if download_enabled:
+                        recording_id = suggestion["recording_mbid"]
+                        data = f"ytget:{vid}:{recording_id}" if recording_id else f"ytget:{vid}"
+                        buttons[-1].append(InlineKeyboardButton(
+                            text=f"🎧 Выбрать {i}", callback_data=data))
+                if not entry["suggestions"]:
+                    lines.append("Поиск недоступен." if entry["error"] else "Подходящих вариантов нет.")
+                else:
+                    lines.append("Проверь версию. Загружать можно только разрешённые записи.")
+                await callback.message.answer("\n".join(lines),
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None)
+            controls = []
+            if result["next_position"] is not None:
+                controls.append([InlineKeyboardButton(
+                    text=f"Следующая порция ({result['remaining']} осталось)",
+                    callback_data=f"albbatch:{mbid}:{result['next_position']}")])
+            controls.append([InlineKeyboardButton(text="↻ Открыть альбом",
+                                                   callback_data=f"album:{mbid}:0")])
+            await callback.message.answer("Подбор завершён. Аудио автоматически не загружалось."
+                if result["results"] else "На этой странице нет недостающих записей.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=controls))
 
         @router.callback_query(F.data.startswith("albumplay:") | F.data.startswith("albumready:"))
         async def play_saved_album(callback: CallbackQuery, bot: Bot):
