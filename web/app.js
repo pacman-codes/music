@@ -56,18 +56,139 @@ async function sendQueue(kind, playlistId) {
   await refreshQueue();
   tg?.HapticFeedback?.notificationOccurred("success");
 }
+let playlistView = null;
+let playlistRequest = 0;
+function playlistPath(id) { return "/api/playlists/" + id; }
+async function playPlaylist(id, options = {}) {
+  const result = await post(playlistPath(id) + "/play", options);
+  toast("Отправлено в Telegram: " + result.sent);
+  await refreshQueue();
+}
 function renderPlaylists(items) {
   const host = byId("playlists");
   host.replaceChildren();
   if (!items.length) host.append(element("div","empty","Плейлистов пока нет"));
   for (const p of items) {
-    const row = element("div","item");
-    const info = element("div","info");
-    info.append(element("div","name",p.name),
-                element("div","sub",`${p.count} треков`));
-    row.append(info,action("▶️ Слушать",()=>sendQueue(p.kind==="liked"?"liked":"playlist",p.id)));
+    const row = element("div","item playlist-row");
+    const art = element("div","playlist-art",p.kind==="liked"?"♥":"♫");
+    art.setAttribute("aria-hidden","true");
+    const info = element("button","playlist-open");
+    info.type = "button";
+    info.append(element("span","name",p.name),element("span","sub",p.count+" треков"));
+    info.addEventListener("click",()=>openPlaylist(p.id).catch(e=>toast(e.message)));
+    row.append(art,info,action("▶",()=>playPlaylist(p.id),"playlist-play"));
     host.append(row);
   }
+}
+async function closePlaylist() {
+  playlistView = null;
+  ++playlistRequest;
+  await refreshPlaylists();
+}
+async function openPlaylist(id, page=0) {
+  const request = ++playlistRequest;
+  playlistView = {id,page};
+  const host = byId("playlists");
+  host.replaceChildren(action("← Все плейлисты",closePlaylist),
+    element("div","catalog-caption","Загружаю плейлист…"));
+  let data;
+  try {
+    data = await api(playlistPath(id)+"?page="+page);
+  } catch (error) {
+    if(request===playlistRequest) {
+      host.replaceChildren(action("← Все плейлисты",closePlaylist),
+        element("div","catalog-caption",error.message));
+    }
+    return;
+  }
+  if(request!==playlistRequest) return;
+  playlistView = {id,page:data.page};
+  host.replaceChildren();
+  const header = element("div","item track-card");
+  header.append(action("← Все плейлисты",closePlaylist));
+  const title = element("div","playlist-detail-title");
+  const art = element("div","playlist-art large",data.kind==="liked"?"♥":"♫");
+  art.setAttribute("aria-hidden","true");
+  const info = element("div","info");
+  info.append(element("div","name",data.name),element("div","sub",data.total+" треков"));
+  title.append(art,info);
+  header.append(title);
+  const controls = element("div","track-actions");
+  if(data.total) controls.append(action("▶ Слушать",()=>playPlaylist(id)),
+    action("🔀 Перемешать",()=>playPlaylist(id,{shuffle:true})));
+  if(data.kind==="custom") {
+    controls.append(action("Переименовать",async()=>{
+      const name=window.prompt("Название плейлиста",data.name)?.trim();
+      if(!name||name===data.name) return;
+      await api(playlistPath(id),{method:"PUT",body:JSON.stringify({name})});
+      if(request===playlistRequest) await openPlaylist(id,data.page);
+    }),action("Удалить",async()=>{
+      if(!window.confirm("Удалить плейлист? Аудио останется в медиатеке.")) return;
+      await api(playlistPath(id),{method:"DELETE"});
+      if(request===playlistRequest) await closePlaylist();
+    }));
+  }
+  header.append(controls);host.append(header);
+  if(!data.total) host.append(element("div","empty","Добавь песни из медиатеки."));
+  for(const [index,t] of data.tracks.entries()) {
+    const row = element("div","item track-card");
+    const head = element("div","track-head");
+    const info = element("div","info");
+    info.append(element("div","name",(data.page*20+index+1)+". "+t.title),
+      element("div","sub",t.artist));
+    const details = element("div","track-actions");
+    details.hidden=true;
+    const toggle=action("⋯",async()=>{
+      details.hidden=!details.hidden;
+      toggle.setAttribute("aria-expanded",String(!details.hidden));
+    });
+    toggle.setAttribute("aria-label","Действия: "+t.title);
+    toggle.setAttribute("aria-expanded","false");
+    head.append(info,action("▶",()=>playPlaylist(id,{start_track_id:t.id})),toggle);
+    details.append(action("Только этот трек",async()=>{
+      await post("/api/tracks/"+t.id+"/play");toast("Отправлено в Telegram");
+    }),action("Следующим",()=>queueAddNext(t.id)));
+    for(const delta of [-1,1]) {
+      const position=data.page*20+index;
+      if(position+delta<0||position+delta>=data.total) continue;
+      details.append(action(delta<0?"↑ Выше":"↓ Ниже",async()=>{
+        await api(playlistPath(id)+"/tracks/"+t.id+"/position",
+          {method:"PUT",body:JSON.stringify({delta})});
+        if(request===playlistRequest) await openPlaylist(id,data.page);
+      }));
+    }
+    details.append(action("Убрать",async()=>{
+      if(!window.confirm("Убрать песню из плейлиста? Аудио останется.")) return;
+      await api(playlistPath(id)+"/tracks/"+t.id,{method:"DELETE"});
+      await refreshTracks();
+      if(request===playlistRequest) await openPlaylist(id,data.page);
+    }));
+    row.append(head,details);host.append(row);
+  }
+  const nav = element("div","actions");
+  if(data.page>0) nav.append(action("←",()=>openPlaylist(id,data.page-1)));
+  nav.append(element("span","catalog-caption",(data.page+1)+"/"+data.pages));
+  if(data.page+1<data.pages) nav.append(action("→",()=>openPlaylist(id,data.page+1)));
+  host.append(nav);
+}
+async function choosePlaylistForTrack(t, panel) {
+  const items = (await api("/api/playlists")).filter(p=>p.kind==="custom");
+  panel.replaceChildren(element("div","catalog-caption","Добавить в плейлист"));
+  for(const p of items) panel.append(action(p.name,async()=>{
+    await post(playlistPath(p.id)+"/add",{track_id:t.id});
+    toast("Добавлено в «"+p.name+"»");
+    panel.replaceChildren();
+    await refreshPlaylists();
+  }));
+  panel.append(action("＋ Создать плейлист",async()=>{
+    const name=window.prompt("Название плейлиста")?.trim();
+    if(!name) return;
+    const p=await post("/api/playlists",{name});
+    await post(playlistPath(p.id)+"/add",{track_id:t.id});
+    toast("Плейлист создан");
+    panel.replaceChildren();
+    await refreshPlaylists();
+  }),action("Закрыть",async()=>panel.replaceChildren()));
 }
 function renderTracks(items) {
   const host = byId("tracks");
@@ -222,19 +343,9 @@ function renderTracks(items) {
       window.navigateMusicScreen?.("search", {scroll:false});
       byId("catalog-heading").scrollIntoView({behavior:"smooth"});
     }, "secondary-action"));
-    actions.append(action("＋ Плейлист", async () => {
-      const list = (await api("/api/playlists")).filter(p => p.kind === "custom");
-      if (!list.length) { toast("Сначала создай плейлист"); return; }
-      const choice = window.prompt("Выбери номер плейлиста:\n" +
-        list.map(p => p.id + " — " + p.name).join("\n"));
-      if (!choice) return;
-      const target = list.find(p => String(p.id) === choice.trim());
-      if (!target) throw new Error("Неверный номер плейлиста");
-      await post("/api/playlists/" + target.id + "/add", {track_id: t.id});
-      toast("Добавлено в «" + target.name + "»");
-      await refreshPlaylists();
-    }, "secondary-action"));
-    row.append(head, actions);
+    const picker=element("div","track-actions playlist-picker");
+    actions.append(action("＋ Плейлист",()=>choosePlaylistForTrack(t,picker),"secondary-action"));
+    row.append(head,actions,picker);
     if (t.reported_skips || t.reported_completions) {
       row.append(element("div", "track-feedback",
         "Ручные отметки за 30 дней: ⏭ " + t.reported_skips +
@@ -535,7 +646,12 @@ async function refreshYoutubeSettings() {
   byId("youtube-section").hidden=!youtubeSearchEnabled;
 }
 
-async function refreshPlaylists(){ renderPlaylists(await api("/api/playlists")); }
+async function refreshPlaylists(){
+  if(playlistView) return openPlaylist(playlistView.id,playlistView.page);
+  const request=++playlistRequest;
+  const items=await api("/api/playlists");
+  if(request===playlistRequest) renderPlaylists(items);
+}
 async function refreshTracks() {
   const q=byId("query").value.trim();
   renderTracks(await api("/api/tracks"+(q?"?q="+encodeURIComponent(q):"")));
@@ -621,7 +737,7 @@ if (tg && initData) {
   byId("create").addEventListener("click",async()=>{
     const name=window.prompt("Название плейлиста");
     if(!name) return;
-    try {await post("/api/playlists",{name});await refreshPlaylists();}
+    try {const result=await post("/api/playlists",{name});await openPlaylist(result.id);}
     catch(e) {toast(e.message);}
   });
   let searchTimer;
