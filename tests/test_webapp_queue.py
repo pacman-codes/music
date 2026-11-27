@@ -114,3 +114,52 @@ def test_playlist_detail_edit_and_play_from_track(tmp_path, monkeypatch):
         assert client.delete(path,headers=hdr).status_code == 200
         assert len(db.all_tracks()) == 23
         assert client.get(path,headers=hdr).status_code == 404
+
+
+def test_history_and_smart_api_share_library_and_replay_only_delivered(tmp_path, monkeypatch):
+    fake = FakeTelegramBot(TOKEN)
+    monkeypatch.setattr(api, "Bot", lambda token: fake)
+    cfg = Settings(TOKEN, OWNER, tmp_path / "music.db")
+    db = Library(cfg.db_path)
+    tracks = [db.add_track(f"f{i}", f"u{i}", f"Song {i}", "Band") for i in range(24)]
+    db.set_rating(tracks[0].id, 9)
+    db.set_rating(tracks[1].id, 8)
+    db.set_track_verdict(tracks[1].id, "later")
+    qid = db.create_queue([t.id for t in tracks], "Original", "playlist")
+    db.mark_queue_sent(db.peek_queue(qid))
+    for t in tracks[10:]:
+        db.record_single_send(t.id)
+    hdr = {"X-Telegram-Init-Data": signed()}
+    with TestClient(api.create_app(cfg)) as client:
+        for method,path in [
+            ("GET","/api/history"),("GET","/api/history?mode=queues"),
+            ("POST",f"/api/history/queues/{qid}/replay"),
+            ("GET","/api/smart-playlists"),("GET","/api/smart-playlists/top"),
+            ("POST","/api/smart-playlists/top/play")]:
+            assert client.request(method,path).status_code == 401
+        first = client.get("/api/history",headers=hdr).json()
+        assert len(first["results"]) == 20
+        assert first["results"][0]["track_id"] == tracks[-1].id
+        second = client.get("/api/history?before="+str(first["next_before"]),headers=hdr).json()
+        assert len(second["results"]) == 4 and second["next_before"] is None
+        assert "file_id" not in str(first)
+        queues = client.get("/api/history?mode=queues",headers=hdr).json()["results"]
+        assert queues[0]["queue_id"] == qid and queues[0]["delivered_count"] == 10
+        replay = client.post(f"/api/history/queues/{qid}/replay",headers=hdr)
+        assert replay.status_code == 200 and replay.json()["sent"] == 10
+        assert [t.id for t in db.delivered_queue_tracks(replay.json()["queue_id"])] == [t.id for t in tracks[:10]]
+        assert db.queue_snapshot(qid)["pending_total"] == 14
+        assert client.post("/api/history/queues/99999/replay",headers=hdr).status_code == 409
+        counts = {x["key"]:x["count"] for x in client.get("/api/smart-playlists",headers=hdr).json()["results"]}
+        assert counts["top"] == 1 and counts["unheard"] == 0
+        top = client.get("/api/smart-playlists/top",headers=hdr).json()
+        assert [t["id"] for t in top["tracks"]] == [tracks[0].id]
+        assert "file_id" not in str(top)
+        db.set_rating(tracks[2].id, 10)
+        assert client.get("/api/smart-playlists/top",headers=hdr).json()["total"] == 2
+        played = client.post("/api/smart-playlists/top/play",headers=hdr)
+        assert played.status_code == 200 and played.json()["sent"] == 2
+        assert [t.id for t in db.delivered_queue_tracks(played.json()["queue_id"])] == [tracks[2].id,tracks[0].id]
+        assert client.post("/api/smart-playlists/unheard/play",headers=hdr).status_code == 409
+        assert client.get("/api/smart-playlists/unknown",headers=hdr).status_code == 404
+        assert db.playback_stats() == {}
