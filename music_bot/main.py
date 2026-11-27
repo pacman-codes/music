@@ -23,7 +23,7 @@ from music_bot.telegram_screen import install_screen_handlers
 from music_bot.telegram_catalog import install_catalog_handlers
 from music_bot.telegram_import import install_import_handlers
 from music_bot.telegram_fingerprint import install_fingerprint_handlers
-from music_bot.telegram_youtube import install_youtube_handlers, offer_discovery_audio, show_saved_albums
+from music_bot.telegram_youtube import install_youtube_handlers, offer_discovery_audio, album_collection_page
 from music_bot.telegram_taste import install_taste_handlers
 from music_bot.selection import DYNAMIC_MODES, select_wave_batch
 from music_bot.wrapped import wrapped_summary
@@ -212,12 +212,14 @@ def callback_message(callback: CallbackQuery) -> Message | None:
 # Only replace navigational text, never an audio message or a batch receipt.
 PANEL_PREFIXES = ("🎵 LAIN ·", "📂 Мои плейлисты", "📂 ", "❤️ Мне нравится",
                   "🎵 Библиотека:", "Библиотека пуста", "⏭ Очередь",
-                  "Очереди нет", "🧭 Пять реакций.", "🔎 Поиск", "💿 Мои альбомы")
+                  "Очереди нет", "🧭 Пять реакций.", "🔎 Поиск", "💿 Мои альбомы",
+                  "🎵 Трек ·", "🧭 Реакция ·", "⭐ Оценка ·", "📂 Добавить трек ·",
+                  "🧭 Список ·")
 
 
 async def render_chat_panel(message: Message, text: str, markup: InlineKeyboardMarkup,
                             *, edit: bool = False):
-    if edit and (message.text or "").startswith(PANEL_PREFIXES):
+    if edit and message.text and not message.audio and message.text.startswith(PANEL_PREFIXES):
         try:
             await message.edit_text(text, reply_markup=markup)
             return
@@ -524,7 +526,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             "🎧 Яндекс — внешний поиск и воспроизведение в сервисе.",
             keyboard(rows), edit=edit)
 
-    async def show_decision_list(message: Message, status: str, page: int = 0) -> None:
+    async def show_decision_list(message: Message, status: str, page: int = 0, *, edit=False) -> None:
         if not valid_status(status) or not 0 <= page <= 1000:
             await message.answer("Некорректный список.")
             return
@@ -533,7 +535,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         page_count = max(1, (total + page_size - 1) // page_size)
         page = min(page, page_count - 1)
         shown = db.verdict_items(status, limit=page_size, offset=page*page_size)
-        lines = [f"{LABELS[status]} — {total} треков · {page+1}/{page_count}"]
+        lines = [f"🧭 Список · {LABELS[status]} — {total} треков · {page+1}/{page_count}"]
         rows: list[list[InlineKeyboardButton]] = []
         for i, entry in enumerate(shown, start=page * page_size + 1):
             artist = str(entry["artist"]).replace("\n", " ").replace("\r", " ")
@@ -565,9 +567,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         rows.append([button("🧭 Все пять списков", "vhome")])
         if db.verdict_playable_ids(status, limit=1):
             rows.append([button("▶ Слушать доступные в Telegram", f"vplay:{status}")])
-        await message.answer(
-            "\n".join(lines)[:3900], reply_markup=keyboard(rows),
-        )
+        await render_chat_panel(message, "\n".join(lines)[:3900], keyboard(rows), edit=edit)
 
     @router.message(Command("decisions", "verdicts"))
     async def decision_home_cmd(message: Message):
@@ -603,7 +603,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         await callback.answer()
         message = callback_message(callback)
         if message is not None:
-            await show_decision_list(message, raw[1], int(raw[2]))
+            await show_decision_list(message, raw[1], int(raw[2]), edit=True)
 
     @router.callback_query(F.data.startswith("vplay:"))
     async def decision_play_button(callback: CallbackQuery, bot: Bot):
@@ -652,10 +652,10 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                              button("⏭ Следующим", f"enqueue:next:{ident}")])
                 rows.append([button("＋ В конец очереди", f"enqueue:append:{ident}"),
                              button("⭐ Оценка 1–10", f"rateopen:{ident}")])
-            await message.answer(
-                f"🧭 {item['artist']} — {item['title']}\nКак поступить?",
-                reply_markup=keyboard(rows),
-            )
+            rows.append([button("🧭 Все реакции", "vhome"), button("🏠 Меню", "nav:home")])
+            await render_chat_panel(message,
+                f"🧭 Реакция · {item['artist']} — {item['title']}\nКак поступить?"[:3500],
+                keyboard(rows), edit=True)
 
     @router.callback_query(F.data.startswith("vset:"))
     async def decision_set_button(callback: CallbackQuery):
@@ -746,12 +746,14 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             return
         current = db.ratings().get(track_id)
         await callback.answer()
-        await message.answer(
-            f"⭐ {track.artist} — {track.title} (#{track_id}). "
+        markup = rating_keyboard(track_id)
+        markup.inline_keyboard.append([button("← К действиям трека", f"vopen:l:{track_id}")])
+        await render_chat_panel(message,
+            f"⭐ Оценка · {track.artist} — {track.title} (#{track_id}). "
             f"Оценка: {str(current)+'/10' if current else 'нет'}.\n"
             "Пропуск и дослушивание здесь отмечаются вручную; "
             "Telegram не сообщает о них автоматически.",
-            reply_markup=rating_keyboard(track_id),
+            markup, edit=True,
         )
 
     @router.callback_query(F.data.startswith("rate:"))
@@ -807,6 +809,10 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         except ValueError:
             await callback.answer("Неверная кнопка", show_alert=True)
             return
+        track = db.get_track(track_id)
+        if track is None:
+            await callback.answer("Трек не найден", show_alert=True)
+            return
         custom = [p for p in db.playlists() if p["kind"] == "custom"][:20]
         message = callback_message(callback)
         await callback.answer()
@@ -817,7 +823,9 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             for p in custom
         ]
         rows.append([button("＋ Новый плейлист", f"plnew:{track_id}")])
-        await message.answer("В какой плейлист добавить?", reply_markup=keyboard(rows))
+        rows.append([button("← К действиям трека", f"vopen:l:{track_id}")])
+        await render_chat_panel(message, f"📂 Добавить трек · {track.title[:140]}\nВ какой плейлист?",
+                                keyboard(rows), edit=True)
 
     @router.callback_query(F.data.startswith("doadd:"))
     async def do_add(callback: CallbackQuery):
@@ -872,7 +880,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             return
         await callback.answer()
         if (message := callback_message(callback)) is not None:
-            await message.answer(f"🎵 {track.artist} — {track.title}"[:3500], reply_markup=keyboard([
+            await render_chat_panel(message, f"🎵 Трек · {track.artist} — {track.title}"[:3500], keyboard([
                 [button("▶ Только этот трек", f"play:{tid}"),
                  button("▶ С этого трека", f"plstart:{pid}:{tid}")],
                 [button("⏭ Следующим", f"enqueue:next:{tid}"),
@@ -883,7 +891,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                  button("🧭 Реакция", f"vopen:l:{tid}")],
                 [button("Убрать из плейлиста", f"plremove:{pid}:{tid}:{page}")],
                 [button("← Назад", f"plopen:{pid}:{page}")],
-            ]))
+            ]), edit=True)
 
     @router.callback_query(F.data.startswith("plshift:") | F.data.startswith("plremove:"))
     async def edit_playlist_track(callback: CallbackQuery):
@@ -1084,7 +1092,6 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             if catalog is None:
                 await message.answer("Каталог альбомов отключён.")
             else:
-                from music_bot.telegram_youtube import album_collection_page
                 text, markup = album_collection_page(db)
                 await render_chat_panel(message, text, markup, edit=True)
         elif action == "verdicts":
