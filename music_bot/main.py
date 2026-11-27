@@ -209,6 +209,24 @@ def callback_message(callback: CallbackQuery) -> Message | None:
     return callback.message if isinstance(callback.message, Message) else None
 
 
+# Only replace navigational text, never an audio message or a batch receipt.
+PANEL_PREFIXES = ("🎵 LAIN ·", "📂 Мои плейлисты", "📂 ", "❤️ Мне нравится",
+                  "🎵 Библиотека:", "Библиотека пуста", "⏭ Очередь",
+                  "Очереди нет", "🧭 Пять реакций.", "🔎 Поиск", "💿 Мои альбомы")
+
+
+async def render_chat_panel(message: Message, text: str, markup: InlineKeyboardMarkup,
+                            *, edit: bool = False):
+    if edit and (message.text or "").startswith(PANEL_PREFIXES):
+        try:
+            await message.edit_text(text, reply_markup=markup)
+            return
+        except TelegramBadRequest as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+    await message.answer(text, reply_markup=markup)
+
+
 def queue_feedback_keyboard(tracks: tuple[Track, ...], queue_id: int,
                             has_more: bool, *, next_cursor: int | None = None
                             ) -> InlineKeyboardMarkup:
@@ -468,16 +486,9 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         except ValueError:
             await message.answer("Плейлист не найден.")
             return
-        if edit:
-            try:
-                await message.edit_text(text, reply_markup=markup)
-                return
-            except TelegramBadRequest as exc:
-                if "message is not modified" in str(exc).lower():
-                    return
-        await message.answer(text, reply_markup=markup)
+        await render_chat_panel(message, text, markup, edit=edit)
 
-    async def show_playlists(message: Message) -> None:
+    async def show_playlists(message: Message, *, edit=False) -> None:
         playlists = db.playlists()
         rows = [[button(f"{'❤️' if p['kind']=='liked' else '📂'} {p['name'][:38]} · {p['count']}",
                         f"plopen:{p['id']}:0"),
@@ -485,32 +496,33 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         rows.append([button("＋ Создать плейлист", "plnew")])
         rows.append([button("💿 Альбомы", "nav:albums"), button("🧭 Реакции", "nav:verdicts")])
         rows.append([button("🏠 Меню", "nav:home")])
-        await message.answer("📂 Мои плейлисты\nНажми название, чтобы открыть треки, или ▶ для запуска.",
-                             reply_markup=keyboard(rows))
+        await render_chat_panel(message, "📂 Мои плейлисты\nНажми название, чтобы открыть треки, или ▶ для запуска.",
+                                keyboard(rows), edit=edit)
 
-    async def show_library(message: Message) -> None:
+    async def show_library(message: Message, *, edit=False) -> None:
         tracks = db.all_tracks(20)
-        await message.answer(
+        rows = quick_play_buttons(tracks)
+        rows.append([button("🏠 Меню", "nav:home"), button("🔎 Поиск", "nav:search")])
+        await render_chat_panel(message,
             format_tracks(tracks, "🎵 Библиотека:") if tracks
             else "Библиотека пуста. Пришли аудио.",
-            reply_markup=keyboard(quick_play_buttons(tracks)) if tracks else None,
-        )
+            keyboard(rows), edit=edit)
 
-    async def show_liked(message: Message) -> None:
-        await show_playlist_page(message, db.liked_id())
+    async def show_liked(message: Message, *, edit=False) -> None:
+        await show_playlist_page(message, db.liked_id(), edit=edit)
 
-    async def show_decisions(message: Message) -> None:
+    async def show_decisions(message: Message, *, edit=False) -> None:
         counts = db.verdict_counts()
         rows = [
             [button(f"{LABELS[status]} · {counts[status]}", f"vlist:{status}:0")]
             for status in STATUSES
         ]
-        await message.answer(
+        rows.append([button("🏠 Меню", "nav:home")])
+        await render_chat_panel(message,
             "🧭 Пять реакций. Каждая песня только в одной категории.\n"
             "▶ Слушать в Telegram — если файл уже есть; "
             "🎧 Яндекс — внешний поиск и воспроизведение в сервисе.",
-            reply_markup=keyboard(rows),
-        )
+            keyboard(rows), edit=edit)
 
     async def show_decision_list(message: Message, status: str, page: int = 0) -> None:
         if not valid_status(status) or not 0 <= page <= 1000:
@@ -579,7 +591,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         await callback.answer()
         message = callback_message(callback)
         if message is not None:
-            await show_decisions(message)
+            await show_decisions(message, edit=True)
 
     @router.callback_query(F.data.startswith("vlist:"))
     async def decision_list_button(callback: CallbackQuery):
@@ -667,8 +679,13 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             return
         await callback.answer(f"Сохранено: {LABELS[status]}")
 
-    @router.message(Command("start", "help"))
+    @router.message(Command("start", "menu"))
     async def start(message: Message):
+        await message.answer("🎵 LAIN · Твоя медиатека\nНапиши название песни или выбери раздел.",
+                             reply_markup=home_keyboard(webapp_url))
+
+    @router.message(Command("help"))
+    async def help_cmd(message: Message):
         await message.answer(HELP, reply_markup=home_keyboard(webapp_url))
 
     @router.message(F.audio)
@@ -1049,28 +1066,31 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             return
         action = callback.data.split(":", 1)[1]
         if action == "home":
-            await message.answer("🎵 LAIN · Твоя медиатека", reply_markup=home_keyboard(webapp_url))
+            await render_chat_panel(message, "🎵 LAIN · Твоя медиатека", home_keyboard(webapp_url), edit=True)
         elif action == "search":
-            await message.answer("Напиши исполнителя и название песни обычным сообщением.")
+            await render_chat_panel(message, "🔎 Поиск\nНапиши исполнителя и название песни обычным сообщением.",
+                                    keyboard([[button("🏠 Меню", "nav:home")]]), edit=True)
         elif action == "queue":
-            await queue_cmd(message)
+            await queue_cmd(message, edit=True)
         elif action == "wave":
             await start_wave(bot, message.chat.id)
         elif action == "discover":
             await start_wave(bot, message.chat.id, "discover")
         elif action == "liked":
-            await show_liked(message)
+            await show_liked(message, edit=True)
         elif action == "playlists":
-            await show_playlists(message)
+            await show_playlists(message, edit=True)
         elif action == "albums":
             if catalog is None:
                 await message.answer("Каталог альбомов отключён.")
             else:
-                await show_saved_albums(message, db)
+                from music_bot.telegram_youtube import album_collection_page
+                text, markup = album_collection_page(db)
+                await render_chat_panel(message, text, markup, edit=True)
         elif action == "verdicts":
             await show_decisions(message)
         elif action == "library":
-            await show_library(message)
+            await show_library(message, edit=True)
         elif action == "continue":
             last = db.latest_queue_id()
             if last is None:
@@ -1280,7 +1300,9 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
     async def queue_cmd(message: Message, edit: bool = False):
         qid = db.latest_queue_id()
         if qid is None:
-            await message.answer("Очереди нет. Запусти /wave или плейлист.")
+            await render_chat_panel(message, "Очереди нет. Запусти Волну или плейлист.",
+                keyboard([[button("🌊 Волна", "nav:wave"), button("📂 Плейлисты", "nav:playlists")],
+                          [button("🏠 Меню", "nav:home")]]), edit=edit)
             return
         state = db.queue_snapshot(qid, limit=10)
         text = (
@@ -1313,14 +1335,8 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         if state["pending_total"] or state["is_dynamic"]:
             rows.append([button("▶ Следующая порция", f"qsend:{qid}:{state['cursor']}")])
         rows.append([button("↻ Обновить", "nav:queue"), button("📂 Плейлисты", "nav:playlists")])
-        if edit:
-            try:
-                await message.edit_text(text[:3900], reply_markup=keyboard(rows))
-                return
-            except TelegramBadRequest as exc:
-                if "message is not modified" in str(exc).lower():
-                    return
-        await message.answer(text[:3900], reply_markup=keyboard(rows))
+        rows.append([button("🏠 Меню", "nav:home")])
+        await render_chat_panel(message, text[:3900], keyboard(rows), edit=edit)
 
     @router.message(Command("next", "append"))
     async def queue_add_cmd(message: Message):
