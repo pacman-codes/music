@@ -143,3 +143,21 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 @media(max-width:360px){body{padding-left:12px;padding-right:12px}.bottom-nav span{font-size:9px}.hero{padding:22px 17px}
   .shortcut-grid button{padding:12px 10px}.item{padding:10px}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+
+
+/* Playlist library and its expandable track actions. */
+#main[data-active-screen="library"] #playlists-section{order:0}
+#main[data-active-screen="library"] #library-section{order:1}
+#main[data-active-screen="library"] #decision-section{order:2}
+.playlist-art{display:grid;place-items:center;flex:none;width:52px;aspect-ratio:1;border-radius:12px;
+  background:linear-gradient(145deg,#8274c2,#443966);color:#fff;font-size:26px}
+.playlist-art.large{width:84px;font-size:40px;border-radius:18px}
+.playlist-open{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;
+  text-align:left;background:transparent;border:0;padding:4px 0}
+.playlist-open .name,.playlist-open .sub{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.playlist-play{min-width:44px}
+.playlist-detail-title{display:flex;align-items:center;gap:14px;min-width:0}
+.playlist-detail-title .name{font-size:22px;white-space:normal;overflow-wrap:anywhere}
+.playlist-picker:empty{display:none}
+.playlist-picker{border-top:1px solid var(--lain-line);padding-top:10px}
+.playlist-picker .catalog-caption{flex-basis:100%}
