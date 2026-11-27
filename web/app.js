@@ -641,6 +641,41 @@ function albumPaging(previous, next) {
   byId("albums-prev").hidden = !previous;
   byId("albums-next").hidden = !next;
 }
+function albumCover(album) {
+  const box = element("div", "album-cover");
+  const placeholder = element("span", "album-cover-placeholder", "♫");
+  placeholder.setAttribute("aria-hidden", "true");
+  box.append(placeholder);
+  const urls = Array.isArray(album.cover_urls) ? album.cover_urls.filter(url =>
+    typeof url === "string" &&
+    /^https:\/\/coverartarchive\.org\/(release|release-group)\/[0-9a-f-]{36}\/front-250$/.test(url)
+  ).slice(0, 2) : [];
+  if (!urls.length) return box;
+  const image = element("img", "album-art");
+  image.alt = "";
+  image.loading = "lazy";
+  image.decoding = "async";
+  image.referrerPolicy = "no-referrer";
+  let index = 0;
+  image.addEventListener("load", () => { image.classList.add("loaded"); placeholder.hidden = true; });
+  image.addEventListener("error", () => {
+    index += 1;
+    if (index < urls.length) image.src = urls[index];
+    else image.remove();
+  });
+  box.append(image);
+  image.src = urls[0];
+  return box;
+}
+function albumHeading(album, detail=false) {
+  const row = element("div", "album-heading" + (detail ? " album-heading-detail" : ""));
+  const info = element("div", "info");
+  const source = detail ? " · " + (album.provider === "itunes" ? "iTunes" : "MusicBrainz") : "";
+  info.append(element("div", "name", album.title),
+    element("div", "sub", album.artist + " · " + album.track_count + " треков" + source));
+  row.append(albumCover(album), info);
+  return row;
+}
 function renderAlbumList(rows, savedList) {
   const host = byId("albums-results");
   host.replaceChildren();
@@ -648,8 +683,7 @@ function renderAlbumList(rows, savedList) {
     savedList ? "Коллекция пока пуста" : "Альбомы не найдены"));
   for (const album of rows) {
     const card = element("div", "item track-card");
-    card.append(element("div", "name", "💿 " + album.title),
-      element("div", "sub", album.artist + " · " + album.track_count + " треков"));
+    card.append(albumHeading(album));
     const controls = element("div", "actions");
     controls.append(action("Открыть", () => openAlbum(album.mbid)));
     controls.append(action(savedList || album.saved ? "Удалить" : "＋ Добавить альбом", async () => {
@@ -697,9 +731,7 @@ async function openAlbum(id) {
   const host = byId("albums-results");
   host.replaceChildren();
   const header = element("div", "item track-card");
-  header.append(element("div", "name", "💿 " + album.title),
-    element("div", "sub", album.artist + " · " + album.track_count + " треков · " +
-      (album.provider === "itunes" ? "iTunes" : "MusicBrainz")));
+  header.append(albumHeading(album, true));
   const controls = element("div", "actions");
   controls.append(action("← Мои альбомы", () => refreshAlbums()));
   controls.append(action(album.saved ? "Удалить" : "＋ Добавить альбом", async () => {
