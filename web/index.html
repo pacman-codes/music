@@ -9,6 +9,7 @@
   <script src="https://telegram.org/js/telegram-web-app.js?65"></script>
   <script src="/assets/navigation.js" defer></script>
   <script src="/assets/app.js" defer></script>
+  <script src="/assets/artists.js" defer></script>
   <script src="/assets/queue.js" defer></script>
   <script src="/assets/decisions.js" defer></script>
   <script src="/assets/sources.js" defer></script>
@@ -43,6 +44,7 @@
         <button data-route="albums" type="button"><span class="shortcut-icon">▣</span><strong>Альбомы</strong><small>Твоя коллекция</small></button>
         <button data-route="search" type="button"><span class="shortcut-icon">⌕</span><strong>Открытия</strong><small>Новая музыка</small></button>
         <button data-route="queue" type="button"><span class="shortcut-icon">≡</span><strong>Очередь</strong><small>Следующие песни</small></button>
+        <button data-route="artists" type="button"><span class="shortcut-icon">◎</span><strong>Исполнители</strong><small>Избранное и дискографии</small></button>
       </div>
       <p class="playback-note">Аудио отправляется в чат с ботом и воспроизводится в плеере Telegram.</p>
     </section>
@@ -184,8 +186,17 @@
         <button type="button" id="decision-next">Вперёд ▶</button>
       </div>
     </section>
+    <section id="artists-section" data-screen="artists">
+      <div class="heading"><h2>Исполнители</h2><button id="artists-refresh" type="button">Избранное</button></div>
+      <form id="artists-form" class="catalog-form">
+        <input id="artists-query" type="search" minlength="2" maxlength="90" placeholder="Имя исполнителя" required autocomplete="off" aria-label="Имя исполнителя">
+        <button type="submit">Найти</button>
+      </form>
+      <div id="artists-status" class="catalog-caption" role="status" aria-live="polite"></div>
+      <div id="artists-results" class="list"></div>
+    </section>
     <section id="albums-section" data-screen="albums">
-      <div class="heading"><h2>💿 Мои альбомы</h2><button id="albums-refresh" type="button">Обновить</button></div>
+      <div class="heading"><h2>💿 Мои альбомы</h2><div class="actions"><button type="button" data-route="artists">Исполнители</button><button id="albums-refresh" type="button">Обновить</button></div></div>
       <p class="catalog-hint">Общая коллекция с Telegram. Сохранение альбома не скачивает аудио.</p>
       <form id="albums-form" class="catalog-form">
         <input id="albums-query" type="search" minlength="2" maxlength="90"
@@ -200,7 +211,7 @@
       </div>
     </section>
     <section data-screen="library" id="playlists-section">
-      <div class="heading"><h2>Плейлисты</h2><button type="button" id="create">＋ Новый</button></div>
+      <div class="heading"><h2>Плейлисты</h2><div class="actions"><button type="button" data-route="artists">Исполнители</button><button type="button" id="create">＋ Новый</button></div></div>
       <div id="playlists" class="list"></div>
     </section>
     <section data-screen="library" id="library-section">
