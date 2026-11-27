@@ -156,6 +156,18 @@ def test_missing_album_suggestions_owner_only_no_import(tmp_path):
         assert len(db.all_tracks()) == 1
         assert db.get_youtube_video("abcdefghijk")["track_id"] is None
 
+        single = "/api/albums/" + RELEASE + "/tracks/1/youtube-suggestions"
+        assert client.get(single, headers=auth(999)).status_code == 401
+        assert client.get(single.replace("/tracks/1/", "/tracks/2/"),
+                          headers=auth()).status_code == 404
+        response = client.get(single, headers=auth())
+        assert response.status_code == 200
+        assert response.json()["suggestions"][0]["recording_mbid"] == SECOND
+        assert response.json()["auto_imported"] is False
+        assert len(db.all_tracks()) == 1
+        assert worker.queries == ["Artist Second", "Artist Second"]
+
+
 
 def test_batch_pagination_and_errors_do_not_block_other_tracks(tmp_path):
     import asyncio
