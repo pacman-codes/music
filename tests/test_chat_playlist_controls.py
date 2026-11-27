@@ -119,3 +119,34 @@ def test_navigation_reuses_only_text_panels_and_preserves_receipts():
         assert len(command.answers) == 1
 
     asyncio.run(scenario())
+
+
+def test_navigation_falls_back_when_telegram_rejects_edit():
+    import asyncio
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import EditMessageText
+    from music_bot.main import render_chat_panel
+
+    class Message:
+        text = "🎵 LAIN · Твоя медиатека"
+        audio = None
+
+        def __init__(self, error):
+            self.error = error
+            self.answers = []
+
+        async def edit_text(self, text, **kwargs):
+            raise TelegramBadRequest(
+                method=EditMessageText(text=text, chat_id=42, message_id=1),
+                message=self.error)
+
+        async def answer(self, text, **kwargs):
+            self.answers.append(text)
+
+    markup = home_keyboard()
+    expired = Message("Bad Request: message can't be edited")
+    asyncio.run(render_chat_panel(expired, "Destination", markup, edit=True))
+    assert expired.answers == ["Destination"]
+    same = Message("Bad Request: message is not modified")
+    asyncio.run(render_chat_panel(same, "Destination", markup, edit=True))
+    assert not same.answers
