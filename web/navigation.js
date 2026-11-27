@@ -2,7 +2,7 @@
 // Route visibility is independent of feature gates (section.hidden).
 // No private application state is persisted outside Telegram.
 (() => {
-  const routes = new Set(["home","search","library","albums","queue","more"]);
+  const routes = new Set(["home","search","library","albums","queue","more","artists"]);
   const tg = window.Telegram?.WebApp;
   if (!tg?.initData) return;
   const main = document.getElementById("main");

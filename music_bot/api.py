@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from music_bot.anime import AniListCatalog, AniListError
+from music_bot.artists import search_artists, artist_discography, group_album
 from music_bot.albums import (
     find_albums, album_tracks, valid_album_id, valid_itunes_id,
     album_cover_urls, cached_album_group,
@@ -43,6 +44,10 @@ from music_bot.webapp_auth import InvalidInitData, verify_init_data
 from music_bot.youtube import (
     YouTubeError, YouTubeSource, YouTubeIngestService, validate_video_id,
 )
+
+
+class ArtistSaveRequest(BaseModel):
+    saved: bool = Field(strict=True)
 
 
 class AlbumAudioLinkRequest(BaseModel):
@@ -851,6 +856,100 @@ def create_app(config: Settings | None = None,
         except (CatalogError, ValueError) as exc:
             raise HTTPException(502, detail="Не удалось получить трек-лист альбома") from exc
         return ident, title, artist, rows
+
+    def known_artist(value: str):
+        if not valid_mbid(value):
+            raise HTTPException(422, detail="Некорректный идентификатор исполнителя")
+        artist = db.get_artist(value.lower())
+        if artist is None:
+            raise HTTPException(404, detail="Сначала найди исполнителя")
+        return artist
+
+    @app.get("/api/artists", dependencies=[auth])
+    async def artists_list(offset: int = Query(0, ge=0, le=100000)):
+        rows = db.saved_artists(offset=offset, limit=21)
+        return {"results": rows[:20], "has_more": len(rows)>20}
+
+    @app.get("/api/artists/search", dependencies=[auth])
+    async def artists_search(q: str = Query(min_length=2, max_length=90)):
+        try:
+            rows = await search_artists(catalog_client, q)
+        except ValueError as exc:
+            raise HTTPException(422, detail="Некорректный запрос") from exc
+        except CatalogError as exc:
+            raise HTTPException(502, detail="Каталог исполнителей недоступен") from exc
+        db.remember_artists(rows)
+        return {"results": [db.get_artist(row.mbid) for row in rows]}
+
+    @app.get("/api/artists/{artist_id}", dependencies=[auth])
+    async def artist_detail(artist_id: str, page: int = Query(0, ge=0, le=100000)):
+        artist = known_artist(artist_id)
+        tracks = db.artist_library_tracks(artist["mbid"], artist["name"])
+        truncated = len(tracks)>1000
+        tracks = tracks[:1000]
+        pages = max(1, (len(tracks)+19)//20)
+        page = min(page, pages-1)
+        return {**artist, "total": len(tracks), "truncated": truncated,
+                "page": page, "pages": pages,
+                "tracks": [{"id": t.id, "title": t.title, "artist": t.artist}
+                           for t in tracks[page*20:page*20+20]]}
+
+    @app.put("/api/artists/{artist_id}", dependencies=[auth])
+    async def artist_save(artist_id: str, payload: ArtistSaveRequest):
+        artist = known_artist(artist_id)
+        return {"changed": db.set_artist_saved(artist["mbid"], payload.saved),
+                "saved": payload.saved}
+
+    @app.get("/api/artists/{artist_id}/discography", dependencies=[auth])
+    async def artist_releases(artist_id: str, page: int = Query(0, ge=0, le=999)):
+        artist = known_artist(artist_id)
+        try:
+            rows, more = await artist_discography(catalog_client, artist["mbid"], page)
+        except CatalogError as exc:
+            raise HTTPException(502, detail="Дискография недоступна") from exc
+        return {"results": [{**asdict(row), "cover_urls": [f"https://coverartarchive.org/release-group/{row.mbid}/front-250"]}
+                            for row in rows], "page": page, "has_more": more}
+
+    @app.get("/api/artist-release-groups/{group_id}", dependencies=[auth])
+    async def resolve_artist_release(group_id: str):
+        if not valid_mbid(group_id):
+            raise HTTPException(422, detail="Некорректный идентификатор релиза")
+        try:
+            album = await group_album(catalog_client, group_id.lower())
+        except CatalogError as exc:
+            raise HTTPException(502, detail="Не удалось найти официальное издание") from exc
+        return {"release_id": album.mbid}
+
+    @app.post("/api/artists/{artist_id}/play", dependencies=[auth])
+    async def play_artist_library(artist_id: str):
+        artist = known_artist(artist_id)
+        tracks = db.artist_library_tracks(artist["mbid"], artist["name"])
+        if not tracks or len(tracks)>1000:
+            raise HTTPException(409, detail="Нет аудио или больше 1000 треков")
+        queue_id = db.create_queue([t.id for t in tracks], artist["name"], "playlist")
+        async with Bot(token=settings.token) as bot:
+            await deliver_queue(bot, db, settings.owner_id, queue_id, send_lock)
+        sent = db.queue_snapshot(queue_id)["cursor"]
+        if not sent:
+            raise HTTPException(502, detail="Telegram не смог отправить музыку")
+        return {"queue_id": queue_id, "sent": sent}
+
+    @app.post("/api/artists/{artist_id}/radio", dependencies=[auth])
+    async def artist_radio_discovery(artist_id: str):
+        artist = known_artist(artist_id)
+        try:
+            found = await catalog_client.artist_radio_by_id(artist["mbid"], difficulty="medium", limit=20)
+        except CatalogError as exc:
+            raise HTTPException(502, detail="Радио временно недоступно") from exc
+        known = {normalized_identity(t.title,t.artist) for t in db.all_tracks(10000)}
+        known |= db.taste_identities()
+        linked = db.resolved_catalog_tracks()
+        decided = db.catalog_verdicts()
+        rows = db.reserve_discovery_suggestions(
+            [t for t in found if not t.variant and t.mbid not in decided and t.mbid not in linked
+             and normalized_identity(t.title,t.artist) not in known], 8)
+        db.remember_candidates(rows)
+        return {"results": catalog_result(rows), "artist": artist["name"]}
 
     @app.get("/api/albums", dependencies=[auth])
     async def saved_album_list(offset: int = Query(0, ge=0, le=100000)):

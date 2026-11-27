@@ -343,6 +343,7 @@ function renderTracks(items) {
       window.navigateMusicScreen?.("search", {scroll:false});
       byId("catalog-heading").scrollIntoView({behavior:"smooth"});
     }, "secondary-action"));
+    actions.append(action("👤 Исполнитель",()=>window.openMusicArtistSearch(t.artist),"secondary-action"));
     const picker=element("div","track-actions playlist-picker");
     actions.append(action("＋ Плейлист",()=>choosePlaylistForTrack(t,picker),"secondary-action"));
     row.append(head,actions,picker);
