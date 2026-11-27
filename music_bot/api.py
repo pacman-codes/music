@@ -36,6 +36,9 @@ from music_bot.selection import select_wave_batch
 from music_bot.screen import TmdbCatalog, TmdbError
 from music_bot.source_matching import suggest_sources
 from music_bot.storage import Library
+from music_bot.smart_playlists import RULES, smart_counts, smart_page
+from music_bot.telegram_smart import create_smart_queue
+from music_bot.telegram_history import replay_delivery_queue
 from music_bot.taste_sources import (
     TasteSourceError, parse_yandex_url, fetch_yandex_playlist, parse_youtube_export,
 )
@@ -1079,6 +1082,64 @@ def create_app(config: Settings | None = None,
             {**suggestion.public(), "recording_mbid": recording_id}
             for suggestion in suggest_sources(recording, candidates, limit=6)
         ], "auto_imported": False}
+
+    async def deliver_collection(queue_id: int):
+        async with Bot(token=settings.token) as bot:
+            await deliver_queue(bot, db, settings.owner_id, queue_id, send_lock)
+        sent = db.queue_snapshot(queue_id)["cursor"]
+        if not sent:
+            raise HTTPException(502, detail="Telegram не смог отправить музыку")
+        return {"queue_id": queue_id, "sent": sent}
+
+    @app.get("/api/history", dependencies=[auth])
+    async def delivery_history(mode: Literal["tracks", "queues"] = "tracks",
+                               before: int | None = Query(None, gt=0, le=9223372036854775807)):
+        size = 20
+        if mode == "tracks":
+            items = db.recent_deliveries(before=before, limit=size+1)
+            key = "delivery_id"
+        else:
+            items = db.recent_delivered_queues(before=before, limit=size+1)
+            key = "last_delivery_id"
+        return {"results": items[:size], "mode": mode,
+                "next_before": items[size-1][key] if len(items)>size else None}
+
+    @app.post("/api/history/queues/{queue_id}/replay", dependencies=[auth])
+    async def replay_history(queue_id: int):
+        if not 0 < queue_id <= 9223372036854775807:
+            raise HTTPException(422, detail="Неверная подборка")
+        try:
+            replay_id = replay_delivery_queue(db, queue_id)
+        except ValueError as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+        return await deliver_collection(replay_id)
+
+    @app.get("/api/smart-playlists", dependencies=[auth])
+    async def smart_list():
+        counts = smart_counts(db)
+        return {"results": [{"key": key, "title": rule.title,
+                             "description": rule.description, "count": counts[key]}
+                            for key, rule in RULES.items()]}
+
+    @app.get("/api/smart-playlists/{key}", dependencies=[auth])
+    async def smart_detail(key: str, page: int = Query(0, ge=0, le=100000)):
+        if key not in RULES:
+            raise HTTPException(404, detail="Подборка не найдена")
+        total, page, pages, rows = smart_page(db, key, page, size=20)
+        rule = RULES[key]
+        return {"key": key, "title": rule.title, "description": rule.description,
+                "total": total, "page": page, "pages": pages,
+                "tracks": [{"id": t.id, "title": t.title, "artist": t.artist} for t in rows]}
+
+    @app.post("/api/smart-playlists/{key}/play", dependencies=[auth])
+    async def smart_play(key: str, shuffle: bool = False):
+        if key not in RULES:
+            raise HTTPException(404, detail="Подборка не найдена")
+        try:
+            queue_id = create_smart_queue(db, key, "shuffle" if shuffle else "all")
+        except ValueError as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+        return await deliver_collection(queue_id)
 
     @app.get("/api/playlists", dependencies=[auth])
     async def playlists():
