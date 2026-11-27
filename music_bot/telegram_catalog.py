@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normalize, valid_mbid
-from music_bot.personalized import personalized_discovery
+from music_bot.personalized import personalized_discovery, playlist_discovery
 from music_bot.weekly import weekly_discovery
 from music_bot.storage import Library
 from music_bot.verdicts import yandex_search_url
@@ -277,6 +277,70 @@ def install_catalog_handlers(router: Router, db: Library, catalog: MusicCatalog)
                 rows, linked=db.resolved_catalog_tracks(),
             ) if rows else None),
         )
+
+    async def show_playlist_radio(message: Message, playlist_id: int, difficulty: str = "medium"):
+        info = db.get_playlist(playlist_id)
+        if info is None:
+            await message.answer("Плейлист не найден.")
+            return
+        lease = db.acquire_media_import("taste", "playlist-radio", ttl=180)
+        if lease is None:
+            await message.answer("Уже подбираю радио по плейлисту.")
+            return
+        try:
+            seeds, rows = await playlist_discovery(db, catalog, playlist_id,
+                                                  difficulty=difficulty, limit=8)
+        except (CatalogError, ValueError):
+            await message.answer("Радио по плейлисту пока недоступно.")
+            return
+        finally:
+            db.release_media_import("taste", "playlist-radio", lease)
+        decided = db.catalog_verdicts()
+        rows = [row for row in rows if row.mbid not in decided]
+        db.remember_candidates(rows)
+        controls = []
+        lines = [f"📻 Радио · {info['name'][:80]}"]
+        if seeds:
+            lines.append("На основе: " + ", ".join(seeds))
+        else:
+            lines.append("В плейлисте пока нет подходящих исполнителей.")
+        for i, track in enumerate(rows, 1):
+            lines.append(f"{i}. {track.artist[:65]} — {track.title[:100]}")
+            controls.append([
+                InlineKeyboardButton(text=f"🔎 {i}. {track.title[:22]}",
+                                     callback_data=f"albtrack:{track.mbid}"),
+                InlineKeyboardButton(text="🧭 Оценить", callback_data=f"vopen:c:{track.mbid}"),
+            ])
+            controls.append([InlineKeyboardButton(text="Яндекс ↗", url=yandex_search_url(track.artist, track.title))])
+        if seeds and not rows:
+            lines.append("Новых записей пока нет. Попробуй другую степень поиска.")
+        if rows:
+            lines.append("Это находки каталога, не готовое Telegram-аудио. Выбери запись для поиска источника.")
+        controls.append([InlineKeyboardButton(text="Ещё находки", callback_data=f"plradio:{playlist_id}:{difficulty}")])
+        controls.append([InlineKeyboardButton(text="Ближе к подборке", callback_data=f"plradio:{playlist_id}:easy"),
+                         InlineKeyboardButton(text="Больше открытий", callback_data=f"plradio:{playlist_id}:hard")])
+        controls.append([InlineKeyboardButton(text="← Плейлист", callback_data=f"plopen:{playlist_id}:0")])
+        await message.answer("\n".join(lines)[:3800],
+                             reply_markup=InlineKeyboardMarkup(inline_keyboard=controls))
+
+    @router.message(Command("radioplaylist"))
+    async def radio_playlist_cmd(message: Message):
+        raw = (message.text or "").split()
+        if len(raw) != 2 or not raw[1].isascii() or not raw[1].isdigit() or len(raw[1]) > 18:
+            await message.answer("Пример: /radioplaylist 2")
+            return
+        await show_playlist_radio(message, int(raw[1]))
+
+    @router.callback_query(F.data.startswith("plradio:"))
+    async def radio_playlist_button(callback: CallbackQuery):
+        parts = (callback.data or "").split(":")
+        if (len(parts) != 3 or not parts[1].isascii() or not parts[1].isdigit()
+                or len(parts[1]) > 18 or parts[2] not in {"easy", "medium", "hard"}):
+            await callback.answer("Неверный режим", show_alert=True)
+            return
+        await callback.answer()
+        if isinstance(callback.message, Message):
+            await show_playlist_radio(callback.message, int(parts[1]), parts[2])
 
     @router.message(Command("recommend"))
     async def recommend(message: Message):

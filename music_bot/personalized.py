@@ -178,6 +178,7 @@ def strongly_negative_artists(
 async def personalized_discovery(
     db: Library, catalog: MusicCatalog, *, difficulty: str = "medium",
     limit: int = 15, max_seeds: int = 3,
+    seed_artists: list[ArtistSeed] | None = None,
 ) -> tuple[list[str], list[CatalogTrack]]:
     """Collect LB radio from top-rated artist seeds, rank-fused and diversified.
 
@@ -188,7 +189,8 @@ async def personalized_discovery(
         raise ValueError("Unknown discovery difficulty")
     if not 1 <= limit <= 20 or not 1 <= max_seeds <= 3:
         raise ValueError("Invalid discovery size")
-    seeds = choose_discovery_seeds(db, count=max_seeds)
+    seeds = (choose_discovery_seeds(db, count=max_seeds)
+             if seed_artists is None else seed_artists[:max_seeds])
     if not seeds:
         return [], []
 
@@ -244,3 +246,38 @@ async def personalized_discovery(
     # Overlapping requests may get fewer results, but do not repeat identities.
     ranked = fuse_artist_radio(pools, limit=50)
     return used_seeds, db.reserve_discovery_suggestions(ranked, limit)
+
+
+def playlist_discovery_seeds(db: Library, playlist_id: int, *, count: int = 3,
+                             rng: random.Random | None = None) -> list[ArtistSeed]:
+    """Sample only artists represented in this playlist, not global favorites."""
+    if not 1 <= count <= 3 or db.get_playlist(playlist_id) is None:
+        raise ValueError("Invalid playlist or seed count")
+    names: dict[str, str] = {}
+    weights: dict[str, float] = defaultdict(float)
+    suppressed = db.suppressed_verdict_track_ids()
+    ratings = db.ratings()
+    for track in db.playlist_tracks(playlist_id):
+        name = track.artist.strip()
+        key = normalize(name)
+        if (not 2 <= len(name) <= 90 or not key or
+                key in {"unknown artist", "неизвестный исполнитель"} or
+                track.id in suppressed or ratings.get(track.id, 10) <= 3):
+            continue
+        names.setdefault(key, name)
+        weights[key] = min(5.0, weights[key] + 1.0)
+    pool = [ArtistSeed(names[key], weight) for key, weight in weights.items()]
+    rng = rng or random.Random()
+    selected = []
+    while pool and len(selected) < count:
+        seed = rng.choices(pool, weights=[item.score ** 0.65 for item in pool], k=1)[0]
+        selected.append(seed)
+        pool.remove(seed)
+    return selected
+
+
+async def playlist_discovery(db: Library, catalog: MusicCatalog, playlist_id: int,
+                             *, difficulty: str = "medium", limit: int = 8):
+    seeds = playlist_discovery_seeds(db, playlist_id)
+    return await personalized_discovery(db, catalog, difficulty=difficulty, limit=limit,
+                                        seed_artists=seeds)
