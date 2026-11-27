@@ -892,7 +892,8 @@ class Library:
     def edit_queue(self, queue_id: int, action: str, *,
                    track_id: int | None = None, position: int | None = None,
                    to_position: int | None = None,
-                   expected_cursor: int | None = None) -> dict:
+                   expected_cursor: int | None = None,
+                   expected_track_id: int | None = None) -> dict:
         """Atomically edit ONLY not-yet-sent queue items (0-based positions).
 
         New tracks may be inserted at the front or appended. Moving/removing
@@ -938,6 +939,8 @@ class Library:
                 if type(position) is not int or not cursor <= position < cursor+len(pending):
                     raise ValueError("Cannot edit an already sent or missing position")
                 current_idx = position - cursor
+                if expected_track_id is not None and pending[current_idx] != expected_track_id:
+                    raise ValueError("Queue changed; refresh the pending list")
                 if action == "remove":
                     pending.pop(current_idx)
                 else:
