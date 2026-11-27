@@ -89,6 +89,15 @@ class PlaylistCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
 
 
+class PlaylistMove(BaseModel):
+    delta: Literal[-1, 1]
+
+
+class PlaylistPlay(BaseModel):
+    shuffle: bool = False
+    start_track_id: int | None = Field(default=None, gt=0, strict=True)
+
+
 class PlaylistAdd(BaseModel):
     track_id: int = Field(gt=0)
 
@@ -982,6 +991,73 @@ def create_app(config: Settings | None = None,
             raise HTTPException(status_code=404, detail="Playlist not found")
         return [{"id": t.id, "title": t.title, "artist": t.artist}
                 for t in db.playlist_tracks(playlist_id, 100)]
+
+    @app.get("/api/playlists/{playlist_id}", dependencies=[auth])
+    async def playlist_detail(playlist_id: int, page: int = Query(default=0, ge=0, le=100000)):
+        info = db.get_playlist(playlist_id)
+        if not info:
+            raise HTTPException(404, detail="Плейлист не найден")
+        total, page, pages, rows = db.playlist_page(playlist_id, page, 20)
+        return {"id": playlist_id, "name": info["name"], "kind": info["kind"],
+                "total": total, "page": page, "pages": pages,
+                "tracks": [{"id": t.id, "title": t.title, "artist": t.artist} for t in rows]}
+
+    @app.put("/api/playlists/{playlist_id}", dependencies=[auth])
+    async def rename_playlist(playlist_id: int, payload: PlaylistCreate):
+        import sqlite3
+        try:
+            db.rename_playlist(playlist_id, payload.name)
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            raise HTTPException(409, detail="Нельзя изменить название плейлиста") from exc
+        return {"changed": True}
+
+    @app.delete("/api/playlists/{playlist_id}", dependencies=[auth])
+    async def delete_playlist(playlist_id: int):
+        try:
+            db.delete_playlist(playlist_id)
+        except ValueError as exc:
+            raise HTTPException(409, detail="Нельзя удалить этот плейлист") from exc
+        return {"deleted": True}
+
+    @app.delete("/api/playlists/{playlist_id}/tracks/{track_id}", dependencies=[auth])
+    async def remove_playlist_track(playlist_id: int, track_id: int):
+        if not db.get_playlist(playlist_id):
+            raise HTTPException(404, detail="Плейлист не найден")
+        return {"changed": db.remove_from(playlist_id, track_id)}
+
+    @app.put("/api/playlists/{playlist_id}/tracks/{track_id}/position", dependencies=[auth])
+    async def shift_playlist_track(playlist_id: int, track_id: int, payload: PlaylistMove):
+        try:
+            return {"changed": db.shift_playlist_track(playlist_id, track_id, payload.delta)}
+        except ValueError as exc:
+            raise HTTPException(409, detail="Трек больше не в плейлисте") from exc
+
+    @app.post("/api/playlists/{playlist_id}/play", dependencies=[auth])
+    async def play_playlist(playlist_id: int, payload: PlaylistPlay):
+        import random
+        info = db.get_playlist(playlist_id)
+        if not info:
+            raise HTTPException(404, detail="Плейлист не найден")
+        ids = [t.id for t in db.playlist_tracks(playlist_id, 1001)]
+        if len(ids) > 1000:
+            raise HTTPException(409, detail="Больше 1000 треков в плейлисте")
+        if payload.shuffle and payload.start_track_id is not None:
+            raise HTTPException(422, detail="Выбери перемешивание или конкретный трек")
+        if payload.start_track_id is not None:
+            if payload.start_track_id not in ids:
+                raise HTTPException(409, detail="Трек больше не в плейлисте")
+            ids = ids[ids.index(payload.start_track_id):]
+        if not ids:
+            raise HTTPException(409, detail="Плейлист пуст")
+        if payload.shuffle:
+            random.shuffle(ids)
+        queue_id = db.create_queue(ids, info["name"], "playlist")
+        async with Bot(token=settings.token) as bot:
+            await deliver_queue(bot, db, settings.owner_id, queue_id, send_lock)
+        sent = db.queue_snapshot(queue_id)["cursor"]
+        if not sent:
+            raise HTTPException(502, detail="Telegram не смог отправить музыку")
+        return {"queue_id": queue_id, "sent": sent}
 
     @app.post("/api/playlists", dependencies=[auth], status_code=201)
     async def create_playlist(payload: PlaylistCreate):
