@@ -6,7 +6,6 @@ Existing v0.1 databases are upgraded additively with CREATE IF NOT EXISTS.
 from __future__ import annotations
 
 import sqlite3
-import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -410,7 +409,10 @@ class Library:
             return db.execute("SELECT id FROM playlists WHERE kind='liked'").fetchone()[0]
 
     def save_album(self, mbid: str, title: str, artist: str, track_count: int) -> bool:
-        mbid = str(uuid.UUID(mbid))
+        from music_bot.albums import valid_album_id
+        if not valid_album_id(mbid):
+            raise ValueError("Invalid album ID")
+        mbid = mbid.lower()
         title, artist = title.strip(), artist.strip()
         if not title or not artist or not 1 <= track_count <= 100:
             raise ValueError("Invalid album")
