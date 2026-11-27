@@ -26,6 +26,7 @@ from music_bot.telegram_fingerprint import install_fingerprint_handlers
 from music_bot.telegram_youtube import install_youtube_handlers, offer_discovery_audio, album_collection_page
 from music_bot.telegram_taste import install_taste_handlers
 from music_bot.telegram_history import install_history_handlers
+from music_bot.telegram_smart import install_smart_handlers
 from music_bot.selection import DYNAMIC_MODES, select_wave_batch
 from music_bot.wrapped import wrapped_summary
 from music_bot.profile_export import export_profile, profile_json_bytes
@@ -152,7 +153,7 @@ def home_keyboard(webapp_url: str | None = None) -> InlineKeyboardMarkup:
          button("▶ Продолжить", "nav:continue")],
         [button("⏭ Очередь", "nav:queue"), button("🔎 Поиск", "nav:search")],
     ]
-    rows.append([button("🕘 История", "hist:tracks:0")])
+    rows.append([button("🕘 История", "hist:tracks:0"), button("✨ Умные плейлисты", "smart:home")])
     if webapp_url:
         rows.insert(0, [
             InlineKeyboardButton(
@@ -216,7 +217,7 @@ PANEL_PREFIXES = ("🎵 LAIN ·", "📂 Мои плейлисты", "📂 ", "�
                   "🎵 Библиотека:", "Библиотека пуста", "⏭ Очередь",
                   "Очереди нет", "🧭 Пять реакций.", "🔎 Поиск", "💿 Мои альбомы",
                   "🎵 Трек ·", "🧭 Реакция ·", "⭐ Оценка ·", "📂 Добавить трек ·",
-                  "🧭 Список ·")
+                  "🧭 Список ·", "✨ Умные плейлисты")
 
 
 async def render_chat_panel(message: Message, text: str, markup: InlineKeyboardMarkup,
@@ -500,6 +501,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                         f"plopen:{p['id']}:0"),
                  button("▶", f"playlist:{p['id']}")] for p in playlists[:30]]
         rows.append([button("＋ Создать плейлист", "plnew")])
+        rows.append([button("✨ Умные плейлисты", "smart:home")])
         rows.append([button("💿 Альбомы", "nav:albums"), button("🧭 Реакции", "nav:verdicts")])
         rows.append([button("🏠 Меню", "nav:home")])
         await render_chat_panel(message, "📂 Мои плейлисты\nНажми название, чтобы открыть треки, или ▶ для запуска.",
@@ -1592,6 +1594,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         await deliver_queue(bot, db, chat_id, queue_id, send_lock)
 
     install_history_handlers(router, db, send_history_queue)
+    install_smart_handlers(router, db, send_history_queue, render_chat_panel)
 
     # Plain text music search is a fallback after all explicit command handlers.
     install_youtube_handlers(
