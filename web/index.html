@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
-  <title>music</title>
+  <title>LAIN · Музыка</title>
   <link rel="stylesheet" href="/assets/style.css">
   <script src="https://telegram.org/js/telegram-web-app.js?65"></script>
+  <script src="/assets/navigation.js" defer></script>
   <script src="/assets/app.js" defer></script>
   <script src="/assets/queue.js" defer></script>
   <script src="/assets/decisions.js" defer></script>
@@ -16,16 +17,15 @@
   <script src="/assets/screen.js" defer></script>
 </head>
 <body>
-  <header>
-    <div class="eyebrow">Личная медиатека</div>
-    <h1>music <span>♫</span></h1>
-    <p id="status">Проверяем подключение к Telegram…</p>
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">L</span><div><h1>LAIN</h1><p id="status" role="status">Подключение к Telegram…</p></div></div>
+    <button id="nav-settings" type="button" class="icon-button" data-route="more" aria-label="Другие разделы">⋯</button>
   </header>
   <main id="main">
-    <section class="hero">
-      <div class="hero-label">Твоя музыка, твой ритм</div>
-      <h2>🌊 Моя волна</h2>
-      <p>Оценки 1–10 влияют на рекомендации. Отметки пропусков и дослушиваний вводятся вручную: Telegram не передаёт их боту.</p>
+    <section class="hero" data-screen="home">
+      <div class="hero-label">ПЕРСОНАЛЬНОЕ РАДИО</div>
+      <h2>Моя волна</h2>
+      <p>Знакомые треки и новые находки в одном потоке.</p>
       <div class="actions">
         <button type="button" id="wave" class="primary">Слушать волну</button>
         <select id="wave-preset" aria-label="Состав Волны">
@@ -36,7 +36,17 @@
         <button type="button" id="discover">Открытия</button>
       </div>
     </section>
-    <section id="queue-section">
+    <section class="home-shortcuts" data-screen="home" aria-label="Быстрые действия">
+      <h2>Твоя коллекция</h2>
+      <div class="shortcut-grid">
+        <button data-route="library" type="button"><span class="shortcut-icon">♫</span><strong>Медиатека</strong><small>Песни и плейлисты</small></button>
+        <button data-route="albums" type="button"><span class="shortcut-icon">▣</span><strong>Альбомы</strong><small>Твоя коллекция</small></button>
+        <button data-route="search" type="button"><span class="shortcut-icon">⌕</span><strong>Открытия</strong><small>Новая музыка</small></button>
+        <button data-route="queue" type="button"><span class="shortcut-icon">≡</span><strong>Очередь</strong><small>Следующие песни</small></button>
+      </div>
+      <p class="playback-note">Аудио отправляется в чат с ботом и воспроизводится в плеере Telegram.</p>
+    </section>
+    <section id="queue-section" data-screen="queue">
       <div class="heading">
         <h2>⏭ Очередь</h2>
         <button id="queue-refresh" type="button">Обновить</button>
@@ -59,7 +69,7 @@
       </div>
       <div id="queue-items" class="list"></div>
     </section>
-    <section class="catalog-section" aria-labelledby="catalog-heading">
+    <section data-screen="search" class="catalog-section" aria-labelledby="catalog-heading">
       <div class="heading">
         <h2 id="catalog-heading">🔎 Новая музыка</h2>
         <div class="actions"><button type="button" id="personal-discover">✨ Для меня</button><button type="button" id="weekly-discover">📅 Неделя</button><button type="button" id="show-wishlist">📌 Отложено</button></div>
@@ -85,7 +95,7 @@
       <div id="catalog-results" class="list"></div>
       <div id="weekly-releases" class="list"></div>
     </section>
-    <section id="youtube-section" hidden>
+    <section id="youtube-section" data-screen="search" hidden>
       <div class="heading"><h2>▶ YouTube</h2><span>Дополнительно</span></div>
       <p class="catalog-hint">Поиск YouTube через yt-dlp. Скачивание включается только владельцем сервера и допускается для материалов, которые разрешено загрузить.</p>
       <form id="youtube-form" class="catalog-form">
@@ -96,7 +106,7 @@
       <div class="catalog-caption" id="youtube-status" role="status" aria-live="polite"></div>
       <div id="youtube-results" class="list"></div>
     </section>
-    <section id="wrapped-section">
+    <section id="wrapped-section" data-screen="more">
       <div class="heading">
         <h2>📊 Music Wrapped</h2>
         <div class="actions">
@@ -112,7 +122,7 @@
       <p class="catalog-hint">Это статистика отправок, оценок и ручных отметок. Telegram не сообщает фактические прослушивания.</p>
       <div id="wrapped-content" class="wrapped-grid"></div>
     </section>
-    <section id="anime-section">
+    <section id="anime-section" data-screen="more">
       <div class="heading"><h2>🎞 Аниме</h2><button type="button" id="anime-watchlist">Мой список</button></div>
       <p class="catalog-hint">Поиск AniList и прогресс просмотра. Пока это каталог — не видеоплеер.</p>
       <form id="anime-form" class="catalog-form">
@@ -123,7 +133,7 @@
       <div class="catalog-caption" id="anime-status" role="status" aria-live="polite"></div>
       <div id="anime-results" class="list"></div>
     </section>
-    <section id="screen-section" hidden>
+    <section id="screen-section" data-screen="more" hidden>
       <div class="heading"><h2>🎬 Фильмы и сериалы</h2><button type="button" id="screen-watchlist">Мой список</button></div>
       <p class="catalog-hint">Каталог TMDB. Можно вести просмотренное и серии; видеоплеер будет отдельным этапом.</p>
       <form id="screen-form" class="catalog-form">
@@ -134,7 +144,7 @@
       <div class="catalog-caption" id="screen-status" role="status" aria-live="polite"></div>
       <div id="screen-results" class="list"></div>
     </section>
-    <section id="sources-section" aria-labelledby="sources-heading">
+    <section id="sources-section" data-screen="more" aria-labelledby="sources-heading">
       <div class="heading"><h2 id="sources-heading">🎵 Мои музыкальные источники</h2>
         <button id="sources-refresh" type="button">Обновить списки</button></div>
       <p class="catalog-hint">Любимые песни Яндекс Музыки и YouTube Music учитываются при поиске новинок. Это ссылки и метаданные — не скачанное аудио.</p>
@@ -160,7 +170,7 @@
         <button id="source-next" type="button">Вперёд ▶</button>
       </div>
     </section>
-    <section id="decision-section" aria-labelledby="decision-heading">
+    <section id="decision-section" data-screen="library" aria-labelledby="decision-heading">
       <div class="heading">
         <h2 id="decision-heading">🧭 Пять реакций</h2>
         <button type="button" id="decisions-refresh">Обновить</button>
@@ -174,7 +184,7 @@
         <button type="button" id="decision-next">Вперёд ▶</button>
       </div>
     </section>
-    <section id="albums-section">
+    <section id="albums-section" data-screen="albums">
       <div class="heading"><h2>💿 Мои альбомы</h2><button id="albums-refresh" type="button">Обновить</button></div>
       <p class="catalog-hint">Общая коллекция с Telegram. Сохранение альбома не скачивает аудио.</p>
       <form id="albums-form" class="catalog-form">
@@ -189,11 +199,11 @@
         <button id="albums-next" type="button" hidden>Вперёд ▶</button>
       </div>
     </section>
-    <section>
+    <section data-screen="library" id="playlists-section">
       <div class="heading"><h2>Плейлисты</h2><button type="button" id="create">＋ Новый</button></div>
       <div id="playlists" class="list"></div>
     </section>
-    <section>
+    <section data-screen="library" id="library-section">
       <div class="heading"><h2>Моя библиотека</h2><span id="count"></span></div>
       <label class="search">
         <span>🔍</span>
@@ -202,6 +212,13 @@
       <div id="tracks" class="list"></div>
     </section>
   </main>
+  <nav class="bottom-nav" id="bottom-nav" aria-label="Основная навигация" hidden>
+    <button type="button" data-route="home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-7H9v7H3z"/></svg><span>Главная</span></button>
+    <button type="button" data-route="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><span>Поиск</span></button>
+    <button type="button" data-route="library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16M9 4v16M14 4l5 16"/></svg><span>Коллекция</span></button>
+    <button type="button" data-route="albums"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2"/></svg><span>Альбомы</span></button>
+    <button type="button" data-route="queue"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 10h16M4 15h9m3 1 5 3-5 3z"/></svg><span>Очередь</span></button>
+  </nav>
   <div id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>

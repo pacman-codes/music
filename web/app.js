@@ -111,7 +111,8 @@ function renderTracks(items) {
           "AcoustID: "+result.results.length+" кандидатов."+dup+
           " Подтверди правильную версию вручную.");
         renderExternalCatalog(result.results,false,t.id);
-        byId("catalog-heading").scrollIntoView({behavior:"smooth"});
+        window.navigateMusicScreen?.("search", {scroll:false});
+      byId("catalog-heading").scrollIntoView({behavior:"smooth"});
       },"secondary-action"));
     }
     if (t.recording) {
@@ -198,6 +199,7 @@ function renderTracks(items) {
       show("catalog-status", "По «" + t.title + "»: " +
         result.results.length + " новых записей, пока без аудиофайлов");
       renderExternalCatalog(result.results);
+      window.navigateMusicScreen?.("search", {scroll:false});
       byId("catalog-heading").scrollIntoView({behavior:"smooth"});
     }, "secondary-action"));
     actions.append(action(t.recording ? "🔗 Связано" : "🔍 Найти запись", async () => {
@@ -217,6 +219,7 @@ function renderTracks(items) {
       renderExternalCatalog(found.results, false, t.id);
       show("catalog-status", "Выбери точное совпадение для трека #" + t.id +
         ". Названия могут совпадать у разных версий.");
+      window.navigateMusicScreen?.("search", {scroll:false});
       byId("catalog-heading").scrollIntoView({behavior:"smooth"});
     }, "secondary-action"));
     actions.append(action("＋ Плейлист", async () => {
@@ -316,7 +319,8 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
         show("youtube-status", "Для «" + item.title + "»: " +
           result.suggestions.length + " вариантов. Совпадение не гарантировано.");
         renderYouTubeResults(result.suggestions);
-        byId("youtube-section").scrollIntoView({behavior:"smooth"});
+        window.navigateMusicScreen?.("search", {scroll:false});
+      byId("youtube-section").scrollIntoView({behavior:"smooth"});
       }, "secondary-action"));
     }
     if (!item.local_track_id && directImportEnabled) {
@@ -603,6 +607,7 @@ if (tg && initData) {
         host.append(element("div","empty","Новые релизы пока не найдены"));
       }
       renderExternalCatalog(payload.tracks);
+      window.navigateMusicScreen?.("search", {scroll:false});
       byId("catalog-heading").scrollIntoView({behavior:"smooth"});
       if(payload.warnings.length) toast("Часть музыкальных источников недоступна");
     }catch(error){toast(error.message);}
@@ -726,7 +731,8 @@ async function findAlbumTrack(album, index) {
   show("youtube-status", "Для «" + album.tracks[index].title + "»: " +
     result.suggestions.length + " вариантов. Проверь совпадение.");
   renderYouTubeResults(result.suggestions);
-  byId("youtube-section").scrollIntoView({behavior:"smooth"});
+  window.navigateMusicScreen?.("search", {scroll:false});
+      byId("youtube-section").scrollIntoView({behavior:"smooth"});
 }
 async function findAlbumBatch(album, panel, start=0) {
   const request = albumRequest;
