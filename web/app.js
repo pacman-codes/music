@@ -721,6 +721,14 @@ async function searchAlbums(query) {
   renderAlbumList(data.results, false);
   show("albums-status", "Найдено: " + data.results.length);
 }
+async function findAlbumTrack(album, index) {
+  show("youtube-status", "Ищу подходящую запись…");
+  const result = await api(albumPath(album.mbid) + "/tracks/" + index + "/youtube-suggestions");
+  show("youtube-status", "Для «" + album.tracks[index].title + "»: " +
+    result.suggestions.length + " вариантов. Проверь совпадение.");
+  renderYouTubeResults(result.suggestions);
+  byId("youtube-section").scrollIntoView({behavior:"smooth"});
+}
 async function openAlbum(id) {
   const request = ++albumRequest;
   albumView = "detail";
@@ -731,7 +739,8 @@ async function openAlbum(id) {
   const host = byId("albums-results");
   host.replaceChildren();
   const header = element("div", "item track-card");
-  header.append(albumHeading(album, true));
+  header.append(albumHeading(album, true), element("div", "catalog-caption",
+    "Готово к прослушиванию: " + album.available_count + "/" + album.track_count));
   const controls = element("div", "actions");
   controls.append(action("← Мои альбомы", () => refreshAlbums()));
   controls.append(action(album.saved ? "Удалить" : "＋ Добавить альбом", async () => {
@@ -739,13 +748,19 @@ async function openAlbum(id) {
     else await post(albumPath(id));
     await openAlbum(id);
   }));
-  if (album.playable) {
-    controls.append(action("▶ Слушать альбом", async () => {
-      const result = await post(albumPath(id) + "/play");
+  if (album.queue_count > 0) {
+    const partial = !album.playable;
+    controls.append(action(partial ? "▶ Слушать доступные (" + album.queue_count + ")" : "▶ Слушать альбом", async () => {
+      const result = await post(albumPath(id) + "/play" + (partial ? "?partial=true" : ""));
       toast("Отправлено в Telegram: " + result.sent);
       await refreshQueue();
     }));
   }
+  const next = album.tracks.findIndex(track => track.local_track_id == null);
+  if (next >= 0 && youtubeSearchEnabled) {
+    controls.append(action("🔎 Найти следующий", () => findAlbumTrack(album, next)));
+  }
+  controls.append(action("↻ Обновить альбом", () => openAlbum(id)));
   header.append(controls);
   host.append(header);
   album.tracks.forEach((track, i) => {
@@ -760,7 +775,8 @@ async function openAlbum(id) {
         toast("Отправлено в Telegram");
       }));
     } else {
-      row.append(element("span", "catalog-unavailable", "Нет аудио"));
+      if (youtubeSearchEnabled) row.append(action("🔎 Найти", () => findAlbumTrack(album, i)));
+      else row.append(element("span", "catalog-unavailable", "Нет аудио"));
     }
     host.append(row);
   });

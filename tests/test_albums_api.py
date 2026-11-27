@@ -78,6 +78,19 @@ def test_album_api_shares_collection_and_does_not_fake_audio(tmp_path):
         assert all(x["local_track_id"] is None for x in row["tracks"])
         assert "file_id" not in detail.text
         assert client.post(path + "/play", headers=hdr).status_code == 409
+        assert client.post(path + "/play?partial=true", headers=hdr).status_code == 409
+        assert row["available_count"] == 0 and row["queue_count"] == 0
+        from music_bot.catalog import CatalogTrack
+        lib.remember_candidates([CatalogTrack(FIRST, "First", "Artist")])
+        first = lib.add_track("file-first", "uid-first", "First", "Artist")
+        lib.confirm_recording_match(first.id, FIRST)
+        row = client.get(path, headers=hdr).json()
+        assert row["available_count"] == 1 and row["queue_count"] == 1
+        assert row["tracks"][0]["local_track_id"] == first.id
+        assert not row["playable"]
+        assert client.post(path + "/play", headers=hdr).status_code == 409
+        assert client.get(path + "/tracks/1/youtube-suggestions").status_code == 401
+
         assert client.delete(path, headers=hdr).json()["removed"]
         assert lib.get_saved_album(RELEASE) is None
         lib.save_album(RELEASE, "Album", "Artist", 2)

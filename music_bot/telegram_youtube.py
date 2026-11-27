@@ -312,19 +312,25 @@ async def edit_album_message(message: Message, text: str, markup: InlineKeyboard
             await message.answer(text, reply_markup=markup)
 
 
-def saved_album_ids(db: Library, tracks):
-    if any(not valid_mbid(track.mbid) for track in tracks):
-        return []
+def album_track_ids(db: Library, tracks) -> list[int | None]:
+    """One position per album track; never use unconfirmed title matches."""
     resolved = db.resolved_catalog_tracks()
     ids = []
     for track in tracks:
-        ident = resolved.get(track.mbid)
-        if ident is None or db.get_track(ident) is None:
-            # An album edition is not proof that a title-only match is the same
-            # recording; only confirmed MBID-linked audio is used for the queue.
-            return []
-        ids.append(ident)
-    return ids if len(set(ids)) == len(ids) else []
+        ident = resolved.get(track.mbid) if valid_mbid(track.mbid) else None
+        ids.append(ident if ident is not None and db.get_track(ident) is not None else None)
+    return ids
+
+
+def available_album_ids(db: Library, tracks) -> list[int]:
+    return list(dict.fromkeys(ident for ident in album_track_ids(db, tracks) if ident is not None))
+
+
+def saved_album_ids(db: Library, tracks):
+    ids = album_track_ids(db, tracks)
+    if any(ident is None for ident in ids) or len(set(ids)) != len(ids):
+        return []
+    return ids
 
 
 def album_page(db: Library, mbid: str, title: str, artist: str, tracks, page: int):
@@ -336,9 +342,11 @@ def album_page(db: Library, mbid: str, title: str, artist: str, tracks, page: in
     if valid_itunes_id(mbid):
         lines.append("Источник: iTunes (резервный каталог)")
     rows = []
-    resolved = db.resolved_catalog_tracks()
+    linked = album_track_ids(db, tracks)
+    available = sum(ident is not None for ident in linked)
+    lines.append(f"Готово к прослушиванию: {available}/{len(tracks)}")
     for i, track in enumerate(tracks[page*size:(page+1)*size], page*size+1):
-        local = resolved.get(track.mbid)
+        local = linked[i-1]
         lines.append(f"{i}. {track.title[:140]}" + (" ✓" if local else ""))
         rows.append([InlineKeyboardButton(
             text=f"{'▶' if local else '🔎'} {i}. {track.title[:35]}",
@@ -356,6 +364,15 @@ def album_page(db: Library, mbid: str, title: str, artist: str, tracks, page: in
     if saved_album_ids(db, tracks):
         rows.append([InlineKeyboardButton(text="▶ Слушать весь сохранённый альбом",
                                           callback_data=f"albumplay:{mbid}")])
+    elif available:
+        rows.append([InlineKeyboardButton(text=f"▶ Слушать доступные ({len(set(x for x in linked if x is not None))})",
+                                          callback_data=f"albumready:{mbid}")])
+    if available < len(tracks):
+        first = linked.index(None)
+        track = tracks[first]
+        rows.append([InlineKeyboardButton(text=f"🔎 Найти следующий: {track.title[:32]}",
+                                          callback_data=f"albumnext:{mbid}")])
+    rows.append([InlineKeyboardButton(text="↻ Обновить альбом", callback_data=f"album:{mbid}:{page}")])
     saved = db.get_saved_album(mbid) is not None
     rows.append([InlineKeyboardButton(
         text="✓ В коллекции · Удалить" if saved else "➕ Добавить альбом",
@@ -552,10 +569,36 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
             if isinstance(callback.message, Message):
                 await show_recording_sources(callback.message, mbid)
 
-        @router.callback_query(F.data.startswith("albumplay:"))
+        @router.callback_query(F.data.startswith("albumnext:"))
+        async def next_album_track(callback: CallbackQuery):
+            mbid = (callback.data or "").partition(":")[2]
+            if not valid_album_id(mbid):
+                await callback.answer("Неверный альбом", show_alert=True)
+                return
+            await callback.answer()
+            if not isinstance(callback.message, Message):
+                return
+            try:
+                _, _, tracks = await album_tracks(catalog, mbid)
+                linked = album_track_ids(db, tracks)
+                if None not in linked:
+                    await callback.message.answer("Все записи уже доступны.")
+                    return
+                track = tracks[linked.index(None)]
+                if valid_mbid(track.mbid):
+                    db.remember_candidates([track])
+                    await show_recording_sources(callback.message, track.mbid)
+                else:
+                    await show_recording_sources(callback.message, track.mbid, store_recording={
+                        "title": track.title, "artist": track.artist, "duration_ms": track.duration_ms,
+                    })
+            except (CatalogError, ValueError):
+                await callback.message.answer("Не удалось найти следующую запись.")
+
+        @router.callback_query(F.data.startswith("albumplay:") | F.data.startswith("albumready:"))
         async def play_saved_album(callback: CallbackQuery, bot: Bot):
             mbid = (callback.data or "").partition(":")[2]
-            if not valid_mbid(mbid) or play_album is None:
+            if not valid_album_id(mbid) or play_album is None:
                 await callback.answer("Альбом недоступен", show_alert=True)
                 return
             await callback.answer()
@@ -563,11 +606,13 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
                 return
             try:
                 title, artist, tracks = await album_tracks(catalog, mbid)
-                ids = saved_album_ids(db, tracks)
+                partial = (callback.data or "").startswith("albumready:")
+                ids = available_album_ids(db, tracks) if partial else saved_album_ids(db, tracks)
                 if not ids:
-                    await callback.message.answer("Не все записи этого издания сохранены.")
+                    await callback.message.answer("Нет доступной очереди из подтверждённых записей.")
                     return
-                await play_album(bot, callback.message.chat.id, ids, f"{artist} — {title}")
+                label = f"{artist} — {title}" + (" (доступные)" if partial else "")
+                await play_album(bot, callback.message.chat.id, ids, label)
             except (CatalogError, ValueError, TelegramAPIError):
                 await callback.message.answer("Не удалось отправить альбом.")
 
