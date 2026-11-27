@@ -441,8 +441,7 @@ async function showExternalWishlist() {
 }
 
 
-function renderYouTubeResults(videos) {
-  const host = byId("youtube-results");
+function renderYouTubeResults(videos, host = byId("youtube-results")) {
   host.replaceChildren();
   if (!videos.length) {
     host.append(element("div", "empty", "Результатов нет или YouTube ограничил поиск."));
@@ -506,7 +505,7 @@ function renderYouTubeResults(videos) {
           }
           renderExternalCatalog(rows, fromWishlist, matchingTrackId);
         }
-        renderYouTubeResults(videos);
+        renderYouTubeResults(videos, host);
       }, "secondary-action"));
     } else {
       buttons.append(element("span","catalog-unavailable",
@@ -729,6 +728,39 @@ async function findAlbumTrack(album, index) {
   renderYouTubeResults(result.suggestions);
   byId("youtube-section").scrollIntoView({behavior:"smooth"});
 }
+async function findAlbumBatch(album, panel, start=0) {
+  const request = albumRequest;
+  if (!start) panel.replaceChildren();
+  const status = element("div", "catalog-caption", "Подбираю до трёх записей…");
+  panel.append(status);
+  let result;
+  try {
+    result = await post(albumPath(album.mbid) + "/missing-suggestions?start=" + start);
+  } catch (error) {
+    status.textContent = "Не удалось подобрать источники: " + error.message;
+    return;
+  }
+  if (request !== albumRequest) return;
+  status.textContent = result.results.length ? "Проверь версии и выбери разрешённые источники." : "Недостающих записей нет.";
+  for (const entry of result.results) {
+    const group = element("div", "item track-card");
+    group.append(element("div", "name", (entry.position+1) + ". " + entry.title),
+      element("div", "sub", entry.artist));
+    const candidates = element("div", "list");
+    group.append(candidates);
+    if (entry.suggestions.length) renderYouTubeResults(entry.suggestions, candidates);
+    else candidates.append(element("div", "catalog-caption", entry.error ? "Поиск недоступен" : "Подходящих вариантов нет"));
+    panel.append(group);
+  }
+  if (result.next_position != null) {
+    const next = action("Следующая порция (" + result.remaining + " осталось)", async () => {
+      next.remove();
+      await findAlbumBatch(album, panel, result.next_position);
+    });
+    panel.append(next);
+  }
+  panel.append(action("↻ Обновить готовность альбома", () => openAlbum(album.mbid)));
+}
 async function openAlbum(id) {
   const request = ++albumRequest;
   albumView = "detail";
@@ -756,13 +788,15 @@ async function openAlbum(id) {
       await refreshQueue();
     }));
   }
+  const batchPanel = element("div", "list");
   const next = album.tracks.findIndex(track => track.local_track_id == null);
   if (next >= 0 && youtubeSearchEnabled) {
     controls.append(action("🔎 Найти следующий", () => findAlbumTrack(album, next)));
+    controls.append(action("🔎 Подобрать недостающие (по 3)", () => findAlbumBatch(album, batchPanel)));
   }
   controls.append(action("↻ Обновить альбом", () => openAlbum(id)));
   header.append(controls);
-  host.append(header);
+  host.append(header, batchPanel);
   album.tracks.forEach((track, i) => {
     const row = element("div", "item");
     const info = element("div", "info");

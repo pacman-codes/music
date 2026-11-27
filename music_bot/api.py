@@ -20,7 +20,7 @@ from music_bot.albums import (
     find_albums, album_tracks, valid_album_id, valid_itunes_id,
     album_cover_urls, cached_album_group,
 )
-from music_bot.telegram_youtube import saved_album_ids, available_album_ids, album_track_ids
+from music_bot.telegram_youtube import saved_album_ids, available_album_ids, album_track_ids, album_missing_suggestions
 from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normalize, normalized_identity, valid_mbid
 from music_bot.config import Settings, load_settings
 from music_bot.importer import AudioIngestService, MediaImportError
@@ -898,11 +898,23 @@ def create_app(config: Settings | None = None,
             raise HTTPException(502, detail="Telegram не смог отправить альбом")
         return {"queue_id": queue_id, "sent": min(10, len(ids))}
 
+    @app.post("/api/albums/{release_id}/missing-suggestions", dependencies=[auth])
+    async def missing_album_suggestions(release_id: str, start: int = Query(0, ge=0, le=100)):
+        if not settings.youtube_search_enabled:
+            raise HTTPException(409, detail="YouTube-поиск отключён")
+        _, _, _, rows = await load_album(release_id)
+        try:
+            return await album_missing_suggestions(db, yt_source, rows, start)
+        except ValueError as exc:
+            raise HTTPException(422, detail="Неверная позиция") from exc
+        except YouTubeError as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+
     @app.get("/api/albums/{release_id}/tracks/{position}/youtube-suggestions", dependencies=[auth])
     async def album_track_suggestions(release_id: str, position: int):
         if not settings.youtube_search_enabled:
             raise HTTPException(409, detail="YouTube-поиск отключён")
-        _, _, rows = await load_album(release_id)
+        _, _, _, rows = await load_album(release_id)
         if not 0 <= position < len(rows):
             raise HTTPException(404, detail="Трек альбома не найден")
         track = rows[position]
