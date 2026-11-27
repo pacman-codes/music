@@ -201,3 +201,89 @@ def test_album_search_handles_multiword_artist_and_reversed_order():
             return {"releases": [release]}
     for query in ("Massive Attack Mezzanine", "Mezzanine Massive Attack"):
         assert len(asyncio.run(find_albums(Catalog(), query, exact=False))) == 1
+
+
+def test_exact_album_opens_directly_without_youtube(tmp_path):
+    import asyncio
+    import uuid
+    from types import SimpleNamespace
+    from music_bot.telegram_youtube import plain_music_search
+    db = Library(tmp_path / "music.db")
+    mbid = str(uuid.UUID(int=100))
+    credit = [{"name": "Skrillex"}]
+    release = {"id": mbid, "title": "SOMA", "artist-credit": credit,
+               "release-group": {"id": mbid, "primary-type": "Album"},
+               "track-count": 13, "status": "Official"}
+
+    class Catalog:
+        async def _json(self, provider, path, params, **kwargs):
+            if path == "/ws/2/release/":
+                return {"releases": [release]}
+            assert path == "/ws/2/release/" + mbid
+            return {**release, "media": [{"tracks": [
+                {"title": f"Track {i}", "recording": {"id": str(uuid.UUID(int=i))}}
+                for i in range(1, 14)
+            ]}]}
+
+    class Source:
+        async def search(self, *args, **kwargs):
+            raise AssertionError("Exact album must not query YouTube")
+
+    for query in ("Skrillex SOMA", "Skrillex альбом SOMA"):
+        answers = []
+        async def answer(text, **kwargs):
+            answers.append((text, kwargs))
+        msg = SimpleNamespace(text=query, chat=SimpleNamespace(id=42), answer=answer)
+        asyncio.run(plain_music_search(msg, None, db, Source(),
+                                       search_enabled=True, download_enabled=True,
+                                       catalog=Catalog()))
+        assert len(answers) == 1
+        text, kwargs = answers[0]
+        assert "Skrillex — SOMA" in text and "13. Track 13" in text
+        callbacks = {b.callback_data for row in kwargs["reply_markup"].inline_keyboard for b in row}
+        assert f"albtrack:{str(uuid.UUID(int=13))}" in callbacks
+        assert f"album:{mbid}:1" not in callbacks
+        assert f"albumplay:{mbid}" not in callbacks
+    assert not db.all_tracks()
+
+
+def test_album_page_preserves_order_on_long_releases(tmp_path):
+    import uuid
+    from music_bot.catalog import CatalogTrack
+    from music_bot.telegram_youtube import album_page
+    db = Library(tmp_path / "music.db")
+    mbid = str(uuid.UUID(int=100))
+    tracks = [CatalogTrack(str(uuid.UUID(int=i)), f"Track {i}", "Artist")
+              for i in range(1, 18)]
+    first, first_markup = album_page(db, mbid, "Album", "Artist", tracks, 0)
+    second, second_markup = album_page(db, mbid, "Album", "Artist", tracks, 1)
+    assert "15. Track 15" in first and "16. Track 16" not in first
+    assert "16. Track 16" in second and "17. Track 17" in second
+    assert f"album:{mbid}:1" in {b.callback_data for row in first_markup.inline_keyboard for b in row}
+    assert f"album:{mbid}:0" in {b.callback_data for row in second_markup.inline_keyboard for b in row}
+
+
+def test_album_catalog_outage_still_allows_song_search(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from music_bot.catalog import CatalogError
+    from music_bot.telegram_youtube import plain_music_search
+    db = Library(tmp_path / "music.db")
+
+    class Catalog:
+        async def _json(self, *args, **kwargs):
+            raise CatalogError("offline")
+
+    class Source:
+        async def search(self, query, *, limit):
+            return [VideoCandidate(ID, "Artist Song", "Artist", 100)]
+
+    answers = []
+    async def answer(text, **kwargs):
+        answers.append((text, kwargs))
+    msg = SimpleNamespace(text="Artist Song", chat=SimpleNamespace(id=42), answer=answer)
+    asyncio.run(plain_music_search(msg, None, db, Source(),
+                                   search_enabled=True, download_enabled=True,
+                                   catalog=Catalog()))
+    assert "Artist Song" in answers[0][0]
+    assert db.get_youtube_video(ID)
