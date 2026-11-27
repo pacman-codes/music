@@ -45,6 +45,11 @@ from music_bot.youtube import (
 )
 
 
+class AlbumAudioLinkRequest(BaseModel):
+    recording_id: str = Field(min_length=4, max_length=36)
+    track_id: int = Field(gt=0)
+
+
 class DirectImportRequest(BaseModel):
     url: str = Field(min_length=12, max_length=2048)
 
@@ -862,9 +867,11 @@ def create_app(config: Settings | None = None,
     async def album_detail(release_id: str):
         ident, title, artist, rows = await load_album(release_id)
         linked = album_track_ids(db, rows)
+        manual = db.album_audio_links()
         tracks = []
         for row, local in zip(rows, linked):
             tracks.append({"title": row.title, "artist": row.artist,
+                           "recording_id": row.mbid, "album_linked": row.mbid in manual,
                            "duration_ms": row.duration_ms, "local_track_id": local})
         return {"mbid": ident, "title": title, "artist": artist,
                 "provider": "itunes" if valid_itunes_id(ident) else "musicbrainz",
@@ -897,6 +904,37 @@ def create_app(config: Settings | None = None,
         if db.peek_queue(queue_id).cursor == 0:
             raise HTTPException(502, detail="Telegram не смог отправить альбом")
         return {"queue_id": queue_id, "sent": min(10, len(ids))}
+
+    async def album_recording_at(release_id: str, position: int, expected: str):
+        _, _, _, rows = await load_album(release_id)
+        if not 0 <= position < len(rows):
+            raise HTTPException(404, detail="Трек альбома не найден")
+        track = rows[position]
+        if track.mbid != expected:
+            raise HTTPException(409, detail="Трек-лист изменился. Обнови альбом.")
+        return track
+
+    @app.post("/api/albums/{release_id}/tracks/{position}/library-link", dependencies=[auth])
+    async def link_album_audio(release_id: str, position: int, payload: AlbumAudioLinkRequest):
+        track = await album_recording_at(release_id, position, payload.recording_id)
+        if db.get_track(payload.track_id) is None:
+            raise HTTPException(404, detail="Аудио не найдено в медиатеке")
+        current = album_track_ids(db, [track])[0]
+        if current is not None and current != payload.track_id:
+            raise HTTPException(409, detail="Запись уже связана с другим аудио")
+        if current == payload.track_id:
+            return {"changed": False, "local_track_id": current}
+        try:
+            changed = db.confirm_album_audio(track.mbid, payload.track_id)
+        except ValueError as exc:
+            raise HTTPException(409, detail="Не удалось связать аудио. Обнови альбом.") from exc
+        return {"changed": changed, "local_track_id": payload.track_id}
+
+    @app.delete("/api/albums/{release_id}/tracks/{position}/library-link", dependencies=[auth])
+    async def unlink_album_audio(release_id: str, position: int,
+                                 recording_id: str = Query(min_length=4, max_length=36)):
+        track = await album_recording_at(release_id, position, recording_id)
+        return {"removed": db.unlink_album_audio(track.mbid)}
 
     @app.post("/api/albums/{release_id}/missing-suggestions", dependencies=[auth])
     async def missing_album_suggestions(release_id: str, start: int = Query(0, ge=0, le=100)):
