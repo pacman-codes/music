@@ -635,6 +635,11 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                 [button(LABELS[status], f"vset:{kind}:{ident}:{status}")]
                 for status in STATUSES
             ]
+            if kind == "l":
+                rows.append([button("＋ В плейлист", f"chooseadd:{ident}"),
+                             button("⏭ Следующим", f"enqueue:next:{ident}")])
+                rows.append([button("＋ В конец очереди", f"enqueue:append:{ident}"),
+                             button("⭐ Оценка 1–10", f"rateopen:{ident}")])
             await message.answer(
                 f"🧭 {item['artist']} — {item['title']}\nКак поступить?",
                 reply_markup=keyboard(rows),
