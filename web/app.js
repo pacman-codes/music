@@ -630,3 +630,129 @@ if (tg && initData) {
   show("status","Открой это приложение через кнопку бота в Telegram.");
   byId("main").hidden = true;
 }
+
+
+// Shared album collection. Only confirmed Telegram files are playable here.
+let albumOffset = 0;
+let albumView = "saved";
+let albumRequest = 0;
+function albumPath(id) { return "/api/albums/" + encodeURIComponent(id); }
+function albumPaging(previous, next) {
+  byId("albums-prev").hidden = !previous;
+  byId("albums-next").hidden = !next;
+}
+function renderAlbumList(rows, savedList) {
+  const host = byId("albums-results");
+  host.replaceChildren();
+  if (!rows.length) host.append(element("div", "empty",
+    savedList ? "Коллекция пока пуста" : "Альбомы не найдены"));
+  for (const album of rows) {
+    const card = element("div", "item track-card");
+    card.append(element("div", "name", "💿 " + album.title),
+      element("div", "sub", album.artist + " · " + album.track_count + " треков"));
+    const controls = element("div", "actions");
+    controls.append(action("Открыть", () => openAlbum(album.mbid)));
+    controls.append(action(savedList || album.saved ? "Удалить" : "＋ Добавить альбом", async () => {
+      if (savedList || album.saved) {
+        await api(albumPath(album.mbid), {method:"DELETE"});
+      } else {
+        await post(albumPath(album.mbid));
+      }
+      await refreshAlbums();
+    }));
+    card.append(controls);
+    host.append(card);
+  }
+}
+async function refreshAlbums(offset=0) {
+  const request = ++albumRequest;
+  albumView = "saved";
+  albumPaging(false, false);
+  show("albums-status", "Загружаю коллекцию…");
+  const data = await api("/api/albums?offset=" + offset);
+  if (request !== albumRequest) return;
+  if (!data.results.length && offset > 0) return refreshAlbums(0);
+  albumOffset = offset;
+  renderAlbumList(data.results, true);
+  albumPaging(offset > 0, data.has_more);
+  show("albums-status", "Сохранённые альбомы");
+}
+async function searchAlbums(query) {
+  const request = ++albumRequest;
+  albumView = "search";
+  albumPaging(false, false);
+  show("albums-status", "Ищу альбомы…");
+  const data = await api("/api/albums/search?q=" + encodeURIComponent(query));
+  if (request !== albumRequest) return;
+  renderAlbumList(data.results, false);
+  show("albums-status", "Найдено: " + data.results.length);
+}
+async function openAlbum(id) {
+  const request = ++albumRequest;
+  albumView = "detail";
+  albumPaging(false, false);
+  show("albums-status", "Открываю альбом…");
+  const album = await api(albumPath(id));
+  if (request !== albumRequest) return;
+  const host = byId("albums-results");
+  host.replaceChildren();
+  const header = element("div", "item track-card");
+  header.append(element("div", "name", "💿 " + album.title),
+    element("div", "sub", album.artist + " · " + album.track_count + " треков · " +
+      (album.provider === "itunes" ? "iTunes" : "MusicBrainz")));
+  const controls = element("div", "actions");
+  controls.append(action("← Мои альбомы", () => refreshAlbums()));
+  controls.append(action(album.saved ? "Удалить" : "＋ Добавить альбом", async () => {
+    if (album.saved) await api(albumPath(id), {method:"DELETE"});
+    else await post(albumPath(id));
+    await openAlbum(id);
+  }));
+  if (album.playable) {
+    controls.append(action("▶ Слушать альбом", async () => {
+      const result = await post(albumPath(id) + "/play");
+      toast("Отправлено в Telegram: " + result.sent);
+      await refreshQueue();
+    }));
+  }
+  header.append(controls);
+  host.append(header);
+  album.tracks.forEach((track, i) => {
+    const row = element("div", "item");
+    const info = element("div", "info");
+    info.append(element("div", "name", (i+1) + ". " + track.title),
+      element("div", "sub", track.artist));
+    row.append(info);
+    if (track.local_track_id != null) {
+      row.append(action("▶", async () => {
+        await post("/api/tracks/" + track.local_track_id + "/play");
+        toast("Отправлено в Telegram");
+      }));
+    } else {
+      row.append(element("span", "catalog-unavailable", "Нет аудио"));
+    }
+    host.append(row);
+  });
+  show("albums-status", album.saved ? "В коллекции" : "Не сохранён");
+}
+if (tg && initData) {
+  const albumError = error => {
+    show("albums-status", "Не удалось загрузить альбомы");
+    toast(error.message);
+  };
+  byId("albums-form").addEventListener("submit", event => {
+    event.preventDefault();
+    const q = byId("albums-query").value.trim();
+    if (q.length >= 2) searchAlbums(q).catch(albumError);
+  });
+  byId("albums-refresh").addEventListener("click", () => refreshAlbums().catch(albumError));
+  byId("albums-prev").addEventListener("click", () => {
+    if (albumView === "saved") refreshAlbums(Math.max(0, albumOffset-20)).catch(albumError);
+  });
+  byId("albums-next").addEventListener("click", () => {
+    if (albumView === "saved") refreshAlbums(albumOffset+20).catch(albumError);
+  });
+  refreshAlbums().catch(albumError);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && albumView === "saved") refreshAlbums(albumOffset).catch(albumError);
+  });
+}

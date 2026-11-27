@@ -16,6 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from music_bot.anime import AniListCatalog, AniListError
+from music_bot.albums import find_albums, album_tracks, valid_album_id, valid_itunes_id
+from music_bot.telegram_youtube import saved_album_ids
 from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normalize, normalized_identity, valid_mbid
 from music_bot.config import Settings, load_settings
 from music_bot.importer import AudioIngestService, MediaImportError
@@ -819,6 +821,74 @@ def create_app(config: Settings | None = None,
         if db.peek_queue(queue_id).cursor == 0:
             raise HTTPException(502, detail="Telegram media delivery failed")
         return {"queue_id": queue_id, "sent": min(10, len(playable_ids))}
+
+    def album_id(value: str) -> str:
+        if not valid_album_id(value):
+            raise HTTPException(422, detail="Некорректный идентификатор альбома")
+        return value.lower()
+
+    async def load_album(value: str):
+        ident = album_id(value)
+        try:
+            title, artist, rows = await album_tracks(catalog_client, ident)
+        except (CatalogError, ValueError) as exc:
+            raise HTTPException(502, detail="Не удалось получить трек-лист альбома") from exc
+        return ident, title, artist, rows
+
+    @app.get("/api/albums", dependencies=[auth])
+    async def saved_album_list(offset: int = Query(0, ge=0, le=100000)):
+        rows = db.saved_albums(offset=offset, limit=21)
+        return {"results": rows[:20], "has_more": len(rows) > 20}
+
+    @app.get("/api/albums/search", dependencies=[auth])
+    async def search_album(q: str = Query(min_length=2, max_length=90)):
+        try:
+            rows = await find_albums(catalog_client, q, exact=False)
+        except ValueError as exc:
+            raise HTTPException(422, detail="Некорректный запрос") from exc
+        except CatalogError as exc:
+            raise HTTPException(502, detail="Каталоги альбомов недоступны") from exc
+        return {"results": [{**asdict(row), "saved": db.get_saved_album(row.mbid) is not None}
+                            for row in rows]}
+
+    @app.get("/api/albums/{release_id}", dependencies=[auth])
+    async def album_detail(release_id: str):
+        ident, title, artist, rows = await load_album(release_id)
+        resolved = db.resolved_catalog_tracks()
+        tracks = []
+        for row in rows:
+            local = resolved.get(row.mbid) if valid_mbid(row.mbid) else None
+            if local is not None and db.get_track(local) is None:
+                local = None
+            tracks.append({"title": row.title, "artist": row.artist,
+                           "duration_ms": row.duration_ms, "local_track_id": local})
+        return {"mbid": ident, "title": title, "artist": artist,
+                "provider": "itunes" if valid_itunes_id(ident) else "musicbrainz",
+                "saved": db.get_saved_album(ident) is not None,
+                "track_count": len(rows), "tracks": tracks,
+                "playable": bool(saved_album_ids(db, rows))}
+
+    @app.post("/api/albums/{release_id}", dependencies=[auth])
+    async def add_album(release_id: str):
+        ident, title, artist, rows = await load_album(release_id)
+        return {"changed": db.save_album(ident, title, artist, len(rows)), "saved": True}
+
+    @app.delete("/api/albums/{release_id}", dependencies=[auth])
+    async def delete_album(release_id: str):
+        return {"removed": db.remove_saved_album(album_id(release_id))}
+
+    @app.post("/api/albums/{release_id}/play", dependencies=[auth])
+    async def play_album(release_id: str):
+        ident, title, artist, rows = await load_album(release_id)
+        ids = saved_album_ids(db, rows)
+        if not ids:
+            raise HTTPException(409, detail="Не все треки альбома сохранены как подтверждённое аудио")
+        queue_id = db.create_queue(ids, f"{artist} — {title}", "playlist")
+        async with Bot(token=settings.token) as bot:
+            await deliver_queue(bot, db, settings.owner_id, queue_id, send_lock)
+        if db.peek_queue(queue_id).cursor == 0:
+            raise HTTPException(502, detail="Telegram не смог отправить альбом")
+        return {"queue_id": queue_id, "sent": min(10, len(ids))}
 
     @app.get("/api/playlists", dependencies=[auth])
     async def playlists():
