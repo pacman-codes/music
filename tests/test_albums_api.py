@@ -118,3 +118,67 @@ def test_album_cover_urls_are_fixed_host_and_cached_group(tmp_path):
     ]
     assert album_cover_urls("https://example.com/evil") == []
     assert album_cover_urls("it-123") == []
+
+
+def test_missing_album_suggestions_owner_only_no_import(tmp_path):
+    from music_bot.youtube import VideoCandidate
+    from music_bot.catalog import CatalogTrack
+
+    class Source:
+        def __init__(self):
+            self.queries = []
+        async def search(self, query, *, limit):
+            self.queries.append(query)
+            return [VideoCandidate("abcdefghijk", "Artist Second", "Artist", 120)]
+
+    cfg = Settings(TOKEN, OWNER, tmp_path / "music.db", None, (), True, False)
+    db = Library(cfg.db_path)
+    db.remember_candidates([CatalogTrack(FIRST, "First", "Artist")])
+    track = db.add_track("first-file", "first-unique", "First", "Artist")
+    db.confirm_recording_match(track.id, FIRST)
+    worker = Source()
+    with TestClient(create_app(cfg, catalog=Catalog(), youtube_source=worker)) as client:
+        path = "/api/albums/" + RELEASE + "/missing-suggestions"
+        assert client.post(path).status_code == 401
+        assert client.post(path, headers=auth(999)).status_code == 401
+        assert client.post(path + "?start=3", headers=auth()).status_code == 422
+        result = client.post(path, headers=auth())
+        assert result.status_code == 200
+        data = result.json()
+        assert not data["auto_imported"]
+        assert data["next_position"] is None
+        assert len(data["results"]) == 1
+        entry = data["results"][0]
+        assert entry["position"] == 1
+        assert entry["suggestions"][0]["recording_mbid"] == SECOND
+        assert not entry["suggestions"][0]["match_confirmed"]
+        assert worker.queries == ["Artist Second"]
+        assert len(db.all_tracks()) == 1
+        assert db.get_youtube_video("abcdefghijk")["track_id"] is None
+
+
+def test_batch_pagination_and_errors_do_not_block_other_tracks(tmp_path):
+    import asyncio
+    import uuid
+    from music_bot.catalog import CatalogTrack
+    from music_bot.telegram_youtube import album_missing_suggestions
+    from music_bot.youtube import YouTubeError, VideoCandidate
+    db = Library(tmp_path / "music.db")
+    tracks = [CatalogTrack(str(uuid.UUID(int=i)), f"Song {i}", "Artist")
+              for i in range(1, 6)]
+
+    class Source:
+        async def search(self, query, *, limit):
+            if query.endswith("2"):
+                raise YouTubeError("temporary")
+            return [VideoCandidate("abcdefghijk", query, "Artist", 120)]
+
+    result = asyncio.run(album_missing_suggestions(db, Source(), tracks))
+    assert [r["position"] for r in result["results"]] == [0, 1, 2]
+    assert result["results"][1]["error"]
+    assert result["results"][2]["suggestions"]
+    assert result["next_position"] == 3 and result["remaining"] == 2
+    result = asyncio.run(album_missing_suggestions(db, Source(), tracks, start=3))
+    assert [r["position"] for r in result["results"]] == [3, 4]
+    assert result["next_position"] is None
+    assert not db.all_tracks()
