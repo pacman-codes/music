@@ -901,6 +901,23 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             return
         await callback.answer("Добавлено в очередь")
     
+    @router.callback_query(F.data.startswith("qedit:"))
+    async def queue_edit_button(callback: CallbackQuery):
+        try:
+            _, raw_qid, raw_pos, raw_tid, raw_cursor, action = (callback.data or "").split(":")
+            qid, pos, tid, cursor = map(int, (raw_qid, raw_pos, raw_tid, raw_cursor))
+            if qid != db.latest_queue_id() or action not in {"up", "down", "remove"}:
+                raise ValueError()
+            db.edit_queue(qid, "remove" if action == "remove" else "move",
+                          position=pos, to_position=pos + (-1 if action == "up" else 1),
+                          expected_cursor=cursor, expected_track_id=tid)
+        except ValueError:
+            await callback.answer("Очередь изменилась. Обнови список.", show_alert=True)
+            return
+        await callback.answer("Очередь обновлена")
+        if (message := callback_message(callback)) is not None:
+            await queue_cmd(message, edit=True)
+
     @router.callback_query(F.data.startswith("qsend:"))
     async def queue_send_button(callback: CallbackQuery, bot: Bot):
         try:
@@ -944,7 +961,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         await callback.answer()
         if (message := callback_message(callback)) is not None:
             await message.answer(f"📂 Название нового плейлиста (трек #{tid}):\nОтветь на это сообщение.",
-                                 reply_markup=ForceReply(selective=True, input_field_placeholder="Название"))
+                                 reply_markup=ForceReply(selective=False, input_field_placeholder="Название"))
 
     @router.callback_query(F.data.startswith("plrename:"))
     async def playlist_rename_prompt(callback: CallbackQuery):
@@ -959,7 +976,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         await callback.answer()
         if (message := callback_message(callback)) is not None:
             await message.answer(f"✏ Новое название плейлиста #{pid}:\nОтветь на это сообщение.",
-                                 reply_markup=ForceReply(selective=True, input_field_placeholder="Название"))
+                                 reply_markup=ForceReply(selective=False, input_field_placeholder="Название"))
 
     @router.message(F.text, F.reply_to_message.text.regexp(
         r"^(📂 Название нового плейлиста \(трек #\d+\):|✏ Новое название плейлиста #\d+:)"))
@@ -1255,12 +1272,12 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
         await start_playlist(bot, message.chat.id, ids[0])
 
     @router.message(Command("queue"))
-    async def queue_cmd(message: Message):
+    async def queue_cmd(message: Message, edit: bool = False):
         qid = db.latest_queue_id()
         if qid is None:
             await message.answer("Очереди нет. Запусти /wave или плейлист.")
             return
-        state = db.queue_snapshot(qid, limit=15)
+        state = db.queue_snapshot(qid, limit=10)
         text = (
             f"⏭ Очередь #{qid} · {state['label']}\n"
             f"Отправлено: {state['cursor']}; ожидает: {state['pending_total']}.\n"
@@ -1276,11 +1293,28 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                 f"избранное={filters['liked_only']}, "
                 f"не отправлялось сегодня={filters['no_repeat_today']}."
             )
-        text += "\n/next ID · /append ID · /qmove 11 13 · /qremove 13 · /continue"
+        text += "\nУправляй только ещё не отправленными песнями."
         rows = []
+        for item in state["upcoming"]:
+            pos, tid, cursor = item["position"], item["track_id"], state["cursor"]
+            prefix = f"qedit:{qid}:{pos}:{tid}:{cursor}:"
+            controls = [button(f"{pos+1}. {item['title'][:19]}", f"vopen:l:{tid}")]
+            if pos > cursor:
+                controls.append(button("↑", prefix + "up"))
+            if pos+1 < cursor + state["pending_total"]:
+                controls.append(button("↓", prefix + "down"))
+            controls.append(button("×", prefix + "remove"))
+            rows.append(controls)
         if state["pending_total"] or state["is_dynamic"]:
             rows.append([button("▶ Следующая порция", f"qsend:{qid}:{state['cursor']}")])
         rows.append([button("↻ Обновить", "nav:queue"), button("📂 Плейлисты", "nav:playlists")])
+        if edit:
+            try:
+                await message.edit_text(text[:3900], reply_markup=keyboard(rows))
+                return
+            except TelegramBadRequest as exc:
+                if "message is not modified" in str(exc).lower():
+                    return
         await message.answer(text[:3900], reply_markup=keyboard(rows))
 
     @router.message(Command("next", "append"))
