@@ -268,6 +268,47 @@ async def show_album_results(message: Message, db: Library, catalog: MusicCatalo
     await message.answer(text, reply_markup=album_search_keyboard(albums))
 
 
+def album_collection_page(db: Library, page: int = 0):
+    size = 10
+    if not 0 <= page <= 100000:
+        raise ValueError("Invalid album collection page")
+    albums = db.saved_albums(offset=page * size, limit=size + 1)
+    if not albums and page:
+        return album_collection_page(db, 0)
+    lines = ["💿 Мои альбомы"]
+    rows = []
+    for i, album in enumerate(albums[:size], page * size + 1):
+        lines.append(f"{i}. {album['artist'][:80]} — {album['title'][:100]} ({album['track_count']})")
+        rows.append([InlineKeyboardButton(
+            text=f"💿 {album['artist'][:18]} — {album['title'][:30]}",
+            callback_data=f"album:{album['mbid']}:0",
+        )])
+    if not albums:
+        lines.append("Пока пусто. Найди альбом и нажми «Добавить альбом».")
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton(text="←", callback_data=f"albumlist:{page-1}"))
+    if len(albums) > size:
+        nav.append(InlineKeyboardButton(text="→", callback_data=f"albumlist:{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="📂 Плейлисты", callback_data="nav:playlists")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def show_saved_albums(message: Message, db: Library):
+    text, markup = album_collection_page(db)
+    await message.answer(text, reply_markup=markup)
+
+
+async def edit_album_message(message: Message, text: str, markup: InlineKeyboardMarkup):
+    try:
+        await message.edit_text(text, reply_markup=markup)
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            await message.answer(text, reply_markup=markup)
+
+
 def saved_album_ids(db: Library, tracks):
     resolved = db.resolved_catalog_tracks()
     ids = []
@@ -306,6 +347,12 @@ def album_page(db: Library, mbid: str, title: str, artist: str, tracks, page: in
     if saved_album_ids(db, tracks):
         rows.append([InlineKeyboardButton(text="▶ Слушать весь сохранённый альбом",
                                           callback_data=f"albumplay:{mbid}")])
+    saved = db.get_saved_album(mbid) is not None
+    rows.append([InlineKeyboardButton(
+        text="✓ В коллекции · Удалить" if saved else "➕ Добавить альбом",
+        callback_data=f"{'albumdel' if saved else 'albumadd'}:{mbid}:{page}",
+    )])
+    rows.append([InlineKeyboardButton(text="💿 Мои альбомы", callback_data="albumlist:0")])
     rows.append([InlineKeyboardButton(text="Альбом в MusicBrainz ↗",
                                       url="https://musicbrainz.org/release/" + mbid)])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
@@ -393,6 +440,53 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
         await show_recording_sources(message, parts[1])
 
     if catalog is not None:
+        @router.message(Command("albums"))
+        async def albums_cmd(message: Message):
+            await show_saved_albums(message, db)
+
+        @router.callback_query(F.data.startswith("albumlist:"))
+        async def album_list(callback: CallbackQuery):
+            raw = (callback.data or "").partition(":")[2]
+            if not raw.isascii() or not raw.isdigit() or len(raw) > 6:
+                await callback.answer("Неверная страница", show_alert=True)
+                return
+            try:
+                text, markup = album_collection_page(db, int(raw))
+            except ValueError:
+                await callback.answer("Неверная страница", show_alert=True)
+                return
+            await callback.answer()
+            if isinstance(callback.message, Message):
+                await edit_album_message(callback.message, text, markup)
+
+        @router.callback_query(F.data.startswith("albumadd:") | F.data.startswith("albumdel:"))
+        async def change_album_collection(callback: CallbackQuery):
+            parts = (callback.data or "").split(":")
+            if (len(parts) != 3 or not valid_mbid(parts[1])
+                    or not parts[2].isascii() or not parts[2].isdigit()
+                    or len(parts[2]) > 2):
+                await callback.answer("Неверный альбом", show_alert=True)
+                return
+            if not isinstance(callback.message, Message):
+                await callback.answer()
+                return
+            mbid, page = parts[1].lower(), int(parts[2])
+            await callback.answer()
+            try:
+                title, artist, tracks = await album_tracks(catalog, mbid)
+                if not 0 <= page < (len(tracks) + 14) // 15:
+                    raise ValueError("Invalid album page")
+                db.remember_candidates(tracks)
+                if parts[0] == "albumadd":
+                    db.save_album(mbid, title, artist, len(tracks))
+                else:
+                    db.remove_saved_album(mbid)
+                text, markup = album_page(db, mbid, title, artist, tracks, page)
+            except (CatalogError, ValueError):
+                await callback.message.answer("Не удалось изменить коллекцию. Попробуй ещё раз.")
+                return
+            await edit_album_message(callback.message, text, markup)
+
         @router.callback_query(F.data.startswith("album:"))
         async def open_album(callback: CallbackQuery):
             parts = (callback.data or "").split(":")
@@ -409,11 +503,7 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
             except (CatalogError, ValueError):
                 await callback.message.answer("Не удалось открыть трек-лист.")
                 return
-            try:
-                await callback.message.edit_text(text, reply_markup=markup)
-            except TelegramBadRequest as exc:
-                if "message is not modified" not in str(exc).lower():
-                    await callback.message.answer(text, reply_markup=markup)
+            await edit_album_message(callback.message, text, markup)
 
         @router.callback_query(F.data.startswith("albtrack:"))
         async def album_track(callback: CallbackQuery):

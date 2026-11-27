@@ -287,3 +287,53 @@ def test_album_catalog_outage_still_allows_song_search(tmp_path):
                                    catalog=Catalog()))
     assert "Artist Song" in answers[0][0]
     assert db.get_youtube_video(ID)
+
+
+def test_saved_album_collection_persists_without_audio(tmp_path):
+    import uuid
+    from music_bot.catalog import CatalogTrack
+    from music_bot.telegram_youtube import album_page, album_collection_page
+    path = tmp_path / "music.db"
+    db = Library(path)
+    mbid = str(uuid.UUID(int=100))
+    tracks = [CatalogTrack(str(uuid.UUID(int=1)), "Song", "Artist")]
+    def callbacks(markup):
+        return {b.callback_data for row in markup.inline_keyboard for b in row}
+
+    _, markup = album_page(db, mbid, "Album", "Artist", tracks, 0)
+    assert f"albumadd:{mbid}:0" in callbacks(markup)
+    assert db.save_album(mbid, "Album", "Artist", 1)
+    assert not db.save_album(mbid, "Album", "Artist", 1)
+    db = Library(path)
+    assert len(db.saved_albums()) == 1
+    assert not db.all_tracks()
+    text, markup = album_collection_page(db)
+    assert "Artist — Album (1)" in text
+    assert f"album:{mbid}:0" in callbacks(markup)
+    _, markup = album_page(db, mbid, "Album", "Artist", tracks, 0)
+    assert f"albumdel:{mbid}:0" in callbacks(markup)
+    assert f"albumplay:{mbid}" not in callbacks(markup)
+    assert db.remove_saved_album(mbid)
+    assert not db.remove_saved_album(mbid)
+    assert db.saved_albums() == []
+    assert "Пока пусто" in album_collection_page(db)[0]
+
+
+def test_album_collection_pages_and_home_menu(tmp_path):
+    import uuid
+    from music_bot.telegram_youtube import album_collection_page
+    from music_bot.main import home_keyboard
+    db = Library(tmp_path / "music.db")
+    for i in range(1, 13):
+        db.save_album(str(uuid.UUID(int=i)), f"Release {i}", "Artist", 13)
+    first, first_markup = album_collection_page(db, 0)
+    second, second_markup = album_collection_page(db, 1)
+    def callbacks(markup):
+        return {b.callback_data for row in markup.inline_keyboard for b in row}
+    assert "1. Artist — Release 12" in first
+    assert "11. Artist — Release 2" in second
+    assert "albumlist:1" in callbacks(first_markup)
+    assert "albumlist:0" in callbacks(second_markup)
+    assert "albumlist:2" not in callbacks(second_markup)
+    assert "nav:albums" in callbacks(home_keyboard())
+    assert album_collection_page(db, 100)[0] == first

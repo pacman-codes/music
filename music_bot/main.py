@@ -22,7 +22,7 @@ from music_bot.telegram_screen import install_screen_handlers
 from music_bot.telegram_catalog import install_catalog_handlers
 from music_bot.telegram_import import install_import_handlers
 from music_bot.telegram_fingerprint import install_fingerprint_handlers
-from music_bot.telegram_youtube import install_youtube_handlers, offer_discovery_audio
+from music_bot.telegram_youtube import install_youtube_handlers, offer_discovery_audio, show_saved_albums
 from music_bot.telegram_taste import install_taste_handlers
 from music_bot.selection import DYNAMIC_MODES, select_wave_batch
 from music_bot.wrapped import wrapped_summary
@@ -144,7 +144,8 @@ def home_keyboard(webapp_url: str | None = None) -> InlineKeyboardMarkup:
          button("🆕 Открытия", "nav:discover")],
         [button("❤️ Понравившиеся", "nav:liked"),
          button("📂 Плейлисты", "nav:playlists")],
-        [button("🧭 Пять реакций", "nav:verdicts")],
+        [button("🧭 Пять реакций", "nav:verdicts"),
+         button("💿 Мои альбомы", "nav:albums")],
         [button("🎵 Библиотека", "nav:library"),
          button("▶ Продолжить", "nav:continue")],
     ]
@@ -416,6 +417,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             [button(f"{LABELS[status]} ({counts[status]})", f"vlist:{status}:0")]
             for status in STATUSES
         ]
+        rows.append([button("💿 Мои альбомы", "nav:albums")])
         rows.extend(
             [button(f"▶️ {p['name'][:40]}", f"playlist:{p['id']}")]
             for p in playlists[:20]
@@ -800,6 +802,11 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
             await show_liked(message)
         elif action == "playlists":
             await show_playlists(message)
+        elif action == "albums":
+            if catalog is None:
+                await message.answer("Каталог альбомов отключён.")
+            else:
+                await show_saved_albums(message, db)
         elif action == "verdicts":
             await show_decisions(message)
         elif action == "library":
