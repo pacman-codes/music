@@ -70,3 +70,83 @@ def test_stale_queue_buttons_cannot_remove_another_track(tmp_path):
     db.edit_queue(qid, "remove", position=0, expected_cursor=0,
                   expected_track_id=tracks[1].id)
     assert db.get_track(tracks[1].id) is not None
+
+
+def test_navigation_reuses_only_text_panels_and_preserves_receipts():
+    import asyncio
+    from music_bot.main import render_chat_panel
+
+    class Message:
+        def __init__(self, text=None, audio=None):
+            self.text = text
+            self.audio = audio
+            self.edits = []
+            self.answers = []
+
+        async def edit_text(self, text, **kwargs):
+            self.edits.append((text, kwargs))
+
+        async def answer(self, text, **kwargs):
+            self.answers.append((text, kwargs))
+
+    markup = home_keyboard()
+    async def scenario():
+        for source in ("🎵 LAIN · Твоя медиатека", "📂 Night · 12 треков",
+                       "🎵 Трек · Artist — Track", "🧭 Реакция · Artist — Track",
+                       "⭐ Оценка · Artist — Track", "⏭ Очередь #1",
+                       "💿 Мои альбомы", "🧭 Список · Добавлю"):
+            message = Message(text=source)
+            await render_chat_panel(message, "Destination", markup, edit=True)
+            assert message.edits == [("Destination", {"reply_markup": markup})]
+            assert not message.answers
+
+        for source in ("🎧 Playlist: отправлено 10, осталось 3.",
+                       "✅ Playlist: последние 3 треков отправлены.",
+                       "ordinary text", None):
+            message = Message(text=source)
+            await render_chat_panel(message, "Destination", markup, edit=True)
+            assert not message.edits
+            assert len(message.answers) == 1
+
+        audio = Message(text="📂 Night", audio=object())
+        await render_chat_panel(audio, "Destination", markup, edit=True)
+        assert not audio.edits
+        assert len(audio.answers) == 1
+
+        command = Message(text="📂 Night")
+        await render_chat_panel(command, "Destination", markup)
+        assert not command.edits
+        assert len(command.answers) == 1
+
+    asyncio.run(scenario())
+
+
+def test_navigation_falls_back_when_telegram_rejects_edit():
+    import asyncio
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import EditMessageText
+    from music_bot.main import render_chat_panel
+
+    class Message:
+        text = "🎵 LAIN · Твоя медиатека"
+        audio = None
+
+        def __init__(self, error):
+            self.error = error
+            self.answers = []
+
+        async def edit_text(self, text, **kwargs):
+            raise TelegramBadRequest(
+                method=EditMessageText(text=text, chat_id=42, message_id=1),
+                message=self.error)
+
+        async def answer(self, text, **kwargs):
+            self.answers.append(text)
+
+    markup = home_keyboard()
+    expired = Message("Bad Request: message can't be edited")
+    asyncio.run(render_chat_panel(expired, "Destination", markup, edit=True))
+    assert expired.answers == ["Destination"]
+    same = Message("Bad Request: message is not modified")
+    asyncio.run(render_chat_panel(same, "Destination", markup, edit=True))
+    assert not same.answers
