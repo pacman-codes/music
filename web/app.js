@@ -656,9 +656,8 @@ function albumCover(album) {
   image.loading = "lazy";
   image.decoding = "async";
   image.referrerPolicy = "no-referrer";
-  image.hidden = true;
   let index = 0;
-  image.addEventListener("load", () => { image.hidden = false; placeholder.hidden = true; });
+  image.addEventListener("load", () => { image.classList.add("loaded"); placeholder.hidden = true; });
   image.addEventListener("error", () => {
     index += 1;
     if (index < urls.length) image.src = urls[index];
