@@ -9,7 +9,7 @@ import asyncio
 import re
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import (
     CallbackQuery, FSInputFile, InlineKeyboardButton,
@@ -164,7 +164,7 @@ async def plain_music_search(message: Message, bot: Bot, db: Library,
         if not albums:
             await message.answer("Не нашёл альбом. Укажи исполнителя и название.")
             return
-        await message.answer("💿 Альбомы и EP:", reply_markup=album_search_keyboard(albums))
+        await show_album_results(message, db, catalog, albums)
         return
     track = cached_audio_for_query(db, query)
     if track is not None:
@@ -177,24 +177,28 @@ async def plain_music_search(message: Message, bot: Bot, db: Library,
             return
         db.record_single_send(track.id)
         return
-    if not search_enabled:
-        await message.answer("Песня не найдена в сохранённых файлах. Внешний поиск отключён.")
-        return
     lease = db.acquire_media_import("taste", "plain-music-search", ttl=60)
     if lease is None:
         await message.answer("Уже ищу другую песню.")
         return
     try:
-        try:
-            videos = await worker.search(query, limit=6)
-        except (YouTubeError, ValueError):
-            videos = []
         if catalog is not None:
             try:
                 albums = await find_albums(catalog, query, exact=True)
             except (CatalogError, ValueError):
                 pass  # An album lookup outage must not break ordinary song search.
-        if not videos and not albums:
+            if albums:
+                await show_album_results(message, db, catalog, albums,
+                                         song_search_hint=search_enabled)
+                return
+        if not search_enabled:
+            await message.answer("Песня не найдена в сохранённых файлах. Внешний поиск отключён.")
+            return
+        try:
+            videos = await worker.search(query, limit=6)
+        except (YouTubeError, ValueError):
+            videos = []
+        if not videos:
             await message.answer("Не нашёл песню. Попробуй указать исполнителя и название.")
             return
         db.remember_youtube_videos(videos)
@@ -210,10 +214,10 @@ async def plain_music_search(message: Message, bot: Bot, db: Library,
         # Do not offer album reviews, reactions or production tutorials as audio.
         noise = re.compile(r"\b(?:album review|track review|reaction|tutorial|deconstruction)\b", re.I)
         top = [video for video in videos if not noise.search(video.title)][:3]
-        if not top and not albums:
+        if not top:
             await message.answer("Не нашёл подходящую музыкальную запись.")
             return
-        lines = ["🎵 Нашёл:" if top else "💿 Нашёл релиз:"]
+        lines = ["🎵 Нашёл:"]
         controls = []
         for i, video in enumerate(top, 1):
             lines.append(f"{i}. {video.title} · {video.channel}"[:240])
@@ -224,10 +228,7 @@ async def plain_music_search(message: Message, bot: Bot, db: Library,
                     text=f"🎧 Получить {i} (есть разрешение)",
                     callback_data=f"ytget:{video.video_id}"))
             controls.append(row)
-        if albums:
-            lines.append("Также найден альбом с таким названием:")
-            controls.extend(album_search_keyboard(albums).inline_keyboard)
-        if download_enabled and top:
+        if download_enabled:
             lines.append("Выбери верную версию, если её загрузка разрешена.")
         await message.answer("\n".join(lines),
                              reply_markup=InlineKeyboardMarkup(inline_keyboard=controls))
@@ -244,6 +245,29 @@ def album_search_keyboard(albums):
     ])
 
 
+async def show_album_results(message: Message, db: Library, catalog: MusicCatalog,
+                             albums, *, song_search_hint: bool = False):
+    """Open an unambiguous release immediately; keep edition choice when needed."""
+    if len(albums) == 1:
+        album = albums[0]
+        try:
+            title, artist, tracks = await album_tracks(catalog, album.mbid)
+            db.remember_candidates(tracks)
+            text, markup = album_page(db, album.mbid, title, artist, tracks, 0)
+        except (CatalogError, ValueError):
+            # Keep the release button so the user can retry a transient lookup.
+            text = "💿 Альбом найден, но трек-лист пока недоступен."
+            markup = album_search_keyboard(albums)
+        if song_search_hint:
+            text += "\n\nОдноимённая песня: /yt " + (message.text or "").strip()
+        await message.answer(text, reply_markup=markup)
+        return
+    text = "💿 Альбомы и EP:"
+    if song_search_hint:
+        text += "\nОдноимённая песня: /yt " + (message.text or "").strip()
+    await message.answer(text, reply_markup=album_search_keyboard(albums))
+
+
 def saved_album_ids(db: Library, tracks):
     resolved = db.resolved_catalog_tracks()
     ids = []
@@ -258,11 +282,11 @@ def saved_album_ids(db: Library, tracks):
 
 
 def album_page(db: Library, mbid: str, title: str, artist: str, tracks, page: int):
-    size = 8
+    size = 15
     pages = (len(tracks) + size - 1) // size
     if not 0 <= page < pages:
         raise ValueError("Invalid album page")
-    lines = [f"💿 {artist} — {title}", f"{len(tracks)} треков · {page+1}/{pages}"]
+    lines = [f"💿 {artist} — {title}", f"{len(tracks)} треков" + (f" · {page+1}/{pages}" if pages > 1 else "")]
     rows = []
     resolved = db.resolved_catalog_tracks()
     for i, track in enumerate(tracks[page*size:(page+1)*size], page*size+1):
@@ -385,7 +409,11 @@ def install_youtube_handlers(router: Router, db: Library, owner_id: int, *,
             except (CatalogError, ValueError):
                 await callback.message.answer("Не удалось открыть трек-лист.")
                 return
-            await callback.message.answer(text, reply_markup=markup)
+            try:
+                await callback.message.edit_text(text, reply_markup=markup)
+            except TelegramBadRequest as exc:
+                if "message is not modified" not in str(exc).lower():
+                    await callback.message.answer(text, reply_markup=markup)
 
         @router.callback_query(F.data.startswith("albtrack:"))
         async def album_track(callback: CallbackQuery):
