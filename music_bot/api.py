@@ -20,7 +20,7 @@ from music_bot.albums import (
     find_albums, album_tracks, valid_album_id, valid_itunes_id,
     album_cover_urls, cached_album_group,
 )
-from music_bot.telegram_youtube import saved_album_ids
+from music_bot.telegram_youtube import saved_album_ids, available_album_ids, album_track_ids
 from music_bot.catalog import CatalogError, CatalogTrack, MusicCatalog, normalize, normalized_identity, valid_mbid
 from music_bot.config import Settings, load_settings
 from music_bot.importer import AudioIngestService, MediaImportError
@@ -861,12 +861,9 @@ def create_app(config: Settings | None = None,
     @app.get("/api/albums/{release_id}", dependencies=[auth])
     async def album_detail(release_id: str):
         ident, title, artist, rows = await load_album(release_id)
-        resolved = db.resolved_catalog_tracks()
+        linked = album_track_ids(db, rows)
         tracks = []
-        for row in rows:
-            local = resolved.get(row.mbid) if valid_mbid(row.mbid) else None
-            if local is not None and db.get_track(local) is None:
-                local = None
+        for row, local in zip(rows, linked):
             tracks.append({"title": row.title, "artist": row.artist,
                            "duration_ms": row.duration_ms, "local_track_id": local})
         return {"mbid": ident, "title": title, "artist": artist,
@@ -874,6 +871,8 @@ def create_app(config: Settings | None = None,
                 "cover_urls": album_cover_urls(ident, cached_album_group(catalog_client, ident)),
                 "saved": db.get_saved_album(ident) is not None,
                 "track_count": len(rows), "tracks": tracks,
+                "available_count": sum(ident is not None for ident in linked),
+                "queue_count": len({ident for ident in linked if ident is not None}),
                 "playable": bool(saved_album_ids(db, rows))}
 
     @app.post("/api/albums/{release_id}", dependencies=[auth])
@@ -886,17 +885,42 @@ def create_app(config: Settings | None = None,
         return {"removed": db.remove_saved_album(album_id(release_id))}
 
     @app.post("/api/albums/{release_id}/play", dependencies=[auth])
-    async def play_album(release_id: str):
+    async def play_album(release_id: str, partial: bool = False):
         ident, title, artist, rows = await load_album(release_id)
-        ids = saved_album_ids(db, rows)
+        ids = available_album_ids(db, rows) if partial else saved_album_ids(db, rows)
         if not ids:
             raise HTTPException(409, detail="Не все треки альбома сохранены как подтверждённое аудио")
-        queue_id = db.create_queue(ids, f"{artist} — {title}", "playlist")
+        label = f"{artist} — {title}" + (" (доступные)" if partial else "")
+        queue_id = db.create_queue(ids, label, "playlist")
         async with Bot(token=settings.token) as bot:
             await deliver_queue(bot, db, settings.owner_id, queue_id, send_lock)
         if db.peek_queue(queue_id).cursor == 0:
             raise HTTPException(502, detail="Telegram не смог отправить альбом")
         return {"queue_id": queue_id, "sent": min(10, len(ids))}
+
+    @app.get("/api/albums/{release_id}/tracks/{position}/youtube-suggestions", dependencies=[auth])
+    async def album_track_suggestions(release_id: str, position: int):
+        if not settings.youtube_search_enabled:
+            raise HTTPException(409, detail="YouTube-поиск отключён")
+        _, _, rows = await load_album(release_id)
+        if not 0 <= position < len(rows):
+            raise HTTPException(404, detail="Трек альбома не найден")
+        track = rows[position]
+        recording = {"title": track.title, "artist": track.artist,
+                     "duration_ms": track.duration_ms}
+        recording_id = track.mbid if valid_mbid(track.mbid) else None
+        if recording_id:
+            db.remember_candidates([track])
+        try:
+            candidates = await yt_source.search(
+                f"{track.artist} {track.title}"[:90], limit=8)
+        except (ValueError, YouTubeError) as exc:
+            raise HTTPException(502, detail="Поиск записи временно недоступен") from exc
+        db.remember_youtube_videos(candidates)
+        return {"suggestions": [
+            {**suggestion.public(), "recording_mbid": recording_id}
+            for suggestion in suggest_sources(recording, candidates, limit=6)
+        ], "auto_imported": False}
 
     @app.get("/api/playlists", dependencies=[auth])
     async def playlists():
