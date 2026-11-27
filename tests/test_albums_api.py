@@ -62,6 +62,10 @@ def test_album_api_shares_collection_and_does_not_fake_audio(tmp_path):
         assert found.status_code == 200
         assert found.json()["results"][0]["mbid"] == RELEASE
         assert not found.json()["results"][0]["saved"]
+        assert found.json()["results"][0]["cover_urls"] == [
+            f"https://coverartarchive.org/release/{RELEASE}/front-250",
+            f"https://coverartarchive.org/release-group/{RELEASE}/front-250",
+        ]
         assert client.post(path, headers=hdr).json()["changed"]
         assert not client.post(path, headers=hdr).json()["changed"]
         assert lib.get_saved_album(RELEASE)["title"] == "Album"
@@ -69,6 +73,7 @@ def test_album_api_shares_collection_and_does_not_fake_audio(tmp_path):
         assert detail.status_code == 200
         row = detail.json()
         assert row["saved"] and not row["playable"]
+        assert row["cover_urls"][0] == f"https://coverartarchive.org/release/{RELEASE}/front-250"
         assert [x["title"] for x in row["tracks"]] == ["First", "Second"]
         assert all(x["local_track_id"] is None for x in row["tracks"])
         assert "file_id" not in detail.text
@@ -79,3 +84,24 @@ def test_album_api_shares_collection_and_does_not_fake_audio(tmp_path):
         assert client.get("/api/albums", headers=hdr).json()["results"][0]["mbid"] == RELEASE
         assert client.get("/api/albums/invalid", headers=hdr).status_code == 422
         assert client.get("/api/albums?offset=-1", headers=hdr).status_code == 422
+
+
+def test_album_cover_urls_are_fixed_host_and_cached_group(tmp_path):
+    import json
+    from music_bot.albums import album_cover_urls, cached_album_group, RELEASE_LOOKUP_PARAMS
+    from music_bot.catalog import MusicCatalog
+    catalog = MusicCatalog(tmp_path / "cache.db", client=object())
+    key = json.dumps(["mb", "/ws/2/release/" + RELEASE,
+                      sorted(RELEASE_LOOKUP_PARAMS.items())],
+                     sort_keys=True, separators=(",", ":"))
+    catalog.cache.put(key, {"release-group": {"id": SECOND}}, 3600)
+    assert cached_album_group(catalog, RELEASE) == SECOND
+    assert album_cover_urls(RELEASE, SECOND) == [
+        f"https://coverartarchive.org/release/{RELEASE}/front-250",
+        f"https://coverartarchive.org/release-group/{SECOND}/front-250",
+    ]
+    assert album_cover_urls(RELEASE, "https://example.com/image.jpg") == [
+        f"https://coverartarchive.org/release/{RELEASE}/front-250",
+    ]
+    assert album_cover_urls("https://example.com/evil") == []
+    assert album_cover_urls("it-123") == []
