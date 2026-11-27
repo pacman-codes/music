@@ -337,3 +337,35 @@ def test_album_collection_pages_and_home_menu(tmp_path):
     assert "albumlist:2" not in callbacks(second_markup)
     assert "nav:albums" in callbacks(home_keyboard())
     assert album_collection_page(db, 100)[0] == first
+
+
+def test_album_partial_playback_never_uses_unconfirmed_audio(tmp_path):
+    import uuid
+    from music_bot.catalog import CatalogTrack
+    from music_bot.telegram_youtube import album_page, album_track_ids, available_album_ids, saved_album_ids
+    db = Library(tmp_path / "music.db")
+    release = str(uuid.UUID(int=100))
+    tracks = [CatalogTrack(str(uuid.UUID(int=i)), f"Song {i}", "Artist") for i in range(1, 4)]
+    db.remember_candidates(tracks)
+    # Insert out of album order, and leave the middle track unconfirmed.
+    third = db.add_track("f3", "u3", tracks[2].title, "Artist")
+    first = db.add_track("f1", "u1", tracks[0].title, "Artist")
+    middle = db.add_track("f2", "u2", tracks[1].title, "Artist")
+    db.confirm_recording_match(third.id, tracks[2].mbid)
+    db.confirm_recording_match(first.id, tracks[0].mbid)
+    assert album_track_ids(db, tracks) == [first.id, None, third.id]
+    assert available_album_ids(db, tracks) == [first.id, third.id]
+    assert saved_album_ids(db, tracks) == []
+    text, markup = album_page(db, release, "Album", "Artist", tracks, 0)
+    assert "2/3" in text
+    callbacks = {b.callback_data for row in markup.inline_keyboard for b in row}
+    assert f"albumready:{release}" in callbacks
+    assert f"albumnext:{release}" in callbacks
+    assert f"albumplay:{release}" not in callbacks
+    db.confirm_recording_match(middle.id, tracks[1].mbid)
+    assert saved_album_ids(db, tracks) == [first.id, middle.id, third.id]
+    _, markup = album_page(db, release, "Album", "Artist", tracks, 0)
+    callbacks = {b.callback_data for row in markup.inline_keyboard for b in row}
+    assert f"albumplay:{release}" in callbacks
+    assert f"albumready:{release}" not in callbacks
+    assert f"albumnext:{release}" not in callbacks
