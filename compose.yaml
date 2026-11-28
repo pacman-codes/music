@@ -45,5 +45,39 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+  standalone:
+    profiles: ["standalone"]
+    build:
+      context: .
+    command: ["uvicorn", "music_bot.native_api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8086"]
+    environment:
+      LAIN_DATA_DIR: /app/data
+    restart: unless-stopped
+    volumes:
+      - standalone_data:/app/data
+    ports:
+      - "127.0.0.1:8086:8086"
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+  standalone-migrate:
+    profiles: ["migration"]
+    build:
+      context: .
+    environment:
+      LAIN_DATA_DIR: /app/data
+    command: ["python", "-m", "music_bot.native_cli", "clone", "/legacy/music.db"]
+    volumes:
+      - standalone_data:/app/data
+      - music_data:/legacy:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 volumes:
   music_data:
+  standalone_data:
