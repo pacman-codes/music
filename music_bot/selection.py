@@ -62,6 +62,36 @@ def wave_profile(db: Library, tracks, *, liked_ids, disliked_ids, ratings,
     return preferred, {key:min(4.5, value) for key,value in scores.items()}
 
 
+def wave_preferences(db: Library, all_tracks, *, liked_ids, disliked_ids, ratings,
+                     playback, suppressed, verdicts) -> dict:
+    """Shared current ranking inputs for selection and transparent explanations."""
+    settings = db.get_wave_settings()
+    context = db.wave_recent_context(settings["repeat_window"])
+    preferred, affinity = wave_profile(
+        db, all_tracks, liked_ids=liked_ids, disliked_ids=disliked_ids,
+        ratings=ratings, playback=playback, suppressed=suppressed,
+        fresh_positive_ids=context["fresh_positive_ids"])
+    seeds = {
+        tid for tid in (liked_ids | {tid for tid, value in ratings.items() if value >= 8})
+        if tid not in disliked_ids and tid not in suppressed
+        and ratings.get(tid, 10) >= 5
+        and not fatigue_suppressed(*playback.get(tid, (0, 0)))
+    }
+    return {
+        "liked_ids": liked_ids,
+        "disliked_ids": disliked_ids,
+        "recent_ids": db.recent_ids(60),
+        "ratings": ratings,
+        "playback": playback,
+        "maybe_ids": {tid for tid,status in verdicts.items() if status == "maybe"},
+        **db.recommendation_signals(seeds),
+        **context,
+        "preferred_artists": preferred,
+        "artist_affinity": affinity,
+        "diversity": settings["diversity"],
+    }
+
+
 def select_wave_batch(db: Library, mode: str, count: int = 10,
                       *, queue_id: int | None = None) -> list[Track]:
     if mode not in DYNAMIC_MODES:
@@ -88,32 +118,10 @@ def select_wave_batch(db: Library, mode: str, count: int = 10,
     if not candidates:
         return []
 
-    settings = db.get_wave_settings()
-    context = db.wave_recent_context(settings["repeat_window"])
-    preferred, affinity = wave_profile(
-        db, all_tracks, liked_ids=liked_ids, disliked_ids=disliked_ids,
-        ratings=ratings, playback=playback, suppressed=suppressed,
-        fresh_positive_ids=context["fresh_positive_ids"])
-    seeds = {
-        tid for tid in (liked_ids | {tid for tid, value in ratings.items() if value >= 8})
-        if tid not in disliked_ids and tid not in suppressed
-        and ratings.get(tid, 10) >= 5
-        and not fatigue_suppressed(*playback.get(tid, (0, 0)))
-    }
-    prefs = {
-        "liked_ids": liked_ids,
-        "disliked_ids": disliked_ids,
-        "recent_ids": db.recent_ids(60),
-        "ratings": ratings,
-        "playback": playback,
-        "maybe_ids": {tid for tid,status in verdicts.items() if status == "maybe"},
-        **db.recommendation_signals(seeds),
-        **context,
-        "preferred_artists": preferred,
-        "artist_affinity": affinity,
-        "count": count,
-        "diversity": settings["diversity"],
-    }
+    prefs = wave_preferences(db, all_tracks, liked_ids=liked_ids,
+                             disliked_ids=disliked_ids, ratings=ratings,
+                             playback=playback, suppressed=suppressed, verdicts=verdicts)
+    prefs["count"] = count
     if mode == "balanced":
         return wave_v2(candidates, preset=db.get_wave_preset(), **prefs)
     return wave(candidates, mode=mode, **prefs)
