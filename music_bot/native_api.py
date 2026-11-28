@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from music_bot.native_storage import NativeStorage
 from music_bot.native_playback import NativePlayback
 from music_bot.native_media import MediaProcessor
+from music_bot.native_sync import install_sync
 from music_bot.native_prefetch import Prefetch, configured_hosts
 from music_bot.selection import select_wave_batch
 from music_bot.storage import Library
@@ -250,4 +251,5 @@ def create_app(root: Path | None = None, catalog=None):
         return {"ok":True}
 
     install_native_catalog(app,db,store,prefetch,catalog_client,auth,public)
+    install_sync(app,db,store,auth,public)
     return app
