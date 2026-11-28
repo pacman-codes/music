@@ -8,7 +8,8 @@ import 'cache.dart';
 import 'journal.dart';
 
 class LainPlayer extends BaseAudioHandler {
-  final engine=AudioPlayer();
+  final AndroidEqualizer? equalizer;
+  late final AudioPlayer engine;
   final changes=ValueNotifier<int>(0);
   final tracks=<Track>[];
   final preparing=<int,Track>{};
@@ -39,7 +40,9 @@ class LainPlayer extends BaseAudioHandler {
   bool _finished=false;
   Track? get current => index>=0&&index<tracks.length?tracks[index]:null;
   void changed(){changes.value++;}
-  LainPlayer(){
+  LainPlayer({bool enableAndroidEq=false}):equalizer=enableAndroidEq?AndroidEqualizer():null{
+    final effect=equalizer;
+    engine=AudioPlayer(audioPipeline:effect==null?null:AudioPipeline(androidAudioEffects:[effect]));
     engine.playbackEventStream.listen((_)=>_publish(),onError:(Object e){error='Ошибка воспроизведения';changed();});
     engine.playerStateStream.listen((state){
       _publish();
