@@ -125,7 +125,7 @@ class AudioCache {
       final existing=await find(track.id);
       if(existing!=null)return existing;
       return _download(track,root,protected,pin:false);
-    }).catchError((Object _)=>null).whenComplete(()=>_jobs.remove(track.id)));
+    }).catchError((Object _)=>null).whenComplete((){_jobs.remove(track.id);}));
   }
   Future<File?> pin(Track track)=>_serial(()async{
     if(!track.playable)return null;
