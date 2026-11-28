@@ -42,11 +42,12 @@ def probe(path):
     duration = float(data["format"]["duration"])
     if not math.isfinite(duration) or not 0 < duration <= MAX_DURATION:
         raise ValueError("Unsupported duration")
+    bitrate=data["format"].get("bit_rate")
     return {"duration_ms": round(duration * 1000),
             "codec": str(stream["codec_name"])[:32],
             "sample_rate": int(stream["sample_rate"]),
             "channels": int(stream["channels"]),
-            "bitrate": int(data["format"].get("bit_rate", 0) or 0)}
+            "bitrate": int(bitrate) if str(bitrate).isdigit() else 0}
 
 
 def sample_features(raw):
@@ -190,6 +191,14 @@ class MediaProcessor:
                     con.execute("""INSERT INTO native_media_processing(sha256,version,requested_at)
                        VALUES(?,?,?) ON CONFLICT(sha256,version) DO UPDATE SET requested_at=excluded.requested_at""",
                                 (row[0],VERSION,now))
+                    # If a previously generated derivative disappeared, permit regeneration.
+                    result=con.execute("SELECT economy_size FROM native_media_processing WHERE sha256=? AND version=?",(row[0],VERSION)).fetchone()
+                    if result and result[0] is not None and result[0]>0:
+                        target=self._target(row[0])
+                        try:valid=not target.is_symlink() and target.is_file() and target.stat().st_size==result[0]
+                        except OSError:valid=False
+                        if not valid:
+                            con.execute("UPDATE native_media_processing SET economy_size=NULL,economy_attempts=0,economy_due=0 WHERE sha256=? AND version=?",(row[0],VERSION))
 
     def asset(self,tid):
         original=self.store.audio(tid)
@@ -197,15 +206,12 @@ class MediaProcessor:
         if not original or not sha:return None
         with self.db.con() as con:
             row=con.execute("SELECT economy_size FROM native_media_processing WHERE sha256=? AND version=?",(sha,VERSION)).fetchone()
-        if not row or not row[0]:return None
+        if not row or row[0] is None:return None
+        if row[0]==0:return (*original,"original")
         path=self._target(sha)
         try:
             if path.is_symlink() or not path.is_file() or path.stat().st_size!=row[0]:return None
         except OSError:return None
-        # No wasteful bigger-than-original representation. This is safe even
-        # for already low-bitrate originals; response identifies actual quality.
-        if original[2]<=row[0]:
-            return (*original,"original")
         return (path,"audio/mp4",row[0],"economy")
 
     def info(self,tid):
@@ -226,6 +232,7 @@ class MediaProcessor:
             rows=con.execute("""SELECT a.track_id,a.sha256,p.features FROM native_audio a
                  JOIN native_media_processing p ON p.sha256=a.sha256 AND p.version=?
                  WHERE p.features IS NOT NULL ORDER BY a.track_id DESC LIMIT 10000""",(VERSION,)).fetchall()
+        if not rows:return {}
         available=self.store.available_ids()
         return {r["track_id"]:(r["sha256"],json.loads(r["features"])) for r in rows if r["track_id"] in available}
 
@@ -237,7 +244,15 @@ class MediaProcessor:
         excluded=self.db.suppressed_verdict_track_ids()|self.db.disliked_ids()
         ranked=sorted((distance(seed,features),other) for other,(ident,features) in rows.items()
                       if ident!=sha and other not in excluded and ratings.get(other,10)>=5)
-        return [(other,round(score,5)) for score,other in ranked[:limit]]
+        seen=set()
+        results=[]
+        for score,other in ranked:
+            ident=rows[other][0]
+            if ident in seen:continue
+            seen.add(ident)
+            results.append((other,round(score,5)))
+            if len(results)>=limit:break
+        return results
 
     def affinity(self):
         rows=self.analyzed_tracks()
@@ -258,13 +273,18 @@ class MediaProcessor:
             try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:return False
             now=int(time.time())
+            for stale in self.root.glob("*.part"):
+                stale.unlink(missing_ok=True)
             with self.db.con() as con:
                 con.execute("""INSERT OR IGNORE INTO native_media_processing(sha256,version)
                          SELECT DISTINCT sha256,? FROM native_audio""",(VERSION,))
                 rows=con.execute("""SELECT p.*,MIN(a.track_id) AS tid FROM native_media_processing p
                          JOIN native_audio a ON a.sha256=p.sha256 WHERE p.version=?
+                         AND ((p.features IS NULL AND p.analysis_attempts<? AND p.analysis_due<=?)
+                           OR (p.economy_size IS NULL AND p.economy_attempts<? AND p.economy_due<=?))
                          GROUP BY p.sha256,p.version
-                         ORDER BY p.requested_at DESC,tid DESC""",(VERSION,)).fetchall()
+                         ORDER BY p.requested_at DESC,tid DESC""",
+                         (VERSION,MAX_ATTEMPTS,now,MAX_ATTEMPTS,now)).fetchall()
             used=sum(p.stat().st_size for p in self.root.glob("*.m4a") if p.is_file() and not p.is_symlink())
             can_encode=(used+MAX_DERIVED<=DERIVED_QUOTA and shutil.disk_usage(self.root).free>=DISK_RESERVE+MAX_DERIVED)
             for row in rows:
@@ -272,7 +292,7 @@ class MediaProcessor:
                 original=self.store.audio(tid)
                 if not SHA.fullmatch(sha) or not original:continue
                 analysis_due=not row["features"] and row["analysis_attempts"]<MAX_ATTEMPTS and row["analysis_due"]<=now
-                economy_due=(not self.asset(tid) and can_encode and row["economy_attempts"]<MAX_ATTEMPTS
+                economy_due=(row["economy_size"] is None and can_encode and row["economy_attempts"]<MAX_ATTEMPTS
                              and row["economy_due"]<=now)
                 if not analysis_due and not economy_due:continue
                 # Prioritize bandwidth preparation for explicitly requested assets.
@@ -290,7 +310,11 @@ class MediaProcessor:
                     else:
                         temp.unlink(missing_ok=True)
                         size=encode_economy(original[0],temp)
-                        os.replace(temp,self._target(sha))
+                        # Keep a derivative only if it actually saves bytes.
+                        if size<original[2]:
+                            os.replace(temp,self._target(sha))
+                        else:
+                            size=0
                         with self.db.con() as con:
                             con.execute("UPDATE native_media_processing SET economy_size=? WHERE sha256=? AND version=?",(size,sha,VERSION))
                 except (OSError,ValueError,KeyError,IndexError,subprocess.SubprocessError):
