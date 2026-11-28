@@ -171,3 +171,53 @@ basic audio signature, and reports unavailable items rather than inventing
 audio. Large/unavailable files need separate authorized local import.
 Rate limiting or low disk space stops the batch and leaves a resumable cursor.
 The explicit migration container is the only new component with BOT_TOKEN.
+
+
+## Native discovery and source index
+
+The mobile discovery tab queries MusicBrainz/ListenBrainz, with the existing
+iTunes album fallback. Search results are metadata, not audio. The private
+/v1/discovery, /v1/albums and /v1/artists endpoints support search, saved
+records, reactions, discographies and explicit audio associations. Album
+position matching requires the current recording ID and explicit confirmation.
+Playlist CRUD, reordering and full-queue retrieval (maximum 1000 tracks) use
+the same SQLite collection. Native smart playlists use native playback
+events, not Telegram delivery history.
+
+An operator can register a JSON manifest of up to 10000 approved exact
+MusicBrainz recording IDs and stable direct MP3/M4A URLs, for example:
+
+```json
+[
+  {"mbid":"00000000-0000-0000-0000-000000000001","url":"https://audio.example.com/song.mp3"}
+]
+```
+
+The example is illustrative, not an actual music source. Use real authorized
+recordings hosted on trusted domains in LAIN_PREFETCH_HOSTS. No signed URLs,
+query parameters or client-supplied download URLs. The file is limited to
+8 MiB. Mount it read-only when running the CLI:
+
+```sh
+docker compose --profile standalone run --rm --no-deps \
+  -v /absolute/path/to/manifest.json:/import/manifest.json:ro standalone \
+  python -m music_bot.native_cli register-source-manifest /import/manifest.json
+```
+
+Registration does not create playable tracks or perform downloads. When a
+matching known catalog record is prepared, LAIN creates or reuses its local
+track ID, keeps explicit reactions, and queues the approved URL through the
+bounded prefetch worker. Wave may prepare up to five approved missing tracks
+per request, including positively marked or saved indexed recordings; rejected,
+parked and unmarked unsaved discoveries are not automatically materialized.
+Favorites mode only uses positive add decisions for this extra indexed pool.
+A preparation request does not override an existing source or reset failed
+jobs. Use the existing administrator approval command to update that source.
+The index adds/replaces entries; it is not a full synchronization/deletion
+protocol.
+
+Single-recording preparation is available at POST /v1/discovery/{mbid}/prepare;
+album preparation at POST /v1/albums/{id}/prepare. The API reports playable and
+preparable separately and does not expose source URLs. This enables automatic
+exact matching to approved audio, not unrestricted streaming-service
+downloading. Live provider integration and real device testing remain pending.
