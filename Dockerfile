@@ -1,13 +1,14 @@
 FROM python:3.12-slim
 ARG MUSIC_WITH_YOUTUBE=false
 ARG MUSIC_WITH_FINGERPRINT=false
+ARG LAIN_WITH_MEDIA=false
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # System packages depend only on the build profile, not application sources.
 RUN set -eu; \
     set --; \
-    if [ "$MUSIC_WITH_YOUTUBE" = "true" ]; then set -- "$@" ffmpeg; fi; \
+    if [ "$MUSIC_WITH_YOUTUBE" = "true" ] || [ "$LAIN_WITH_MEDIA" = "true" ]; then set -- "$@" ffmpeg; fi; \
     if [ "$MUSIC_WITH_FINGERPRINT" = "true" ]; then set -- "$@" libchromaprint-tools; fi; \
     if [ "$#" -gt 0 ]; then \
         apt-get update; \

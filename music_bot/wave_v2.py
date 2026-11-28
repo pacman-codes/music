@@ -79,7 +79,7 @@ def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
             maybe_ids=frozenset(), rotation_ids=frozenset(),
             immediate_ids=frozenset(), previous_artists=(),
             preferred_artists=frozenset(), artist_affinity=None,
-            fresh_positive_ids=frozenset(), diversity=50):
+            fresh_positive_ids=frozenset(), diversity=50, acoustic_affinity=None):
     """Personalized native playback batch, no hypothetical audio candidates."""
     if preset not in PRESETS:
         raise ValueError("Unknown Wave 2.0 preset")
@@ -127,7 +127,7 @@ def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
                 playlist_counts=playlist_counts, related_ids=related_ids,
                 recent_artists=recent_artists,
                 maybe_ids=maybe_ids, artist_affinity=artist_affinity,
-                fresh_positive_ids=fresh_positive_ids, diversity=diversity,
+                fresh_positive_ids=fresh_positive_ids, diversity=diversity, acoustic_affinity=acoustic_affinity,
             )
             for t in choices
         ]

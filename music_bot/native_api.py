@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from music_bot.native_storage import NativeStorage
 from music_bot.native_playback import NativePlayback
+from music_bot.native_media import MediaProcessor
 from music_bot.native_prefetch import Prefetch, configured_hosts
 from music_bot.selection import select_wave_batch
 from music_bot.storage import Library
@@ -54,6 +55,7 @@ def create_app(root: Path | None = None, catalog=None):
     store = NativeStorage(db,root/"audio")
     prefetch = Prefetch(store,configured_hosts())
     playback = NativePlayback(db)
+    media = MediaProcessor(store)
     catalog_client=catalog or MusicCatalog(db.path)
     @asynccontextmanager
     async def lifespan(app):
@@ -118,14 +120,42 @@ def create_app(root: Path | None = None, catalog=None):
                 "next_before":found[49].id if len(found)>50 else None}
 
     @app.get("/v1/tracks/{track_id}/audio",dependencies=[auth])
-    def audio(track_id: int):
+    def audio(track_id: int,quality: Literal['original','economy']='original'):
         if not 0<track_id<=9223372036854775807:
             raise HTTPException(404,"Audio unavailable")
         asset=store.audio(track_id)
         if not asset:
             raise HTTPException(404,"Audio unavailable")
-        path,mime,_=asset
-        return FileResponse(path,media_type=mime)
+        if quality=="economy":
+            reduced=media.asset(track_id)
+            if reduced is None:
+                raise HTTPException(409,"Economy representation not prepared")
+            path,mime,_,actual=reduced
+        else:
+            path,mime,_=asset
+            actual="original"
+        return FileResponse(path,media_type=mime,headers={"X-LAIN-Representation":actual})
+
+    @app.post("/v1/media/prepare",dependencies=[auth])
+    def prepare_media(payload: PrefetchRequest):
+        media.request(payload.track_ids)
+        return {"results":[{"track_id":tid,**media.info(tid)} for tid in payload.track_ids]}
+
+    @app.get("/v1/tracks/{track_id}/analysis",dependencies=[auth])
+    def analysis(track_id: int):
+        if not 0<track_id<=9223372036854775807 or not db.get_track(track_id):
+            raise HTTPException(404,"Track not found")
+        return media.info(track_id)
+
+    @app.get("/v1/tracks/{track_id}/similar",dependencies=[auth])
+    def acoustic_similar(track_id: int):
+        if not 0<track_id<=9223372036854775807 or not db.get_track(track_id):
+            raise HTTPException(404,"Track not found")
+        ranked=media.similar(track_id)
+        rows=[t for tid,_ in ranked if (t:=db.get_track(tid)) is not None]
+        distances=dict(ranked)
+        return {"method":"acoustic_descriptors_v1","analysis_state":media.info(track_id)["analysis_state"],
+                "results":[{**r,"descriptor_distance":distances[r["id"]]} for r in public(rows,store.available_ids())]}
 
     @app.post("/v1/playback")
     def report_playback(payload: PlaybackReport, device: str=auth):
@@ -149,7 +179,7 @@ def create_app(root: Path | None = None, catalog=None):
         return {**db.get_wave_settings(),"preset":db.get_wave_preset()}
 
     def native_context():
-        return playback.context(db.get_wave_settings()["repeat_window"])
+        return {**playback.context(db.get_wave_settings()["repeat_window"]),"acoustic_affinity":media.affinity()}
 
     @app.get("/v1/wave",dependencies=[auth])
     def wave(mode: Literal["balanced","discover","favorites"]="balanced"):
@@ -168,13 +198,14 @@ def create_app(root: Path | None = None, catalog=None):
     def prepare_wave(mode: Literal["balanced","discover","favorites"]="balanced"):
         """Return playable music now; schedule approved missing tracks separately."""
         available=store.available_ids()
-        ready=select_wave_batch(db,mode,available_ids=available,native_context=native_context())
+        context=native_context()
+        ready=select_wave_batch(db,mode,available_ids=available,native_context=context)
         missing=prefetch.approved_ids()-available
         # Failed jobs require an explicit operator reapproval, not endless retries.
         with db.con() as con:
             failed={row[0] for row in con.execute(
                 "SELECT track_id FROM native_prefetch_jobs WHERE state='failed'")}
-        upcoming=select_wave_batch(db,mode,count=5,available_ids=missing-failed,native_context=native_context())
+        upcoming=select_wave_batch(db,mode,count=5,available_ids=missing-failed,native_context=context)
         jobs=prefetch.enqueue([t.id for t in upcoming])
         extra=prefetch.prepare_saved_recordings(5-len(jobs),mode)
         for job in extra:
