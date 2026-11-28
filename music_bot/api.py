@@ -1288,6 +1288,29 @@ def create_app(config: Settings | None = None,
     ):
         return wrapped_summary(db, period)
 
+    @app.get("/api/taste/profile", dependencies=[auth])
+    async def taste_profile():
+        from music_bot.taste_profile import music_profile
+        return music_profile(db)
+
+    @app.get("/api/taste/profile/genres", dependencies=[auth])
+    async def taste_profile_genres():
+        from music_bot.taste_profile import profile_genres
+        try:
+            return await profile_genres(db, catalog_client)
+        except CatalogError as exc:
+            raise HTTPException(503, detail=str(exc)) from exc
+
+    @app.get("/api/tracks/{track_id}/wave-explanation", dependencies=[auth])
+    async def track_wave_explanation(track_id: int):
+        from music_bot.taste_profile import explain_wave_track
+        if not 0 < track_id <= 9223372036854775807:
+            raise HTTPException(422, detail="Некорректный трек")
+        try:
+            return explain_wave_track(db, track_id)
+        except ValueError as exc:
+            raise HTTPException(404, detail=str(exc)) from exc
+
     @app.get("/api/wave/settings", dependencies=[auth])
     async def wave_settings():
         return db.get_wave_settings()
