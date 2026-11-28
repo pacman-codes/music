@@ -66,19 +66,18 @@ class _NowPlayingPageState extends State<NowPlayingPage>{
         const Divider(),Text('Следующие треки',style:Theme.of(context).textTheme.titleLarge),
         if(player.preparing.isNotEmpty)Text('На сервере подготавливается: ${player.preparing.length}'),
         for(var i=player.index+1;i<player.tracks.length;i++)
-          ListTile(key:ValueKey('$i:${player.tracks[i].id}'),
-            leading:const Icon(Icons.music_note),title:Text(player.tracks[i].title),
-            subtitle:Text(player.tracks[i].artist),onTap:()=>player.skipToQueueItem(i),
-            trailing:PopupMenuButton<String>(onSelected:(action){
-              final t=player.tracks[i];
-              if(action=='remove'){player.editUpcoming(i,t.id,0);}
-              else if(action=='up'){player.editUpcoming(i,t.id,-1);}
-              else if(action=='down'){player.editUpcoming(i,t.id,1);}
-            },itemBuilder:(_)=>[
-              if(i>player.index+1)const PopupMenuItem(value:'up',child:Text('Выше')),
-              if(i+1<player.tracks.length)const PopupMenuItem(value:'down',child:Text('Ниже')),
-              const PopupMenuItem(value:'remove',child:Text('Убрать из очереди')),
-            ])),
+          upcomingRow(i,player.tracks[i]),
       ]));
     });
+  Widget upcomingRow(int i,Track t)=>ListTile(key:ValueKey('$i:${t.id}'),
+    leading:const Icon(Icons.music_note),title:Text(t.title),subtitle:Text(t.artist),
+    onTap:(){if(i<player.tracks.length&&player.tracks[i].id==t.id)player.skipToQueueItem(i);},
+    trailing:PopupMenuButton<String>(onSelected:(action){
+      player.editUpcoming(i,t.id,action=='up'?-1:action=='down'?1:0);
+    },itemBuilder:(_)=>[
+      if(i>player.index+1)const PopupMenuItem(value:'up',child:Text('Выше')),
+      if(i+1<player.tracks.length)const PopupMenuItem(value:'down',child:Text('Ниже')),
+      const PopupMenuItem(value:'remove',child:Text('Убрать из очереди')),
+    ]));
+
 }
