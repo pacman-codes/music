@@ -11,6 +11,7 @@ class AudioCache {
   static const maxFile=200*1024*1024;
   static const maxCache=1024*1024*1024;
   final Map<int,Future<File?>> _jobs={};
+  final Set<http.Client> _clients={};
   bool _closed=false;
   AudioCache._(this.api,this.root);
   static Future<AudioCache> create(LainApi api) async {
@@ -39,7 +40,7 @@ class AudioCache {
     final existing=await find(t.id);
     if(existing!=null)return existing;
     final temp=File('${root.path}/${t.id}.part');
-    final client=http.Client();
+    final client=http.Client();_clients.add(client);
     IOSink? sink;
     try {
       final request=http.Request('GET',api.uri('/v1/tracks/${t.id}/audio'))
@@ -64,7 +65,7 @@ class AudioCache {
       return await temp.rename('${root.path}/${t.id}.$ext');
     }catch(_){return null;}
     finally{
-      client.close();
+      client.close();_clients.remove(client);
       if(sink!=null){try{await sink.close();}catch(_){}}
       if(await temp.exists()){try{await temp.delete();}catch(_){}}
     }
@@ -86,6 +87,7 @@ class AudioCache {
   }
   Future<void> close() async {
     _closed=true;
+    for(final client in _clients.toList()){client.close();}
     await Future.wait(_jobs.values.toList());
     if(await root.exists())await root.delete(recursive:true);
   }
