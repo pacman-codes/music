@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from music_bot.native_storage import NativeStorage
+from music_bot.native_prefetch import Prefetch, configured_hosts
 from music_bot.selection import select_wave_batch
 from music_bot.storage import Library
 
@@ -15,6 +16,10 @@ from music_bot.storage import Library
 class PairRequest(BaseModel):
     code: str = Field(min_length=43,max_length=43)
     label: str = Field(min_length=1,max_length=80)
+
+
+class PrefetchRequest(BaseModel):
+    track_ids: list[Annotated[int, Field(gt=0,le=9223372036854775807,strict=True)]] = Field(min_length=1,max_length=5)
 
 
 class Rating(BaseModel):
@@ -29,6 +34,7 @@ def create_app(root: Path | None = None):
     root = Path(root or os.environ.get("LAIN_DATA_DIR","data/standalone"))
     db = Library(root/"music.db")
     store = NativeStorage(db,root/"audio")
+    prefetch = Prefetch(store,configured_hosts())
     app = FastAPI(title="LAIN native",docs_url=None,redoc_url=None,openapi_url=None)
 
     def owner(authorization: Annotated[str|None,Header()] = None):
@@ -98,6 +104,31 @@ def create_app(root: Path | None = None):
     def wave(mode: Literal["balanced","discover","favorites"]="balanced"):
         available=store.available_ids()
         return {"results":public(select_wave_batch(db,mode,available_ids=available),available)}
+
+    @app.post("/v1/prefetch",dependencies=[auth])
+    def prepare(payload: PrefetchRequest):
+        return {"results":prefetch.enqueue(payload.track_ids)}
+
+    @app.post("/v1/prefetch/status",dependencies=[auth])
+    def preparation_status(payload: PrefetchRequest):
+        return {"results":prefetch.status(payload.track_ids)}
+
+    @app.post("/v1/wave/prepare",dependencies=[auth])
+    def prepare_wave(mode: Literal["balanced","discover","favorites"]="balanced"):
+        """Return playable music now; schedule approved missing tracks separately."""
+        available=store.available_ids()
+        ready=select_wave_batch(db,mode,available_ids=available)
+        missing=prefetch.approved_ids()-available
+        # Failed jobs require an explicit operator reapproval, not endless retries.
+        with db.con() as con:
+            failed={row[0] for row in con.execute(
+                "SELECT track_id FROM native_prefetch_jobs WHERE state='failed'")}
+        upcoming=select_wave_batch(db,mode,count=5,available_ids=missing-failed)
+        jobs=prefetch.enqueue([t.id for t in upcoming])
+        states={row["track_id"]:row["state"] for row in jobs}
+        return {"results":public(ready,available),
+                "preparing":[{**item,"state":states[item["id"]]}
+                             for item in public(upcoming,available)]}
 
     @app.get("/v1/playlists",dependencies=[auth])
     def playlists():
