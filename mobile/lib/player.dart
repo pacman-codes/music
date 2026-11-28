@@ -111,7 +111,7 @@ class LainPlayer extends BaseAudioHandler {
   }
   Future<bool> publishCheckpoint({bool quiet=false})async{
     final client=api;
-    if(client==null||current==null||_publishing||offlineOnly)return false;
+    if(client==null||current==null||_publishing||offlineOnly||index>=1000)return false;
     final snapshot=<String,dynamic>{'track_ids':tracks.take(1000).map((t)=>t.id).toList(),
       'index':index,'position_ms':(_finished?0:displayedPosition).clamp(0,86400000),'wave':waveMode};
     final fingerprint=snapshot.toString();
