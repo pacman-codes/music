@@ -113,7 +113,7 @@ class Prefetch:
         tid=self.approve_recording(mbid,row["url"],preserve_existing=True)
         return self.enqueue([tid])[0]
 
-    def prepare_saved_recordings(self, limit):
+    def prepare_saved_recordings(self, limit, mode="balanced"):
         """Wave can prepare positively marked or saved, explicitly indexed recordings."""
         if not 0<=limit<=5:
             raise ValueError("Invalid preparation limit")
@@ -124,7 +124,7 @@ class Prefetch:
         approved=self.approved_ids()
         ready=self.store.available_ids()
         with self.db.con() as db:
-            rows=db.execute("""SELECT c.mbid FROM catalog_candidates c
+            rows=db.execute("""SELECT c.mbid,v.status FROM catalog_candidates c
                 JOIN native_recording_sources s ON s.mbid=c.mbid
                 LEFT JOIN catalog_verdicts v ON v.mbid=c.mbid
                 LEFT JOIN discovery_wishlist w ON w.mbid=c.mbid
@@ -134,6 +134,7 @@ class Prefetch:
         jobs=[]
         for row in rows:
             mbid=row["mbid"]
+            if mode=="favorites" and row["status"]!="add":continue
             tid=linked.get(mbid)
             if mbid not in indexed or tid in approved or tid in ready:
                 continue
