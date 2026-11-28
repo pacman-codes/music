@@ -12,6 +12,7 @@ import 'now_playing.dart';
 import 'audio_insight.dart';
 import 'equalizer.dart';
 import 'device_sync.dart';
+import 'listening_summary.dart';
 import 'package:flutter/foundation.dart';
 
 Future<void> main() async {
@@ -401,6 +402,7 @@ class _HomeState extends State<Home>{
       const Text('Вес предпочтения — внутренний коэффициент, не процент совпадения.'),
       const SizedBox(height:20),
     ],
+    ListTile(leading:const Icon(Icons.bar_chart),title:const Text('Статистика прослушивания'),subtitle:const Text('Время, треки и исполнители'),onTap:()=>Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>ListeningSummaryPage(api:api)))),
     Text('Настройки Волны',style:Theme.of(context).textTheme.titleLarge),
     if(settings!=null)...[
       DropdownButton<String>(value:settings!['preset'] as String,isExpanded:true,items:const [
