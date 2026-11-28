@@ -42,9 +42,8 @@ server is unreachable, use the administrator CLI to revoke the session.
   eviction, temporary file and atomic rename, bounded network timeouts.
   Playback does not wait for the background cache. Cache may be evicted by OS;
   this is not permanent offline library or a promise of gapless playback.
-- Search, library pages, read-only playlist pages, five reactions, ratings,
-  Wave settings and native history. Current playlist page is the playable
-  queue when selected. No automatic import from unapproved URLs.
+- Search, library pages, editable playlists, five reactions, ratings,
+  Wave settings and native history. Full playlists (up to 1000 tracks) play in order or shuffle; unavailable audio is skipped explicitly. No automatic import from unapproved URLs.
 - Reports playback start only after approximately two seconds of position
   progression, natural completion and explicit next; seeks, stopping and
   interruptions do not count as completion. Server applies conservative
@@ -63,3 +62,19 @@ Neither AltStore signing nor playback on real devices has been tested.
 
 Flutter stable and dependency constraints are used; full SDK/dependency
 pinning and committed platform shells are future reproducibility work.
+
+
+## Discovery and collection
+
+The fifth tab, Открытия, searches MusicBrainz recordings, MusicBrainz/iTunes
+albums, and artists, and shows personal track/album recommendations. It
+distinguishes metadata from locally playable audio, exposes five catalog
+reactions and a wishlist, and supports explicit identity linking (including
+iTunes album track positions), saved artists, discographies and saved albums.
+Cover Art Archive thumbnails are public and sent without credentials.
+The source index can prepare exact MBIDs from an operator-approved manifest;
+see the server documentation. It cannot retrieve arbitrary streaming-service
+audio. Native smart playlists use native playback history rather than legacy
+Telegram delivery counts. Full playlists can be created, renamed, deleted,
+reordered, and played in order or shuffled. Queue and profile are shared with
+the native server. These changes still require real-device verification.
