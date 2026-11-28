@@ -14,6 +14,8 @@ class Track {
     j['id'] as int,j['title'] as String,j['artist'] as String,
     j['playable']==true,j['liked']==true,j['rating'] as int?,j['decision'] as String?);
   Track ready() => Track(id,title,artist,true,liked,rating,decision);
+  Map<String,dynamic> toJson()=>{'id':id,'title':title,'artist':artist,'playable':playable,
+    'liked':liked,'rating':rating,'decision':decision};
 }
 
 class ApiError implements Exception {
