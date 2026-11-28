@@ -33,7 +33,7 @@ def _run(args, timeout):
 
 
 def probe(path):
-    raw = _run(["ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+    raw = _run(["ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe", "-format_whitelist", "mp3,mov,mp4,m4a,flac,ogg",
                 "-select_streams", "a:0", "-show_entries",
                 "stream=codec_name,sample_rate,channels:format=duration,bit_rate",
                 "-of", "json", str(path)], 15)
@@ -122,7 +122,7 @@ def analyze(path):
     result = probe(path)
     # Analyze a bounded excerpt near the middle, not only an intro.
     start = max(0, (result["duration_ms"]/1000-SAMPLE_SECONDS)/2)
-    raw = _run(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe",
+    raw = _run(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-format_whitelist","mp3,mov,mp4,m4a,flac,ogg",
                 "-threads","1","-ss",str(start),"-i",str(path),"-map","0:a:0",
                 "-t",str(SAMPLE_SECONDS),"-vn","-sn","-dn","-ac","1","-ar",str(RATE),
                 "-f","s16le","pipe:1"], 75)
@@ -131,7 +131,7 @@ def analyze(path):
 
 def encode_economy(path, target):
     info=probe(path)
-    subprocess.run(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe",
+    subprocess.run(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-format_whitelist","mp3,mov,mp4,m4a,flac,ogg",
                     "-threads","1","-i",str(path),"-map","0:a:0","-vn","-sn","-dn",
                     "-map_metadata","-1","-c:a","aac","-b:a","96k","-ac","2",
                     "-ar","44100","-threads","1","-movflags","+faststart",
