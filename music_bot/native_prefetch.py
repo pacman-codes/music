@@ -57,6 +57,37 @@ class Prefetch:
             db.execute("INSERT INTO native_sources VALUES(?,?) ON CONFLICT(track_id) DO UPDATE SET url=excluded.url",(track_id,url))
             db.execute("DELETE FROM native_prefetch_jobs WHERE track_id=?",(track_id,))
 
+    def approve_recording(self, mbid, url):
+        """Operator-confirmed exact recording; prepare a missing asset without pretending it exists."""
+        from music_bot.catalog import valid_mbid
+        validate_direct_audio_url(url,self.hosts)
+        if urlsplit(url).query or not valid_mbid(mbid):
+            raise ValueError("Invalid source or recording ID")
+        mbid=mbid.lower()
+        with self.db.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            candidate=db.execute("SELECT title,artist FROM catalog_candidates WHERE mbid=?",(mbid,)).fetchone()
+            if candidate is None:
+                raise ValueError("Search for the recording first")
+            linked=db.execute("SELECT track_id FROM track_recording_links WHERE mbid=?",(mbid,)).fetchone()
+            if linked is None:
+                linked=db.execute("SELECT track_id FROM catalog_audio_assets WHERE mbid=?",(mbid,)).fetchone()
+            if linked is not None:
+                tid=linked[0]
+            else:
+                uid="native:recording:"+mbid
+                db.execute("""INSERT OR IGNORE INTO tracks(file_id,file_unique_id,title,artist,added_at)
+                              VALUES(?,?,?,?,CURRENT_TIMESTAMP)""",(uid,uid,candidate["title"],candidate["artist"]))
+                tid=db.execute("SELECT id FROM tracks WHERE file_unique_id=?",(uid,)).fetchone()[0]
+                db.execute("INSERT INTO track_recording_links(track_id,mbid,provenance) VALUES(?,?,'confirmed')",(tid,mbid))
+                self.db._reconcile_recording_verdict(db,tid,mbid)
+            running=db.execute("SELECT state FROM native_prefetch_jobs WHERE track_id=?",(tid,)).fetchone()
+            if running and running[0]=="running":
+                raise ValueError("Source is currently being downloaded")
+            db.execute("INSERT INTO native_sources VALUES(?,?) ON CONFLICT(track_id) DO UPDATE SET url=excluded.url",(tid,url))
+            db.execute("DELETE FROM native_prefetch_jobs WHERE track_id=?",(tid,))
+        return tid
+
     def approved_ids(self):
         if not self.hosts:
             return set()
