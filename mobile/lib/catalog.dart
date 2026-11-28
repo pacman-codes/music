@@ -9,7 +9,7 @@ class AlbumCover extends StatelessWidget{
   final double size;
   const AlbumCover({super.key,required this.urls,this.size=96});
   @override Widget build(BuildContext context){
-    final list=urls is List?urls:[];
+    final List<dynamic> list=urls is List?List<dynamic>.from(urls as List):[];
     final safe=list.whereType<String>().where((s)=>RegExp(r'^https://coverartarchive\.org/(release|release-group)/[a-f0-9-]{36}/front-250
 class CatalogPage extends StatefulWidget {
   final LainApi api;
@@ -144,11 +144,13 @@ class _RecordingPageState extends State<RecordingPage>{
   });
   Track get track=>Track(row['local_track_id'] as int,row['title'] as String,row['artist'] as String,true,false,null,row['decision'] as String?);
   Future<void> prepare()=>action(()async{
-    final tid=row['local_track_id'] as int?;
-    if(tid==null)return;
-    final result=await api.prefetch([tid]);
-    final state=result.first['state'];
-    if(mounted)setState((){row['playable']=state=='ready';status=state=='ready'?'Аудио готово':state=='queued'||state=='running'?'Сервер готовит аудио. Проверь статус позже.':'Источник недоступен: $state';});
+    final result=await api.request('POST','/v1/discovery/$id/prepare') as Map;
+    final state=result['state'];
+    if(mounted)setState((){row=Map<String,dynamic>.from(result['recording'] as Map);status=state=='ready'?'Аудио готово':state=='queued'||state=='running'?'Сервер готовит аудио. Проверь статус позже.':'Источник недоступен: $state';});
+  });
+  Future<void> refresh()=>action(()async{
+    final data=await api.request('GET','/v1/discovery/$id') as Map;
+    if(mounted)setState((){row=Map<String,dynamic>.from(data);status=null;});
   });
   Future<void> match()async{
     final selected=await Navigator.push<Track>(context,MaterialPageRoute(builder:(_)=>MatchPage(api:api)));
@@ -164,12 +166,12 @@ class _RecordingPageState extends State<RecordingPage>{
       if(mounted)setState((){row['local_track_id']=selected.id;row['playable']=selected.playable;status='Связь подтверждена';});
     });
   }
-  @override Widget build(BuildContext context)=>Scaffold(appBar:AppBar(title:const Text('Запись')),body:ListView(padding:const EdgeInsets.all(20),children:[
+  @override Widget build(BuildContext context)=>Scaffold(appBar:AppBar(title:const Text('Запись'),actions:[IconButton(onPressed:busy?null:refresh,icon:const Icon(Icons.refresh))]),body:ListView(padding:const EdgeInsets.all(20),children:[
     const Icon(Icons.album,size:110),Text(row['title'] as String,style:Theme.of(context).textTheme.headlineMedium),Text(row['artist'] as String),
     const SizedBox(height:12),
     Text(row['playable']==true?'Аудио доступно':row['preparable']==true?'Есть одобренный источник':'Метаданные каталога · аудиофайл не получен'),
     if(row['playable']==true)FilledButton.icon(onPressed:()=>widget.player.start([track]),icon:const Icon(Icons.play_arrow),label:const Text('Слушать')),
-    if(row['local_track_id']!=null&&row['playable']!=true)OutlinedButton(onPressed:busy?null:prepare,child:const Text('Подготовить / проверить')),
+    if((row['local_track_id']!=null||row['preparable']==true)&&row['playable']!=true)OutlinedButton(onPressed:busy?null:prepare,child:const Text('Подготовить / проверить')),
     OutlinedButton(onPressed:busy?null:save,child:Text(row['in_wishlist']==true?'Убрать из сохранённых':'Сохранить на потом')),
     if(row['local_track_id']==null)OutlinedButton(onPressed:busy?null:match,child:const Text('Связать с записью в медиатеке')),
     const Divider(),
@@ -244,10 +246,10 @@ class _AlbumPageState extends State<AlbumPage>{
     .map((r)=>Track(r['local_track_id'] as int,r['title'] as String,r['artist'] as String,true,false,null,null)).toList();
   Future<void> prepare()async{
     if(busy)return;
-    final ids=rows.where((r)=>r['playable']!=true&&r['preparable']==true&&r['local_track_id']!=null).map((r)=>r['local_track_id'] as int).toSet().take(5).toList();
-    if(ids.isEmpty)return;
+    if(!rows.any((r)=>r['playable']!=true&&r['preparable']==true))return;
     setState(()=>busy=true);
-    try{await widget.api.prefetch(ids);if(mounted)setState(()=>error='До пяти записей отправлены на подготовку. Обнови альбом позже.');}
+    try{final result=await widget.api.request('POST','/v1/albums/${widget.id}/prepare') as Map;
+      if(mounted)setState(()=>error='Подготовка: ${(result['results'] as List).length} записей. Обнови альбом позже.');}
     catch(e){if(mounted)setState(()=>error=e.toString());}
     finally{if(mounted)setState(()=>busy=false);}
   }
