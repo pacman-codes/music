@@ -105,6 +105,29 @@ void main(){
     expect((await cache.usage())['offline'],0);
     await cache.close();
   });
+  test('progress outbox coalesces offline reports without losing terminal outcome',()async{
+    final dir=Directory('${base.path}/progress');
+    final seen=<Map>[];
+    final retryApi=LainApi(serverUri('https://example.com'),'secret','device',client:MockClient((request)async{
+      seen.add(jsonDecode(request.body) as Map);
+      return http.Response('{"changed":true}',200);
+    }));
+    final journal=await SessionJournal.open(dir,retryApi);
+    final id=List.filled(32,'b').join();
+    await journal.report(a,id,'start',2000,100000,send:false);
+    await journal.report(a,id,'progress',32000,100000,send:false);
+    await journal.report(a,id,'progress',62000,100000,send:false);
+    await journal.report(a,id,'progress',40000,100000,send:false);
+    await journal.report(a,id,'complete',100000,100000,send:false);
+    expect(journal.pendingCount,3);
+    await journal.close();
+    final restored=await SessionJournal.open(dir,retryApi);
+    await restored.flush();
+    expect(seen.map((row)=>row['event']).toList(),['start','progress','complete']);
+    expect(seen.map((row)=>row['listened_ms']).toList(),[2000,62000,100000]);
+    expect(restored.pendingCount,0);
+    await restored.close();retryApi.client.close();
+  });
   test('queue snapshots and offline telemetry survive restart and retry in order',()async{
     final dir=Directory('${base.path}/state');
     final first=await SessionJournal.open(dir,api);
