@@ -39,6 +39,7 @@ class LainPlayer extends BaseAudioHandler {
   Future<void> _tail=Future.value();
   String _playId='';
   int _listened=0;
+  int _lastProgress=0;
   int _lastPosition=0;
   final _clock=Stopwatch()..start();
   int _lastTick=0;
@@ -202,7 +203,8 @@ class LainPlayer extends BaseAudioHandler {
     if(!busy&&!_finished&&current!=null&&engine.playing&&engine.processingState==ProcessingState.ready
        &&wall>0&&wall<2000&&delta>0&&delta<=wall+300){
       _listened+=min(delta,wall);
-      if(!_started&&_listened>=2000){_started=true;_report('start');}
+      if(!_started&&_listened>=2000){_started=true;_lastProgress=_listened;_report('start');}
+      if(_started&&_listened-_lastProgress>=30000){_lastProgress=_listened;_report('progress');}
     }
     _lastTick=now;_lastPosition=p.inMilliseconds;
   }
@@ -265,7 +267,7 @@ class LainPlayer extends BaseAudioHandler {
     index=next;
     if(waveMode!=null&&index>30){tracks.removeRange(0,index-10);index=10;_syncQueue();}
     final t=tracks[index];
-    _playId=_newId();_listened=0;_started=false;_finished=false;_lastPosition=0;_lastTick=_clock.elapsedMilliseconds;
+    _playId=_newId();_listened=0;_lastProgress=0;_started=false;_finished=false;_lastPosition=0;_lastTick=_clock.elapsedMilliseconds;
     mediaItem.add(item(t));
     final quality=cache?.quality??'original';
     final file=await cache?.find(t.id,representation:quality);
@@ -299,6 +301,7 @@ class LainPlayer extends BaseAudioHandler {
   });
   @override Future<void> pause()=>_serial(()async{
     await engine.pause();
+    if(_started&&!_finished&&_listened>_lastProgress){_lastProgress=_listened;_report('progress');}
     if(shareProgress&&!offlineOnly&&!_restored)unawaited(publishCheckpoint(quiet:true));
   });
   @override Future<void> seek(Duration p)=>_serial(()async{
