@@ -123,6 +123,16 @@ class LainPlayer extends BaseAudioHandler {
     }catch(e){if(api==client)syncError=e is ApiError?e.toString():'Не удалось сохранить позицию';return false;}
     finally{_publishing=false;changed();}
   }
+  Future<void> clearCheckpoint()async{
+    final client=api;if(client==null)return;
+    await setShareProgress(false);
+    // Wait for the in-flight write before deletion, so it cannot resurrect the checkpoint.
+    final deadline=DateTime.now().add(const Duration(seconds:25));
+    while(_publishing&&DateTime.now().isBefore(deadline)){await Future<void>.delayed(const Duration(milliseconds:100));}
+    if(_publishing)throw const ApiError(0);
+    await client.request('DELETE','/v1/checkpoint');
+    _lastShared=null;changed();
+  }
   Future<bool> restoreCheckpoint(Map<String,dynamic> data)async{
     final client=api;if(client==null)return false;
     var applied=false;
