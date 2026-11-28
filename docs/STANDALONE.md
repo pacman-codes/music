@@ -133,3 +133,17 @@ reapproval. Restart recovery does not require the phone to remain online.
 Worker activation and live source transfers still require testing on the VPS.
 Phone-side buffering, automatic source discovery and native playback telemetry
 remain separate client/provider work.
+
+
+## Mobile client and native playback
+
+See [mobile README](../mobile/README.md) for Flutter setup and CI.
+Native playback reports (POST /v1/playback) use a random 32-hex play_id scoped
+to a device, track_id, event (start/skip/complete/stop), listened_ms and optional
+duration_ms. Reports below two seconds are ignored; completion requires >=80%
+played time and early explicit skip requires <25% and <30 seconds. Reports
+are client telemetry, not independently verified acoustics. No duplicate
+terminal feedback for the same play ID. GET /v1/history exposes this history.
+GET/PUT /v1/wave/settings share the existing settings. Native Wave uses
+native playback history, rather than treating migrated Telegram sends as plays.
+The original legacy history is retained unchanged.
