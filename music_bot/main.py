@@ -1600,6 +1600,8 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
     install_history_handlers(router, db, send_history_queue)
     install_smart_handlers(router, db, send_history_queue, render_chat_panel)
     install_artist_handlers(router, db, catalog, send_history_queue, render_chat_panel)
+    from music_bot.telegram_personal_albums import install_personal_album_handlers
+    install_personal_album_handlers(router, db, catalog)
 
     # Plain text music search is a fallback after all explicit command handlers.
     install_youtube_handlers(

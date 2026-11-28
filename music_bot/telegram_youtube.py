@@ -295,6 +295,7 @@ def album_collection_page(db: Library, page: int = 0):
         nav.append(InlineKeyboardButton(text="→", callback_data=f"albumlist:{page+1}"))
     if nav:
         rows.append(nav)
+    rows.append([InlineKeyboardButton(text="✨ Альбомы для тебя", callback_data="personalalbums:0")])
     rows.append([InlineKeyboardButton(text="📂 Плейлисты", callback_data="nav:playlists")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
