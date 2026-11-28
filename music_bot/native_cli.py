@@ -40,6 +40,9 @@ def main():
     commands.add_parser("devices")
     revoke=commands.add_parser("revoke")
     revoke.add_argument("id")
+    approve=commands.add_parser("approve-source")
+    approve.add_argument("track_id",type=int)
+    approve.add_argument("url")
     add=commands.add_parser("import")
     add.add_argument("file",type=Path)
     add.add_argument("--title",required=True)
@@ -58,6 +61,10 @@ def main():
         print(json.dumps(store.devices(),ensure_ascii=False))
     elif args.command=="revoke":
         print("Revoked" if store.revoke(args.id) else "Not found")
+    elif args.command=="approve-source":
+        from music_bot.native_prefetch import Prefetch, configured_hosts
+        Prefetch(store,configured_hosts()).approve(args.track_id,args.url)
+        print("Source approved")
     elif args.command=="import":
         print("Track ID:",store.import_file(args.file,title=args.title,artist=args.artist,track_id=args.track_id))
 
