@@ -212,3 +212,15 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
   .compact-track .track-icon,.compact-track .track-more,.compact-track .track-icon.heart{width:34px;min-width:34px}}
 
 .recommendation-reason{font-size:11px;color:var(--lain-accent);white-space:normal;overflow-wrap:anywhere;line-height:1.4}
+
+
+/* Wave controls preserve the selected mix preset. */
+.hero #wave-settings-open{grid-column:1/-1;color:#fff;background:#ffffff12;border-color:#ffffff30}
+.wave-settings-panel{grid-column:1/-1;display:grid;gap:8px;padding:14px;border:1px solid #ffffff30;border-radius:14px;background:#24203988}
+.wave-settings-panel label{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;font-weight:650}
+.wave-settings-panel output{font-variant-numeric:tabular-nums;color:#ddd5ff}
+.wave-settings-panel input[type=range]{width:100%;margin:2px 0;accent-color:#c5b7ff;min-height:32px}
+.wave-settings-panel small{color:#e5dff2;font-size:11px;line-height:1.45}
+.wave-settings-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.wave-settings-actions button{color:#fff;background:#ffffff16;border:1px solid #ffffff38}
+.wave-settings-actions #wave-settings-save{background:#d9ceff;color:#28203c;font-weight:650}
