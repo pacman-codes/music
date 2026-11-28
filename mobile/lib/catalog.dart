@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'api.dart';
 import 'player.dart';
+import 'offline_page.dart';
 
 /// Public Cover Art Archive thumbnails, never authenticated media URLs.
 class AlbumCover extends StatelessWidget{
@@ -177,7 +178,10 @@ class _RecordingPageState extends State<RecordingPage>{
     const Icon(Icons.album,size:110),Text(row['title'] as String,style:Theme.of(context).textTheme.headlineMedium),Text(row['artist'] as String),
     const SizedBox(height:12),
     Text(row['playable']==true?'Аудио доступно':row['preparable']==true?'Есть одобренный источник':'Метаданные каталога · аудиофайл не получен'),
-    if(row['playable']==true)FilledButton.icon(onPressed:()=>widget.player.start([track]),icon:const Icon(Icons.play_arrow),label:const Text('Слушать')),
+    if(row['playable']==true)...[
+      FilledButton.icon(onPressed:()=>widget.player.start([track]),icon:const Icon(Icons.play_arrow),label:const Text('Слушать')),
+      OutlinedButton.icon(onPressed:()=>Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>DownloadPage(player:widget.player,tracks:[track]))),icon:const Icon(Icons.download),label:const Text('Скачать офлайн')),
+    ],
     if((row['local_track_id']!=null||row['preparable']==true)&&row['playable']!=true)OutlinedButton(onPressed:busy?null:prepare,child:const Text('Подготовить / проверить')),
     OutlinedButton(onPressed:busy?null:save,child:Text(row['in_wishlist']==true?'Убрать из сохранённых':'Сохранить на потом')),
     if(row['local_track_id']==null)OutlinedButton(onPressed:busy?null:match,child:const Text('Связать с записью в медиатеке')),
@@ -285,6 +289,7 @@ class _AlbumPageState extends State<AlbumPage>{
       Center(child:AlbumCover(urls:data!['cover_urls'],size:180)),Text(data!['title'] as String,style:Theme.of(context).textTheme.headlineMedium),
       Text(data!['artist'] as String),Text('Готово: ${ready.length} из ${rows.length}'),
       FilledButton.icon(onPressed:ready.isEmpty?null:()=>widget.player.start(ready),icon:const Icon(Icons.play_arrow),label:Text(ready.length==rows.length?'Слушать альбом':'Слушать доступные')),
+      OutlinedButton.icon(onPressed:ready.isEmpty?null:()=>Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>DownloadPage(player:widget.player,tracks:ready))),icon:const Icon(Icons.download),label:const Text('Скачать доступные')),
       OutlinedButton(onPressed:busy?null:save,child:Text(data!['saved']==true?'Убрать из коллекции':'Сохранить альбом')),
       if(rows.any((r)=>r['preparable']==true&&r['playable']!=true))OutlinedButton(onPressed:busy?null:prepare,child:const Text('Подготовить следующие 5')),
       for(var i=0;i<rows.length;i++)ListTile(leading:Text('${i+1}'),title:Text(rows[i]['title'] as String),
@@ -363,6 +368,7 @@ class _ArtistPageState extends State<ArtistPage>{
         Text((data!['disambiguation']??'') as String),
         OutlinedButton(onPressed:busy?null:save,child:Text(data!['saved']==true||data!['saved']==1?'Убрать из избранных':'Сохранить исполнителя')),
         FilledButton(onPressed:ready.isEmpty?null:()=>widget.player.start(ready),child:const Text('Слушать доступные треки')),
+        OutlinedButton.icon(onPressed:ready.isEmpty?null:()=>Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>DownloadPage(player:widget.player,tracks:ready))),icon:const Icon(Icons.download),label:const Text('Скачать доступные треки')),
         const Text('В медиатеке'),
         for(final t in tracks)ListTile(title:Text(t.title),subtitle:Text(t.artist),onTap:t.playable?()=>widget.player.start(ready,initial:ready.indexWhere((x)=>x.id==t.id)):null),
         if(moreTracks)TextButton(onPressed:busy?null:loadTracks,child:const Text('Ещё треки')),
