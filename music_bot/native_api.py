@@ -85,7 +85,9 @@ def create_app(root: Path | None = None):
                 "next_before":found[49].id if len(found)>50 else None}
 
     @app.get("/v1/tracks/{track_id}/audio",dependencies=[auth])
-    def audio(track_id: Annotated[int, Field(gt=0,le=9223372036854775807)]):
+    def audio(track_id: int):
+        if not 0<track_id<=9223372036854775807:
+            raise HTTPException(404,"Audio unavailable")
         asset=store.audio(track_id)
         if not asset:
             raise HTTPException(404,"Audio unavailable")
@@ -102,7 +104,7 @@ def create_app(root: Path | None = None):
         return db.playlists()
 
     @app.get("/v1/playlists/{playlist_id}",dependencies=[auth])
-    def playlist(playlist_id: int=1,page: int=Query(0,ge=0,le=100000)):
+    def playlist(playlist_id: int,page: int=Query(0,ge=0,le=100000)):
         if not 0<playlist_id<=9223372036854775807 or not db.get_playlist(playlist_id):
             raise HTTPException(404,"Playlist not found")
         total,page,pages,rows=db.playlist_page(playlist_id,page,20)
