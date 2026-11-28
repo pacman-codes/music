@@ -34,6 +34,10 @@ class TrackID(BaseModel):
     track_id: int = Field(gt=0,le=9223372036854775807,strict=True)
 
 
+class AlbumMatch(TrackID):
+    recording_id: str = Field(min_length=4,max_length=36)
+
+
 class Move(BaseModel):
     delta: Literal[-1,1]
 
@@ -120,6 +124,13 @@ def install_native_catalog(app, db, store, prefetch, catalog, auth, public):
         ident=known_recording(ident)
         if not db.get_track(payload.track_id):
             raise HTTPException(404,"Track not found")
+        current=db.resolved_catalog_tracks().get(ident)
+        if current is not None and current!=payload.track_id:
+            raise HTTPException(409,"Recording already linked")
+        previous=db.recording_for_tracks().get(payload.track_id)
+        if previous is not None and previous["mbid"]!=ident:
+            raise HTTPException(409,"Track already linked to another recording")
+        if current==payload.track_id:return {"ok":True}
         try:
             db.confirm_recording_match(payload.track_id,ident)
         except ValueError as exc:
@@ -180,6 +191,22 @@ def install_native_catalog(app, db, store, prefetch, catalog, auth, public):
         else:
             db.remove_saved_album(ident.lower())
         return {"saved":payload.saved}
+
+    @app.put("/v1/albums/{ident}/tracks/{position}/match",dependencies=deps)
+    async def match_album_track(ident: str,position: int,payload: AlbumMatch):
+        _,_,_,rows=await load_album(ident)
+        if not 0<=position<len(rows) or rows[position].mbid!=payload.recording_id:
+            raise HTTPException(409,"Album track list changed")
+        resolved=db.resolved_catalog_tracks().get(payload.recording_id)
+        if resolved is not None and resolved!=payload.track_id:
+            raise HTTPException(409,"Recording already linked")
+        if not db.get_track(payload.track_id):
+            raise HTTPException(404,"Track not found")
+        try:
+            changed=db.confirm_album_audio(payload.recording_id,payload.track_id)
+        except ValueError as exc:
+            raise HTTPException(409,"Album track already associated") from exc
+        return {"changed":changed}
 
     @app.get("/v1/artists",dependencies=deps)
     def saved_artists(offset: int=Query(0,ge=0,le=100000)):
