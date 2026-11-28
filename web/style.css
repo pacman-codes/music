@@ -210,3 +210,5 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 .compact-track .compact-match{margin:2px 0}
 @media(max-width:360px){.compact-track{padding:8px}.compact-track .track-head{gap:4px}
   .compact-track .track-icon,.compact-track .track-more,.compact-track .track-icon.heart{width:34px;min-width:34px}}
+
+.recommendation-reason{font-size:11px;color:var(--lain-accent);white-space:normal;overflow-wrap:anywhere;line-height:1.4}
