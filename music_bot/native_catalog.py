@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from music_bot.albums import find_albums, album_tracks, valid_album_id, album_cover_urls, cached_album_group
 from music_bot.artists import search_artists, artist_discography, group_album
 from music_bot.catalog import CatalogError, valid_mbid
+from music_bot.importer import MediaImportError
 from music_bot.personalized import personalized_discovery
 from music_bot.personal_albums import recommend_albums
 from music_bot.smart_playlists import RULES, BASE
@@ -65,6 +66,7 @@ def install_native_catalog(app, db, store, prefetch, catalog, auth, public):
     def recording_rows(rows):
         linked=db.resolved_catalog_tracks()
         approved=prefetch.approved_ids()
+        indexed=prefetch.indexed_recordings()
         ready=store.available_ids()
         decisions=db.catalog_verdicts()
         wanted=db.wishlist_ids()
@@ -74,7 +76,7 @@ def install_native_catalog(app, db, store, prefetch, catalog, auth, public):
             ident=item["mbid"]
             local=linked.get(ident)
             item.update(local_track_id=local,playable=local in ready,
-                        preparable=local in approved,decision=decisions.get(ident),
+                        preparable=local in approved or ident in indexed,decision=decisions.get(ident),
                         in_wishlist=ident in wanted)
             result.append(item)
         return result
@@ -107,6 +109,19 @@ def install_native_catalog(app, db, store, prefetch, catalog, auth, public):
     @app.get("/v1/discovery/wishlist",dependencies=deps)
     def wishlist():
         return {"results":recording_rows(db.wishlist(100))}
+
+    @app.get("/v1/discovery/{ident}",dependencies=deps)
+    def recording_detail(ident: str):
+        return recording_rows([db.get_candidate(known_recording(ident))])[0]
+
+    @app.post("/v1/discovery/{ident}/prepare",dependencies=deps)
+    def prepare_recording(ident: str):
+        ident=known_recording(ident)
+        try:
+            job=prefetch.prepare_recording(ident)
+        except (ValueError,MediaImportError) as exc:
+            raise HTTPException(409,"Approved source unavailable") from exc
+        return {**job,"recording":recording_rows([db.get_candidate(ident)])[0]}
 
     @app.put("/v1/discovery/{ident}/reaction",dependencies=deps)
     def decision(ident: str,payload: Decision):
@@ -170,13 +185,14 @@ def install_native_catalog(app, db, store, prefetch, catalog, auth, public):
         manual=db.album_audio_links()
         ready=store.available_ids()
         approved=prefetch.approved_ids()
+        indexed=prefetch.indexed_recordings()
         tracks=[]
         for r in rows:
             tid=resolved.get(r.mbid) if valid_mbid(r.mbid) else None
             if tid is None:tid=manual.get(r.mbid)
             tracks.append({"recording_id":r.mbid,"title":r.title,"artist":r.artist,
                            "duration_ms":r.duration_ms,"local_track_id":tid,
-                           "playable":tid in ready,"preparable":tid in approved})
+                           "playable":tid in ready,"preparable":tid in approved or r.mbid in indexed})
         return {"mbid":ident,"title":title,"artist":artist,"saved":bool(db.get_saved_album(ident)),
                 "cover_urls":album_cover_urls(ident,cached_album_group(catalog,ident)),
                 "tracks":tracks,"available_count":sum(t["playable"] for t in tracks)}
@@ -191,6 +207,30 @@ def install_native_catalog(app, db, store, prefetch, catalog, auth, public):
         else:
             db.remove_saved_album(ident.lower())
         return {"saved":payload.saved}
+
+    @app.post("/v1/albums/{ident}/prepare",dependencies=deps)
+    async def prepare_album(ident: str):
+        _,_,_,rows=await load_album(ident)
+        ready=store.available_ids()
+        linked=db.resolved_catalog_tracks()
+        manual=db.album_audio_links()
+        approved=prefetch.approved_ids()
+        indexed=prefetch.indexed_recordings()
+        jobs=[]
+        for row in rows:
+            tid=linked.get(row.mbid,manual.get(row.mbid))
+            if tid in ready:
+                continue
+            if len(jobs)>=5:break
+            if tid in approved:
+                job=prefetch.enqueue([tid])[0]
+            elif row.mbid in indexed:
+                try:job=prefetch.prepare_recording(row.mbid)
+                except (ValueError,MediaImportError):continue
+            else:continue
+            if job["state"] not in {"failed","unavailable"}:
+                jobs.append({"recording_id":row.mbid,**job})
+        return {"results":jobs}
 
     @app.put("/v1/albums/{ident}/tracks/{position}/match",dependencies=deps)
     async def match_album_track(ident: str,position: int,payload: AlbumMatch):
