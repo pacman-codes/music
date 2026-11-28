@@ -9,10 +9,17 @@ import 'player.dart';
 import 'catalog.dart';
 import 'offline_page.dart';
 import 'now_playing.dart';
+import 'audio_insight.dart';
+import 'equalizer.dart';
+import 'package:flutter/foundation.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final player=LainPlayer();
+  var enableEq=false;
+  if(!kIsWeb&&defaultTargetPlatform==TargetPlatform.android){
+    try{enableEq=await Sessions.storage.read(key:androidEqBootKey)=='true';}catch(_){}
+  }
+  final player=LainPlayer(enableAndroidEq:enableEq);
   await AudioService.init(builder:()=>player,config:const AudioServiceConfig(
     androidNotificationChannelId:'ink.soodoo.lain.playback',
     androidNotificationChannelName:'LAIN · Музыка',
@@ -171,6 +178,7 @@ class _HomeState extends State<Home>{
         for(final e in const {'add':'Добавлю','maybe':'Может добавлю','never':'Никогда','later':'Не сейчас','interesting':'Интересно, но не слушать'}.entries)
           ListTile(title:Text(e.value),onTap:()=>Navigator.pop(ctx,e.key)),
         ListTile(leading:const Icon(Icons.playlist_add),title:const Text('В плейлист'),onTap:()=>Navigator.pop(ctx,'playlist')),
+        if(t.playable)ListTile(leading:const Icon(Icons.graphic_eq),title:const Text('Анализ и похожие по звучанию'),onTap:()=>Navigator.pop(ctx,'insight')),
         if(t.playable)ListTile(leading:const Icon(Icons.download),title:const Text('Скачать офлайн'),onTap:()=>Navigator.pop(ctx,'download')),
         if(t.playable)ListTile(leading:const Icon(Icons.queue_music),title:const Text('Следующим'),onTap:()=>Navigator.pop(ctx,'next')),
         if(tab==2&&playlistId!=null)ListTile(leading:const Icon(Icons.remove_circle_outline),title:const Text('Убрать из плейлиста'),onTap:()=>Navigator.pop(ctx,'remove')),
@@ -184,6 +192,9 @@ class _HomeState extends State<Home>{
     )));
     if(action==null||!mounted)return;
     try{
+      if(action=='insight'){
+        await Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>AudioInsightPage(api:api,player:player,track:t)));return;
+      }
       if(action=='download'){await downloadTracks([t]);return;}
       if(action=='playlist'){await addToPlaylist(t);return;}
       if(action=='next'){await player.enqueueNext(t);return;}
@@ -407,6 +418,8 @@ class _HomeState extends State<Home>{
       subtitle:Text('${row['artist']} · ${(row['listened_ms'] as int)~/1000} сек.')),
     if(history.isEmpty)const Text('Пока нет подтверждённых событий.'),
     const SizedBox(height:20),ListTile(title:const Text('Сервер'),subtitle:Text(api.origin.toString())),
+    if(!kIsWeb&&defaultTargetPlatform==TargetPlatform.android)
+      ListTile(leading:const Icon(Icons.equalizer),title:const Text('Эквалайзер Android'),onTap:()=>Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>EqualizerPage(player:player)))),
     ListTile(leading:const Icon(Icons.storage),title:const Text('Хранилище и предзагрузка'),subtitle:Text('${player.cache?.cacheMiB??1024} МБ кеша'),onTap:showStorage),
     ListTile(leading:const Icon(Icons.download_done),title:const Text('Скачанная музыка'),onTap:showOffline),
     ListTile(title:const Text('Синхронизация истории'),subtitle:Text('Ожидает отправки: ${player.journal?.pendingCount??0}'),trailing:IconButton(icon:const Icon(Icons.sync),onPressed:()async{await player.journal?.flush();player.changed();})),

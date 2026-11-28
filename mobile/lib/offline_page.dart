@@ -64,12 +64,13 @@ class StoragePage extends StatefulWidget{
 }
 class _StoragePageState extends State<StoragePage>{
   late int cacheMiB,offlineGiB,warm;
+  late String quality;
   Map<String,int> usage={};
   bool busy=false;
   String? status;
   AudioCache get cache=>widget.player.cache!;
   @override void initState(){
-    super.initState();cacheMiB=cache.cacheMiB;offlineGiB=cache.offlineGiB;warm=cache.warmCount;
+    super.initState();cacheMiB=cache.cacheMiB;offlineGiB=cache.offlineGiB;warm=cache.warmCount;quality=cache.quality;
     unawaited(refresh());
   }
   Future<void> refresh()async{
@@ -93,10 +94,11 @@ class _StoragePageState extends State<StoragePage>{
       option('Лимит кеша',cacheMiB,AudioCache.cacheOptions,(n)=>n>=1024?'${n~/1024} ГБ':'$n МБ',(n)=>cacheMiB=n),
       option('Лимит загрузок',offlineGiB,AudioCache.offlineOptions,(n)=>'$n ГБ',(n)=>offlineGiB=n),
       option('Предзагрузка на телефон',warm,AudioCache.warmOptions,(n)=>n==0?'Выкл.':'$n треков',(n)=>warm=n),
-      FilledButton(onPressed:busy?null:()=>action(()=>cache.settings(cache:cacheMiB,offlineLimit:offlineGiB,warm:warm),'Настройки сохранены'),child:const Text('Сохранить')),
+      ListTile(title:const Text('Качество стриминга'),trailing:DropdownButton<String>(value:quality,items:const [DropdownMenuItem(value:'original',child:Text('Оригинал')),DropdownMenuItem(value:'economy',child:Text('Экономия трафика'))],onChanged:busy?null:(v)=>setState(()=>quality=v!))),
+      FilledButton(onPressed:busy?null:()=>action(()=>cache.settings(cache:cacheMiB,offlineLimit:offlineGiB,warm:warm,streamQuality:quality),'Настройки сохранены'),child:const Text('Сохранить')),
       OutlinedButton(onPressed:busy?null:()=>action(cache.clearTemporary,'Временный кеш очищен, текущий трек защищён'),child:const Text('Очистить временный кеш')),
       const Divider(),
-      const ListTile(title:Text('Качество'),subtitle:Text('Оригинальный файл с сервера, без перекодирования.')),
+      const ListTile(title:Text('Экономия трафика'),subtitle:Text('AAC около 96 кбит/с, если файл меньше оригинала. Нужна предварительная обработка на сервере. Уже скачанные оригиналы и постоянные загрузки не перекодируются. Новое качество действует со следующего запуска трека.')),
       const Text('Скачанные файлы не удаляются при очистке кеша. Снижение лимита загрузок не удаляет уже скачанную музыку. Автоматические загрузки выполняются, пока приложение работает.'),
       if(busy)const LinearProgressIndicator(),if(status!=null)Text(status!),
     ]));

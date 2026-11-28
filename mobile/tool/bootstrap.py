@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory() as temp:
 manifest=ROOT/"android/app/src/main/AndroidManifest.xml"
 tree=ET.parse(manifest)
 root=tree.getroot()
-for permission in ("INTERNET","WAKE_LOCK","FOREGROUND_SERVICE","FOREGROUND_SERVICE_MEDIA_PLAYBACK"):
+for permission in ("INTERNET","WAKE_LOCK","FOREGROUND_SERVICE","FOREGROUND_SERVICE_MEDIA_PLAYBACK","MODIFY_AUDIO_SETTINGS"):
     name="android.permission."+permission
     if not any(n.get(a("name"))==name for n in root.findall("uses-permission")):
         root.insert(0,ET.Element("uses-permission",{a("name"):name}))

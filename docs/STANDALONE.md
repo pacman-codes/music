@@ -221,3 +221,59 @@ album preparation at POST /v1/albums/{id}/prepare. The API reports playable and
 preparable separately and does not expose source URLs. This enables automatic
 exact matching to approved audio, not unrestricted streaming-service
 downloading. Live provider integration and real device testing remain pending.
+
+
+## Optional offline media processing
+
+The media worker is independent of the source download worker and HTTP
+server. Activate only when the VPS has sufficient memory and disk:
+
+```sh
+docker compose --profile standalone --profile media up -d --build standalone standalone-media
+```
+
+The optional image installs FFmpeg/ffprobe. The worker has no network access,
+runs as the unprivileged music user, and has Compose limits (0.75 CPU,
+256 MiB RAM, 32 processes). It holds an exclusive volume-local lock,
+processes one job at a time, and checks for at least 1 GiB disk headroom
+plus working space before encoding. The derivative store has a 2 GiB
+admission cap and never deletes original audio. These are guardrails, not a
+filesystem quota. A full derived store leaves additional variants pending;
+operator disk maintenance is not automated. Temporary partial files are
+cleaned on the next worker iteration.
+
+Local MP3/M4A/FLAC/OGG are probed, bounded to two hours. An AAC stereo
+representation uses a target bitrate of 96 kb/s and MP4 fast-start metadata
+for seeking. It is published atomically only after verifying duration and size.
+If it is no smaller than the original, the original is used instead and
+identified explicitly. Derivatives and descriptors are keyed by original
+content hash and processing version. Missing derivatives can be regenerated
+after a new preparation request. Three bounded attempts with backoff; failed
+jobs do not loop forever. Requests only adjust priority, not run FFmpeg.
+
+- GET /v1/tracks/{id}/audio?quality=original — unchanged protected original.
+- GET /v1/tracks/{id}/audio?quality=economy — prepared smaller representation
+  or already smaller original; HTTP 409 if not ready. Supports byte ranges.
+- POST /v1/media/prepare — authenticated list of up to five track IDs to
+  prioritize; no file paths or URLs from clients.
+- GET /v1/tracks/{id}/analysis — measured features and preparation state.
+- GET /v1/tracks/{id}/similar — available analyzed tracks ordered by acoustic
+  descriptor distance, excluding explicit negative/parked tracks, low ratings
+  and duplicate content hashes.
+
+The analysis decodes up to 90 seconds of mono PCM near the middle of a
+recording, computes approximate frequency balance, dynamics, crest factor,
+zero crossings, silence fraction and a cautious rhythmic periodicity estimate.
+This is DSP, **not a neural embedding, genre inference, LUFS measurement or
+guaranteed BPM**. Half/double-tempo ambiguity is possible; weak peaks have
+no estimate. Similarity scores are distances, not calibrated percentages.
+Only analyzed local assets participate. Native Wave may boost candidates by
+up to 20% based on acoustic proximity to up to 12 explicit favorite/high-rated
+audio seeds. Hard exclusions, explicit feedback, rotation and category quotas
+remain unchanged. Legacy Telegram Wave is unaffected.
+
+The app can choose streaming quality. Offline downloads always retain
+originals. The economy cache has separate file identities; cached originals
+may play without network traffic. It prioritizes next ready tracks for server
+processing and does not silently fetch a larger original if the economy file
+is not prepared. This is a fixed quality option, not adaptive bitrate HLS.

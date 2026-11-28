@@ -45,7 +45,7 @@ def track_weight(
     *, recent_ids=frozenset(), ratings=None, playback=None, mode="balanced",
     exposure=None, playlist_counts=None, related_ids=frozenset(),
     recent_artists=(), maybe_ids=frozenset(), artist_affinity=None,
-    fresh_positive_ids=frozenset(), diversity=50,
+    fresh_positive_ids=frozenset(), diversity=50, acoustic_affinity=None,
 ) -> float:
     """Positive sampling weight with a mild, reversible exposure penalty.
 
@@ -81,6 +81,7 @@ def track_weight(
         score *= 1.25
     if rating is None or rating >= 5:
         score *= 1 + min(0.45, 0.10 * (artist_affinity or {}).get(artist, 0.0))
+        score *= 1 + 0.20 * max(0.0,min(1.0,(acoustic_affinity or {}).get(track.id,0.0)))
 
     # Strength is capped: putting a track in many playlists is not equivalent
     # to many confirmed plays, and must not swamp explicit ratings.
@@ -109,7 +110,7 @@ def wave(tracks, liked_ids, disliked_ids=frozenset(), count=30, seed=None,
          maybe_ids=frozenset(), rotation_ids=frozenset(),
          immediate_ids=frozenset(), previous_artists=(),
          preferred_artists=frozenset(), artist_affinity=None,
-         fresh_positive_ids=frozenset(), diversity=50):
+         fresh_positive_ids=frozenset(), diversity=50, acoustic_affinity=None):
     if mode not in {"balanced", "discover", "favorites"}:
         raise ValueError("Unknown wave mode")
     ratings = ratings or {}
@@ -143,7 +144,7 @@ def wave(tracks, liked_ids, disliked_ids=frozenset(), count=30, seed=None,
                 exposure=exposure, playlist_counts=playlist_counts,
                 related_ids=related_ids, recent_artists=recent_artists,
                 maybe_ids=maybe_ids, artist_affinity=artist_affinity,
-                fresh_positive_ids=fresh_positive_ids, diversity=diversity,
+                fresh_positive_ids=fresh_positive_ids, diversity=diversity, acoustic_affinity=acoustic_affinity,
             )
             for t in choices
         ]
