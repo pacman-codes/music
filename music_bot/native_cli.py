@@ -40,6 +40,10 @@ def main():
     commands.add_parser("devices")
     revoke=commands.add_parser("revoke")
     revoke.add_argument("id")
+    migrate=commands.add_parser("migrate-telegram-audio")
+    migrate.add_argument("--after",type=int,default=0)
+    migrate.add_argument("--limit",type=int,default=50)
+    migrate.add_argument("--confirm-authorized",action="store_true",required=True)
     approve=commands.add_parser("approve-source")
     approve.add_argument("track_id",type=int)
     approve.add_argument("url")
@@ -61,6 +65,18 @@ def main():
         print(json.dumps(store.devices(),ensure_ascii=False))
     elif args.command=="revoke":
         print("Revoked" if store.revoke(args.id) else "Not found")
+    elif args.command=="migrate-telegram-audio":
+        import asyncio
+        import json
+        from aiogram import Bot
+        from music_bot.native_migrate_audio import migrate
+        token=os.environ.get("BOT_TOKEN","").strip()
+        if not token:
+            raise SystemExit("A legacy BOT_TOKEN is required for this migration only")
+        async def run():
+            async with Bot(token=token) as bot:
+                return await migrate(store,bot,after=args.after,limit=args.limit)
+        print(json.dumps(asyncio.run(run()),ensure_ascii=False))
     elif args.command=="approve-source":
         from music_bot.native_prefetch import Prefetch, configured_hosts
         Prefetch(store,configured_hosts()).approve(args.track_id,args.url)
