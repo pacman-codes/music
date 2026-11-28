@@ -94,3 +94,42 @@ No mobile app, automatic source ingestion, native playback event reporting,
 native queue persistence or signing workflow yet. A Wave request does not
 fabricate listening events or Telegram sends. Until native playback telemetry
 is implemented, rotation relies on migrated send history and explicit taste.
+
+
+## Optional server-side prefetch
+
+The standalone worker is off by default. Configure LAIN_PREFETCH_HOSTS in
+the Compose environment to exact trusted public HTTPS hosts controlled by
+the operator. Ensure these hosts cannot resolve to private/internal addresses
+and enforce network egress restrictions at the deployment boundary. The
+worker accepts direct MP3/M4A URLs, not search results, streaming-service
+links, redirects or signed URLs. The operator must have permission to store
+the audio and verify the exact recording before approval.
+
+```sh
+docker compose --profile standalone --profile prefetch up -d --build standalone standalone-prefetch
+docker compose exec standalone python -m music_bot.native_cli approve-source TRACK_ID https://audio.example.com/song.mp3
+```
+
+Source registration is local administrator-only. Approval is stored in the
+private database; do not approve URLs containing secrets. No URL is returned
+to clients. This does not search for or download arbitrary songs.
+
+Authenticated POST /v1/wave/prepare returns ready audio immediately and a
+separate preparing array of up to five approved missing tracks selected by
+the existing Wave engine. POST /v1/prefetch with {"track_ids":[1,2]} queues
+the next tracks in a client playlist. POST /v1/prefetch/status with the same
+body returns ready, queued, running, failed, unavailable or not_queued.
+The queue may respond busy when full. Clients should poll modestly (e.g.
+every 5 seconds while needed) and never block current playback on a download.
+Only ready audio belongs in the playable queue.
+
+One download globally, at most 30 pending jobs, maximum 45 MiB per download,
+90-second network deadline, three attempts with backoff and expiring leases.
+The worker checks for approximately 1 GiB of free space plus working room
+before starting. This is a guardrail, not a filesystem quota. Native assets
+are persistent; no automatic deletion of music. Failed jobs need operator
+reapproval. Restart recovery does not require the phone to remain online.
+Worker activation and live source transfers still require testing on the VPS.
+Phone-side buffering, automatic source discovery and native playback telemetry
+remain separate client/provider work.
