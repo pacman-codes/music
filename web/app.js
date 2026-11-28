@@ -454,7 +454,7 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
         "Возможно совпадение с #" + item.possible_match_track_id + " — ещё не подтверждено"));
     }
     const disclosure=trackDisclosure(header,details,item.title,
-      expandedCatalogTrack===item.mbid||matchingTrackId!=null,open=>{
+      expandedCatalogTrack===item.mbid,open=>{
         if(open){
           activeDisclosure?.setOpen(false);
           activeDisclosure=disclosure;
@@ -485,8 +485,9 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
       }
     }
     const toMatch = matchingTrackId ?? item.possible_match_track_id;
+    const matchingActions=element("div","track-actions compact-match");
     if (toMatch && item.local_track_id == null) {
-      controls.append(action("🔗 Это та запись", async () => {
+      (matchingTrackId!=null?matchingActions:controls).append(action("🔗 Это та запись", async () => {
         const ok = window.confirm(
           "Подтвердить, что файл #" + toMatch + " — именно «" +
           item.artist + " — " + item.title + "»?\n" +
@@ -604,9 +605,10 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
     if (!item.local_track_id && toMatch) {
       // Explicit matching remains visible even when the ordinary controls are folded.
       const matchNotice=element("div","catalog-caption compact-warning",
-        "Есть кандидат на совпадение. Проверь точную версию в действиях.");
+        matchingTrackId!=null?"Проверь точную версию перед подтверждением.":"Есть кандидат на совпадение. Проверь точную версию в действиях.");
       card.append(matchNotice);
     }
+    if(matchingActions.childNodes.length)card.append(matchingActions);
     card.append(details);
     host.append(card);
   }
