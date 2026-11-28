@@ -22,6 +22,8 @@ class _CatalogPageState extends State<CatalogPage> {
   int generation=0,offset=0;
   bool more=false;
   String? pagedPath;
+  bool releaseGroups=false;
+  int recommendationPage=0;
   LainApi get api=>widget.api;
   @override void dispose(){generation++;query.dispose();super.dispose();}
   Future<void> load(String path,{Map<String,String>? params,bool append=false,bool paged=false})async{
@@ -34,8 +36,10 @@ class _CatalogPageState extends State<CatalogPage> {
         results=[if(append)...results,...data['results'] as List];
         final seeds=data['seed_artists'];
         description=seeds is List?'На основе: ${seeds.join(', ')}':'';
-        more=paged&&data['has_more']==true;
-        pagedPath=paged?path:null;
+        releaseGroups=path=='/v1/albums/for-you';
+        recommendationPage=(data['page'] as int?)??0;
+        more=(paged||releaseGroups)&&data['has_more']==true;
+        pagedPath=paged||releaseGroups?path:null;
         offset=append?offset+20:20;
       });
     }catch(e){if(mounted&&g==generation)setState(()=>error=e.toString());}
@@ -53,7 +57,14 @@ class _CatalogPageState extends State<CatalogPage> {
     await Navigator.of(context).push(MaterialPageRoute<void>(builder:(_)=>RecordingPage(api:api,player:widget.player,row:Map<String,dynamic>.from(row))));
   }
   Future<void> openAlbum(String id)async{
-    await Navigator.of(context).push(MaterialPageRoute<void>(builder:(_)=>AlbumPage(api:api,player:widget.player,id:id)));
+    try{
+      if(releaseGroups){
+        final data=await api.request('GET','/v1/release-groups/$id') as Map;
+        id=data['release_id'] as String;
+      }
+      if(!mounted)return;
+      await Navigator.of(context).push(MaterialPageRoute<void>(builder:(_)=>AlbumPage(api:api,player:widget.player,id:id)));
+    }catch(e){snack(e.toString());}
   }
   Future<void> openArtist(String id)async{
     await Navigator.of(context).push(MaterialPageRoute<void>(builder:(_)=>ArtistPage(api:api,player:widget.player,id:id)));
@@ -90,7 +101,7 @@ class _CatalogPageState extends State<CatalogPage> {
           '${raw['artist']??''}${category=='tracks'?(raw['playable']==true?' · готово':raw['preparable']==true?' · можно подготовить':' · только каталог'):''}'),
         onTap:()=>switch(category){'tracks'=>openRecording(Map<String,dynamic>.from(raw as Map)),
           'albums'=>openAlbum(raw['mbid'] as String),'artists'=>openArtist(raw['mbid'] as String),_=>Future<void>.value()}),
-    if(more&&pagedPath!=null)TextButton(onPressed:busy?null:()=>load(pagedPath!,params:{'offset':'$offset'},append:true,paged:true),child:const Text('Ещё')),
+    if(more&&pagedPath!=null)TextButton(onPressed:busy?null:()=>load(pagedPath!,params:releaseGroups?{'page':'${recommendationPage+1}'}:{'offset':'$offset'},append:true,paged:!releaseGroups),child:const Text('Ещё')),
   ]);
 }
 
