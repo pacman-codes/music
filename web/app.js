@@ -420,7 +420,11 @@ function renderTracks(items) {
 
 
 function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
+  if(rows!==lastCatalogView.rows || fromWishlist!==lastCatalogView.fromWishlist ||
+     matchingTrackId!==lastCatalogView.matchingTrackId) expandedCatalogTrack=null;
   lastCatalogView = {rows, fromWishlist, matchingTrackId};
+  if(!rows.some(t=>t.mbid===expandedCatalogTrack)) expandedCatalogTrack=null;
+  let activeDisclosure=null;
   const host = byId("catalog-results");
   host.replaceChildren();
   if (!rows.length) {
@@ -428,26 +432,39 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
     return;
   }
   for (const item of rows) {
-    const card = element("div", "item track-card");
+    const card = element("div", "item track-card compact-track");
     const header = element("div", "track-head");
     const info = element("div", "info");
+    const meta=[item.artist,item.local_track_id?"В медиатеке":"Без аудио"];
+    if(shortReaction[item.decision]) meta.push(shortReaction[item.decision]);
     info.append(element("div", "name", item.title),
-                element("div", "sub", item.artist));
+                element("div", "sub", meta.filter(Boolean).join(" · ")));
     header.append(info);
-    const controls = element("div", "track-actions");
+    const details=element("div","track-details");
+    const controls=element("div","track-actions");
     if (item.local_track_id) {
       controls.append(element("span", "catalog-available", "✓ Связано с треком #" + item.local_track_id));
-      controls.append(action("▶ Слушать", async () => {
+      header.append(trackIcon("▶","Отправить в Telegram: "+item.title,async () => {
         await post("/api/tracks/" + item.local_track_id + "/play");
         toast("Песня отправлена в Telegram ▶");
         tg?.HapticFeedback?.notificationOccurred("success");
-      }));
+      },"track-play"));
     } else if (item.possible_match_track_id) {
       controls.append(element("span", "catalog-unavailable",
         "Возможно совпадение с #" + item.possible_match_track_id + " — ещё не подтверждено"));
-    } else {
-      controls.append(element("span", "catalog-unavailable", "Пока без аудио"));
     }
+    const disclosure=trackDisclosure(header,details,item.title,
+      expandedCatalogTrack===item.mbid||matchingTrackId!=null,open=>{
+        if(open){
+          activeDisclosure?.setOpen(false);
+          activeDisclosure=disclosure;
+          expandedCatalogTrack=item.mbid;
+        }else{
+          if(activeDisclosure===disclosure)activeDisclosure=null;
+          if(expandedCatalogTrack===item.mbid)expandedCatalogTrack=null;
+        }
+      });
+    if(expandedCatalogTrack===item.mbid)activeDisclosure=disclosure;
     if (!item.local_track_id) {
       const query = encodeURIComponent((item.artist + " " + item.title).trim());
       for (const [label, url] of [
@@ -540,6 +557,8 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
         await post("/api/decisions/catalog/" + encodeURIComponent(item.mbid),
                    {status: verdict.value});
         item.decision = verdict.value;
+        info.querySelector(".sub").textContent=[item.artist,item.local_track_id?"В медиатеке":"Без аудио",
+          shortReaction[item.decision]].filter(Boolean).join(" · ");
         toast("Реакция сохранена");
         if (window.refreshDecisions) await window.refreshDecisions();
       } catch (error) {
@@ -577,10 +596,18 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
       link.rel = "noopener noreferrer";
       controls.append(link);
     }
-    card.append(header, controls);
+    details.append(controls);
+    card.append(header);
     if (item.variant) {
-      card.append(element("div", "catalog-caption", "Может быть ремиксом, live или другой версией."));
+      card.append(element("div", "catalog-caption compact-warning", "Возможна другая версия (remix/live)."));
     }
+    if (!item.local_track_id && toMatch) {
+      // Explicit matching remains visible even when the ordinary controls are folded.
+      const matchNotice=element("div","catalog-caption compact-warning",
+        "Есть кандидат на совпадение. Проверь точную версию в действиях.");
+      card.append(matchNotice);
+    }
+    card.append(details);
     host.append(card);
   }
 }
