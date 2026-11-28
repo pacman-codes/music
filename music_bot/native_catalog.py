@@ -14,7 +14,7 @@ from music_bot.artists import search_artists, artist_discography, group_album
 from music_bot.catalog import CatalogError, valid_mbid
 from music_bot.personalized import personalized_discovery
 from music_bot.personal_albums import recommend_albums
-from music_bot.smart_playlists import RULES, smart_counts, smart_page, smart_tracks
+from music_bot.smart_playlists import RULES, BASE
 from music_bot.taste_profile import music_profile
 
 
@@ -265,6 +265,40 @@ def install_native_catalog(app, db, store, prefetch, catalog, auth, public):
         if len(rows)>1000:raise HTTPException(409,"Playlist exceeds 1000 tracks")
         return {"results":public(rows,store.available_ids())}
 
+    # Adapt history-based rules to native playback, never Telegram deliveries.
+    native_rules={
+        key:(rule.title,rule.description,rule.where,rule.order)
+        for key,rule in RULES.items()
+    }
+    native_rules["unheard"]=("Ещё не слушал","Нет событий в плеере LAIN.",
+        "NOT EXISTS (SELECT 1 FROM native_plays h WHERE h.track_id=t.id)","t.id DESC")
+    native_rules["forgotten"]=("Забытое избранное","Нет воспроизведения в LAIN за 30 дней.",
+        """v.status='add' AND NOT EXISTS (SELECT 1 FROM native_plays h
+        WHERE h.track_id=t.id AND h.started_at>=datetime('now','-30 days'))""","t.id DESC")
+
+    @app.get("/v1/smart-playlists",dependencies=deps)
+    def smart_list():
+        ready=store.available_ids()
+        with db.con() as con:
+            items=[]
+            for key,(title,description,where,order) in native_rules.items():
+                ids=[r[0] for r in con.execute("SELECT t.id"+BASE+where)]
+                items.append({"key":key,"title":title,"description":description,
+                              "count":len(ids),"available_count":sum(i in ready for i in ids)})
+        return {"results":items}
+
+    @app.get("/v1/smart-playlists/{key}",dependencies=deps)
+    def smart_detail(key: str):
+        rule=native_rules.get(key)
+        if not rule:raise HTTPException(404,"Unknown smart playlist")
+        title,description,where,order=rule
+        with db.con() as con:
+            rows=[db.track(r) for r in con.execute("SELECT t.*"+BASE+where+" ORDER BY "+order+" LIMIT 1001")]
+        return {"title":title,"description":description,"results":public(rows[:1000],store.available_ids()),
+                "truncated":len(rows)>1000}
+
     @app.get("/v1/taste/profile",dependencies=deps)
     def profile():
-        return music_profile(db)
+        data=music_profile(db)
+        data["available_count"]=len(store.available_ids())
+        return data
