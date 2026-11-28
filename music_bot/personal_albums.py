@@ -5,11 +5,10 @@ Release-group metadata is not evidence that an album is playable.
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
 from dataclasses import asdict, dataclass
 
 from music_bot.albums import cached_album_group
-from music_bot.artists import Artist, ReleaseGroup, artist_discography, search_artists
+from music_bot.artists import Artist, artist_by_id, artist_discography, search_artists
 from music_bot.catalog import CatalogError, MusicCatalog, normalize, valid_mbid
 from music_bot.personalized import ranked_seed_artists, strongly_negative_artists
 from music_bot.storage import Library
@@ -45,7 +44,9 @@ async def personal_albums(db: Library, catalog: MusicCatalog, *, page: int = 0,
             used_names.add(normalize(artist.name))
 
     # Explicit favorite IDs take priority over potentially ambiguous local tags.
-    for row in db.saved_artists(limit=2):
+    favorites = db.saved_artists(limit=5)
+    if favorites:
+        row = favorites[0]
         add_seed(Artist(row["mbid"], row["name"], row["disambiguation"]))
     for seed in ranked_seed_artists(db, count=3):
         if len(seeds) >= 2:
@@ -62,6 +63,8 @@ async def personal_albums(db: Library, catalog: MusicCatalog, *, page: int = 0,
         if len(exact) == 1:
             add_seed(exact[0])
 
+    for row in favorites[1:]:
+        add_seed(Artist(row["mbid"], row["name"], row["disambiguation"]))
     if not seeds:
         return {"results": [], "seed_artists": [], "page": page, "has_more": False,
                 "warnings": list(dict.fromkeys(warnings))}
@@ -85,10 +88,17 @@ async def personal_albums(db: Library, catalog: MusicCatalog, *, page: int = 0,
             if (not valid_mbid(ident) or not key or key in excluded or key in used_names
                     or ident.lower() in used_ids or track.variant):
                 continue
-            # One related artist per seed keeps the feed diverse.
-            used_ids.add(ident.lower())
-            used_names.add(key)
-            related.append((Artist(ident.lower(), name), seed.name))
+            # Resolve the artist ID, rather than assuming a joint credit is a name.
+            try:
+                artist = await asyncio.wait_for(artist_by_id(catalog, ident), timeout=12)
+            except (CatalogError, TimeoutError):
+                warnings.append("Часть похожих исполнителей недоступна")
+                break
+            key = normalize(artist.name)
+            if key not in excluded and key not in used_names:
+                used_ids.add(artist.mbid)
+                used_names.add(key)
+                related.append((artist, seed.name))
             break
 
     # Compare both group IDs (when cached) and normalized album names.
