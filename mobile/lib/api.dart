@@ -46,7 +46,7 @@ class LainApi {
   Map<String,String> get headers => {'Authorization':'Bearer $token'};
   Future<dynamic> request(String method,String path,{Map<String,String>? query,Object? body}) async {
     final req=http.Request(method,uri(path,query))..followRedirects=false;
-    req.headers.addAll(headers);
+    if(token.isNotEmpty)req.headers.addAll(headers);
     if(body!=null){req.headers['Content-Type']='application/json';req.body=jsonEncode(body);}
     try {
       final response=await client.send(req).then(http.Response.fromStream).timeout(const Duration(seconds:20));
