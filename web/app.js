@@ -405,6 +405,22 @@ function renderTracks(items) {
       byId("catalog-heading").scrollIntoView({behavior:"smooth"});
     }, "secondary-action"));
     discoverGroup.controls.append(action("👤 Исполнитель",()=>window.openMusicArtistSearch(t.artist),"secondary-action"));
+    const whyPanel=element("div","track-explanation");
+    whyPanel.hidden=true;
+    discoverGroup.controls.append(action("Почему в Волне?",async()=>{
+      if(!whyPanel.hidden){whyPanel.hidden=true;return;}
+      whyPanel.hidden=false;
+      whyPanel.replaceChildren(element("div","catalog-caption","Проверяю текущие факторы…"));
+      try{
+        const data=await api("/api/tracks/"+t.id+"/wave-explanation");
+        const names={familiar:"Любимое",similar:"Похожее",new:"Исследование"};
+        whyPanel.replaceChildren(element("strong","",names[data.category]||"Не входит в текущий пул"));
+        for(const reason of data.reasons)whyPanel.append(element("div","catalog-caption","＋ "+reason));
+        for(const caution of data.cautions)whyPanel.append(element("div","catalog-caption","• "+caution));
+        whyPanel.append(element("p","catalog-hint",data.note));
+      }catch(error){whyPanel.replaceChildren(element("div","catalog-caption",error.message));}
+    },"secondary-action"));
+    discoverGroup.group.append(whyPanel);
     const picker=element("div","track-actions playlist-picker");
     actions.append(action("＋ Плейлист",()=>choosePlaylistForTrack(t,picker),"secondary-action"));
     libraryGroup.group.append(picker);

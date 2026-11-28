@@ -156,6 +156,7 @@ def home_keyboard(webapp_url: str | None = None) -> InlineKeyboardMarkup:
     ]
     rows.append([button("🕘 История", "hist:tracks:0"), button("✨ Умные плейлисты", "smart:home")])
     rows.append([button("👤 Исполнители", "artistlist:0"), button("⚙ Волна", "waveset:open")])
+    rows.append([button("🎧 Музыкальный профиль", "tasteprofile:open")])
     if webapp_url:
         rows.insert(0, [
             InlineKeyboardButton(
@@ -178,7 +179,7 @@ def track_keyboard(track_id: int) -> InlineKeyboardMarkup:
          button("➕ В свой плейлист", f"chooseadd:{track_id}")],
         [button("⏭ Следующим", f"enqueue:next:{track_id}"),
          button("＋ В конец очереди", f"enqueue:append:{track_id}")],
-        [button("👤 Исполнитель", f"artisttrack:{track_id}")],
+        [button("👤 Исполнитель", f"artisttrack:{track_id}"), button("Почему в Волне?", f"wavewhy:{track_id}")],
     ])
 
 
@@ -661,7 +662,7 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
                              button("⏭ Следующим", f"enqueue:next:{ident}")])
                 rows.append([button("＋ В конец очереди", f"enqueue:append:{ident}"),
                              button("⭐ Оценка 1–10", f"rateopen:{ident}")])
-                rows.append([button("👤 Исполнитель", f"artisttrack:{ident}")])
+                rows.append([button("👤 Исполнитель", f"artisttrack:{ident}"), button("Почему в Волне?", f"wavewhy:{ident}")])
             rows.append([button("🧭 Все реакции", "vhome"), button("🏠 Меню", "nav:home")])
             await render_chat_panel(message,
                 f"🧭 Реакция · {item['artist']} — {item['title']}\nКак поступить?"[:3500],
@@ -1604,6 +1605,8 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
     install_personal_album_handlers(router, db, catalog)
     from music_bot.telegram_wave_settings import install_wave_settings
     install_wave_settings(router, db, render_chat_panel)
+    from music_bot.telegram_taste_profile import install_taste_profile
+    install_taste_profile(router, db, catalog, render_chat_panel)
 
     # Plain text music search is a fallback after all explicit command handlers.
     install_youtube_handlers(

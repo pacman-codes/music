@@ -224,3 +224,13 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 .wave-settings-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
 .wave-settings-actions button{color:#fff;background:#ffffff16;border:1px solid #ffffff38}
 .wave-settings-actions #wave-settings-save{background:#d9ceff;color:#28203c;font-weight:650}
+
+
+/* Taste profile uses actual ranking coefficients rather than invented percentages. */
+.taste-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.taste-metric{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.taste-metric strong{font-size:26px;font-variant-numeric:tabular-nums}
+.taste-meter{width:100%;height:7px;accent-color:var(--lain-accent)}
+#taste-profile-results h3{margin:18px 0 2px;font-size:18px}
+.track-explanation{display:grid;gap:6px;padding:12px;background:var(--lain-bg);border-radius:12px}
+.track-explanation .catalog-hint{margin:4px 0}
