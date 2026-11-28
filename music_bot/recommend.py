@@ -71,9 +71,10 @@ def track_weight(
     completion_bonus = 1 + min(0.75, completions * 0.12)
     score *= skip_penalty * completion_bonus
     # Recent explicit positive feedback nudges, rather than replaces, old taste.
-    if track.id in fresh_positive_ids:
+    if track.id in fresh_positive_ids and (rating is None or rating >= 5):
         score *= 1.25
-    score *= 1 + min(0.45, 0.10 * (artist_affinity or {}).get(artist, 0.0))
+    if rating is None or rating >= 5:
+        score *= 1 + min(0.45, 0.10 * (artist_affinity or {}).get(artist, 0.0))
 
     # Strength is capped: putting a track in many playlists is not equivalent
     # to many confirmed plays, and must not swamp explicit ratings.
