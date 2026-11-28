@@ -110,6 +110,15 @@ class LainPlayer extends BaseAudioHandler {
     tracks..clear()..addAll(ready);_syncQueue();
     await _load(initial.clamp(0,ready.length-1).toInt());
   });
+  Future<void> enqueueNext(Track track)=>_serial(()async{
+    if(!track.playable)throw const ApiError(404);
+    if(current==null){
+      tracks..clear()..add(track);_syncQueue();await _load(0);return;
+    }
+    tracks.insert(index+1,track);
+    _syncQueue();
+    unawaited(_warm());
+  });
   Future<void> startWave(String mode)=>_serial(()async{
     final client=api;if(client==null)return;
     final data=await client.wave(mode);

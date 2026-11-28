@@ -49,7 +49,8 @@ class LainApi {
     if(token.isNotEmpty)req.headers.addAll(headers);
     if(body!=null){req.headers['Content-Type']='application/json';req.body=jsonEncode(body);}
     try {
-      final response=await client.send(req).then(http.Response.fromStream).timeout(const Duration(seconds:20));
+      final catalog=path.startsWith('/v1/discovery/')||path.startsWith('/v1/albums')||path.startsWith('/v1/artists')||path.startsWith('/v1/release-groups/');
+      final response=await client.send(req).then(http.Response.fromStream).timeout(Duration(seconds:catalog?100:20));
       if(response.statusCode<200||response.statusCode>=300)throw ApiError(response.statusCode);
       return jsonDecode(response.body);
     } on TimeoutException {throw const ApiError(0);}

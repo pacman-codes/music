@@ -29,6 +29,8 @@ class Prefetch:
         self.store, self.db, self.hosts = store, store.library, tuple(hosts)
         with self.db.con() as db:
             db.executescript("""
+            CREATE TABLE IF NOT EXISTS native_recording_sources(
+              mbid TEXT PRIMARY KEY, url TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS native_sources(
               track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
               url TEXT NOT NULL);
@@ -56,6 +58,125 @@ class Prefetch:
                 raise ValueError("Source is currently being downloaded")
             db.execute("INSERT INTO native_sources VALUES(?,?) ON CONFLICT(track_id) DO UPDATE SET url=excluded.url",(track_id,url))
             db.execute("DELETE FROM native_prefetch_jobs WHERE track_id=?",(track_id,))
+
+    def register_manifest(self, entries):
+        """Operator-approved exact MBIDs; index before discovery without fake tracks."""
+        from music_bot.catalog import valid_mbid
+        if not isinstance(entries,list) or not 1<=len(entries)<=10000:
+            raise ValueError("Manifest must contain 1–10000 entries")
+        validated={}
+        for item in entries:
+            if not isinstance(item,dict) or set(item)!={"mbid","url"}:
+                raise ValueError("Expected mbid and url")
+            mbid,url=item["mbid"],item["url"]
+            if not valid_mbid(mbid):
+                raise ValueError("Invalid recording ID")
+            validate_direct_audio_url(url,self.hosts)
+            if urlsplit(url).query:
+                raise ValueError("Source URL must not have query parameters")
+            mbid=mbid.lower()
+            if mbid in validated and validated[mbid]!=url:
+                raise ValueError("Conflicting source URLs")
+            validated[mbid]=url
+        with self.db.con() as db:
+            db.executemany("""INSERT INTO native_recording_sources(mbid,url) VALUES(?,?)
+                         ON CONFLICT(mbid) DO UPDATE SET url=excluded.url""",validated.items())
+        return len(validated)
+
+    def indexed_recordings(self):
+        if not self.hosts:return set()
+        with self.db.con() as db:
+            rows=db.execute("SELECT mbid,url FROM native_recording_sources").fetchall()
+        result=set()
+        for row in rows:
+            try:validate_direct_audio_url(row["url"],self.hosts)
+            except MediaImportError:continue
+            result.add(row["mbid"])
+        return result
+
+    def prepare_recording(self, mbid):
+        """Select an operator-indexed source only; never use a client-supplied URL."""
+        from music_bot.catalog import valid_mbid
+        if not valid_mbid(mbid):
+            raise ValueError("Invalid recording ID")
+        mbid=mbid.lower()
+        linked=self.db.resolved_catalog_tracks().get(mbid)
+        if linked is not None:
+            if self.store.audio(linked) or linked in self.approved_ids():
+                return self.enqueue([linked])[0]
+        with self.db.con() as db:
+            row=db.execute("SELECT url FROM native_recording_sources WHERE mbid=?",(mbid,)).fetchone()
+        if row is None:
+            return {"track_id":linked,"state":"unavailable"}
+        # Existing job state is preserved on repeated requests; approval is not
+        # an automatic retry of permanently failed transfers.
+        tid=self.approve_recording(mbid,row["url"],preserve_existing=True)
+        return self.enqueue([tid])[0]
+
+    def prepare_saved_recordings(self, limit, mode="balanced"):
+        """Wave can prepare positively marked or saved, explicitly indexed recordings."""
+        if not 0<=limit<=5:
+            raise ValueError("Invalid preparation limit")
+        if not limit:return []
+        indexed=self.indexed_recordings()
+        if not indexed:return []
+        linked=self.db.resolved_catalog_tracks()
+        approved=self.approved_ids()
+        ready=self.store.available_ids()
+        with self.db.con() as db:
+            rows=db.execute("""SELECT c.mbid,v.status FROM catalog_candidates c
+                JOIN native_recording_sources s ON s.mbid=c.mbid
+                LEFT JOIN catalog_verdicts v ON v.mbid=c.mbid
+                LEFT JOIN discovery_wishlist w ON w.mbid=c.mbid
+                WHERE (v.status IN ('add','maybe') OR (v.status IS NULL AND w.mbid IS NOT NULL))
+                ORDER BY CASE v.status WHEN 'add' THEN 0 WHEN 'maybe' THEN 1 ELSE 2 END,
+                COALESCE(v.updated_at,w.created_at,c.last_seen_at) DESC,c.mbid LIMIT 100""").fetchall()
+        jobs=[]
+        for row in rows:
+            mbid=row["mbid"]
+            if mode=="favorites" and row["status"]!="add":continue
+            tid=linked.get(mbid)
+            if mbid not in indexed or tid in approved or tid in ready:
+                continue
+            try:job=self.prepare_recording(mbid)
+            except (MediaImportError,ValueError):continue
+            if job["state"] not in {"unavailable","failed"}:
+                jobs.append(job)
+            if len(jobs)>=limit:break
+        return jobs
+
+    def approve_recording(self, mbid, url, *, preserve_existing=False):
+        """Operator-confirmed exact recording; prepare a missing asset without pretending it exists."""
+        from music_bot.catalog import valid_mbid
+        validate_direct_audio_url(url,self.hosts)
+        if urlsplit(url).query or not valid_mbid(mbid):
+            raise ValueError("Invalid source or recording ID")
+        mbid=mbid.lower()
+        with self.db.con() as db:
+            db.execute("BEGIN IMMEDIATE")
+            candidate=db.execute("SELECT title,artist FROM catalog_candidates WHERE mbid=?",(mbid,)).fetchone()
+            if candidate is None:
+                raise ValueError("Search for the recording first")
+            linked=db.execute("SELECT track_id FROM track_recording_links WHERE mbid=?",(mbid,)).fetchone()
+            if linked is None:
+                linked=db.execute("SELECT track_id FROM catalog_audio_assets WHERE mbid=?",(mbid,)).fetchone()
+            if linked is not None:
+                tid=linked[0]
+            else:
+                uid="native:recording:"+mbid
+                db.execute("""INSERT OR IGNORE INTO tracks(file_id,file_unique_id,title,artist,added_at)
+                              VALUES(?,?,?,?,CURRENT_TIMESTAMP)""",(uid,uid,candidate["title"],candidate["artist"]))
+                tid=db.execute("SELECT id FROM tracks WHERE file_unique_id=?",(uid,)).fetchone()[0]
+                db.execute("INSERT INTO track_recording_links(track_id,mbid,provenance) VALUES(?,?,'confirmed')",(tid,mbid))
+                self.db._reconcile_recording_verdict(db,tid,mbid)
+            if preserve_existing and db.execute("SELECT 1 FROM native_sources WHERE track_id=?",(tid,)).fetchone():
+                return tid
+            running=db.execute("SELECT state FROM native_prefetch_jobs WHERE track_id=?",(tid,)).fetchone()
+            if running and running[0]=="running":
+                raise ValueError("Source is currently being downloaded")
+            db.execute("INSERT INTO native_sources VALUES(?,?) ON CONFLICT(track_id) DO UPDATE SET url=excluded.url",(tid,url))
+            db.execute("DELETE FROM native_prefetch_jobs WHERE track_id=?",(tid,))
+        return tid
 
     def approved_ids(self):
         if not self.hosts:

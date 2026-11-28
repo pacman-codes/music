@@ -6,6 +6,7 @@ import 'package:just_audio/just_audio.dart';
 import 'api.dart';
 import 'cache.dart';
 import 'player.dart';
+import 'catalog.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -117,7 +118,8 @@ class _HomeState extends State<Home>{
   bool loading=false;
   String? error;
   String mode='balanced';
-  Map<String,dynamic>? settings;
+  Map<String,dynamic>? settings,taste;
+  List<dynamic> smart=[];
   int _request=0;
   LainApi get api=>widget.api;
   LainPlayer get player=>widget.player;
@@ -137,7 +139,8 @@ class _HomeState extends State<Home>{
   });
   Future<void> loadPlaylists()=>run(()async{
     final rows=await api.playlists();
-    if(mounted)setState(()=>playlists=rows);
+    final auto=await api.request('GET','/v1/smart-playlists') as Map;
+    if(mounted)setState((){playlists=rows;smart=auto['results'] as List;});
   });
   Future<void> openPlaylist(int id,String name,int page)=>run(()async{
     final data=await api.playlist(id,page);
@@ -148,13 +151,14 @@ class _HomeState extends State<Home>{
   Future<void> loadProfile()=>run(()async{
     final values=await api.settings();
     final rows=await api.history();
-    if(mounted)setState((){settings=values;history=rows;});
+    final profile=await api.request('GET','/v1/taste/profile') as Map;
+    if(mounted)setState((){settings=values;history=rows;taste=Map<String,dynamic>.from(profile);});
   });
   void chooseTab(int index){
     setState(()=>tab=index);
     if(index==1&&library.isEmpty)unawaited(loadLibrary());
     if(index==2)unawaited(loadPlaylists());
-    if(index==3)unawaited(loadProfile());
+    if(index==4)unawaited(loadProfile());
   }
   void message(String text){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(text)));}
   Future<void> feedback(Track t) async{
@@ -164,13 +168,24 @@ class _HomeState extends State<Home>{
         Text(t.artist),const SizedBox(height:8),
         for(final e in const {'add':'Добавлю','maybe':'Может добавлю','never':'Никогда','later':'Не сейчас','interesting':'Интересно, но не слушать'}.entries)
           ListTile(title:Text(e.value),onTap:()=>Navigator.pop(ctx,e.key)),
+        ListTile(leading:const Icon(Icons.playlist_add),title:const Text('В плейлист'),onTap:()=>Navigator.pop(ctx,'playlist')),
+        if(t.playable)ListTile(leading:const Icon(Icons.queue_music),title:const Text('Следующим'),onTap:()=>Navigator.pop(ctx,'next')),
+        if(tab==2&&playlistId!=null)ListTile(leading:const Icon(Icons.remove_circle_outline),title:const Text('Убрать из плейлиста'),onTap:()=>Navigator.pop(ctx,'remove')),
+        if(tab==2&&playlistId!=null&&isCustomPlaylist)...[
+          ListTile(title:const Text('Выше'),onTap:()=>Navigator.pop(ctx,'up')),
+          ListTile(title:const Text('Ниже'),onTap:()=>Navigator.pop(ctx,'down')),
+        ],
         const Divider(),const Text('Оценка 1–10'),
         Wrap(children:[for(var n=1;n<=10;n++)TextButton(onPressed:()=>Navigator.pop(ctx,'rate:$n'),child:Text('$n'))]),
       ],
     )));
     if(action==null||!mounted)return;
     try{
-      if(action.startsWith('rate:')){await api.rate(t.id,int.parse(action.substring(5)));}
+      if(action=='playlist'){await addToPlaylist(t);return;}
+      if(action=='next'){await player.enqueueNext(t);return;}
+      if(action=='remove'){await api.request('DELETE','/v1/playlists/$playlistId/tracks/${t.id}');}
+      else if(action=='up'||action=='down'){await api.request('PUT','/v1/playlists/$playlistId/tracks/${t.id}/position',body:{'delta':action=='up'?-1:1});}
+      else if(action.startsWith('rate:')){await api.rate(t.id,int.parse(action.substring(5)));}
       else{await api.react(t.id,action);}
       message('Сохранено');
       if(tab==1){await loadLibrary();}else if(tab==2&&playlistId!=null){await openPlaylist(playlistId!,playlistName!,playlistPage);}
@@ -224,14 +239,99 @@ class _HomeState extends State<Home>{
       if(before!=null)TextButton(onPressed:loading?null:()=>loadLibrary(more:true),child:const Text('Ещё')),
     ]))),
   ]);
+  bool get isCustomPlaylist=>playlists.any((p)=>p['id']==playlistId&&p['kind']=='custom');
+  Future<String?> askName(String title,{String initial=''})async{
+    final field=TextEditingController(text:initial);
+    try{return await showDialog<String>(context:context,builder:(ctx)=>AlertDialog(
+      title:Text(title),content:TextField(controller:field,maxLength:80,autofocus:true),
+      actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Отмена')),
+        FilledButton(onPressed:()=>Navigator.pop(ctx,field.text.trim()),child:const Text('Сохранить'))]));
+    }finally{field.dispose();}
+  }
+  Future<void> createPlaylist()async{
+    final name=await askName('Новый плейлист');
+    if(name==null||name.isEmpty||!mounted)return;
+    try{await api.request('POST','/v1/playlists',body:{'name':name});await loadPlaylists();}
+    catch(e){message(e.toString());}
+  }
+  Future<void> renamePlaylist()async{
+    final id=playlistId;
+    if(id==null)return;
+    final name=await askName('Переименовать',initial:playlistName??'');
+    if(name==null||name.isEmpty||!mounted)return;
+    try{await api.request('PUT','/v1/playlists/$id',body:{'name':name});
+      await loadPlaylists();await openPlaylist(id,name,playlistPage);
+    }catch(e){message(e.toString());}
+  }
+  Future<void> deletePlaylist()async{
+    final id=playlistId;
+    if(id==null)return;
+    final confirmed=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(
+      title:const Text('Удалить плейлист?'),content:Text(playlistName??''),
+      actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Отмена')),
+        FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Удалить'))]));
+    if(confirmed!=true||!mounted)return;
+    try{await api.request('DELETE','/v1/playlists/$id');if(mounted)setState(()=>playlistId=null);await loadPlaylists();}
+    catch(e){message(e.toString());}
+  }
+  Future<void> addToPlaylist(Track t)async{
+    try{
+      final rows=await api.playlists();
+      if(!mounted)return;
+      final id=await showModalBottomSheet<int>(context:context,builder:(ctx)=>SafeArea(child:ListView(
+        shrinkWrap:true,children:[
+          for(final p in rows)ListTile(title:Text(p['name'] as String),onTap:()=>Navigator.pop(ctx,p['id'] as int)),
+        ])));
+      if(id==null)return;
+      await api.request('POST','/v1/playlists/$id/tracks',body:{'track_id':t.id});
+      message('Добавлено в плейлист');
+      if(tab==2&&playlistId!=null)await openPlaylist(playlistId!,playlistName!,playlistPage);
+    }catch(e){message(e.toString());}
+  }
+  Future<void> playFullPlaylist({bool shuffle=false,int? from})async{
+    final id=playlistId;
+    if(id==null)return;
+    try{
+      final data=await api.request('GET','/v1/playlists/$id/queue') as Map;
+      final rows=api.rows(data['results']).where((t)=>t.playable).toList();
+      if(rows.isEmpty){message('Нет готового аудио');return;}
+      if(shuffle)rows.shuffle();
+      final initial=from==null?0:rows.indexWhere((t)=>t.id==from);
+      await player.start(rows,initial:initial<0?0:initial);
+    }catch(e){message(e.toString());}
+  }
+  Future<void> openSmart(Map row)async{
+    try{
+      final data=await api.request('GET','/v1/smart-playlists/${row['key']}') as Map;
+      final rows=api.rows(data['results']);
+      if(!mounted)return;
+      await Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>Scaffold(
+        appBar:AppBar(title:Text(data['title'] as String)),
+        body:ListView(children:[
+          Padding(padding:const EdgeInsets.all(12),child:Text(data['description'] as String)),
+          if(data['truncated']==true)const Text('Первые 1000 записей'),
+          FilledButton(onPressed:rows.any((t)=>t.playable)?()=>player.start(rows):null,child:const Text('Слушать доступные')),
+          for(final t in rows)trackRow(t,rows),
+        ]),
+      )));
+    }catch(e){message(e.toString());}
+  }
   Widget playlistsPage()=>ListView(children:[
     if(playlistId==null)...[
+      ListTile(leading:const Icon(Icons.add),title:const Text('Создать плейлист'),onTap:createPlaylist),
       for(final row in playlists)ListTile(leading:const Icon(Icons.queue_music),title:Text(row['name'] as String),
         subtitle:Text('${row['count']} треков'),onTap:()=>openPlaylist(row['id'] as int,row['name'] as String,0)),
       if(playlists.isEmpty)const ListTile(title:Text('Нет плейлистов')),
+      const Divider(),const Padding(padding:EdgeInsets.all(12),child:Text('Умные плейлисты')),
+      for(final row in smart)ListTile(leading:const Icon(Icons.auto_awesome),title:Text(row['title'] as String),subtitle:Text('${row['available_count']} готовых / ${row['count']}'),onTap:()=>openSmart(Map<String,dynamic>.from(row as Map))),
     ]else...[
       ListTile(leading:IconButton(icon:const Icon(Icons.arrow_back),onPressed:()=>setState(()=>playlistId=null)),title:Text(playlistName??'')),
-      for(final t in playlistTracks)trackRow(t,playlistTracks),
+      Wrap(alignment:WrapAlignment.center,spacing:8,children:[
+        FilledButton.icon(onPressed:()=>playFullPlaylist(),icon:const Icon(Icons.play_arrow),label:const Text('Весь плейлист')),
+        OutlinedButton.icon(onPressed:()=>playFullPlaylist(shuffle:true),icon:const Icon(Icons.shuffle),label:const Text('Перемешать')),
+        if(isCustomPlaylist)...[TextButton(onPressed:renamePlaylist,child:const Text('Переименовать')),TextButton(onPressed:deletePlaylist,child:const Text('Удалить'))],
+      ]),
+      for(final t in playlistTracks)ListTile(leading:Icon(t.playable?Icons.music_note:Icons.cloud_off),title:Text(t.title),subtitle:Text(t.artist),onTap:t.playable?()=>playFullPlaylist(from:t.id):()=>prepare(t),trailing:IconButton(icon:const Icon(Icons.more_horiz),onPressed:()=>feedback(t))),
       Row(mainAxisAlignment:MainAxisAlignment.center,children:[
         IconButton(onPressed:playlistPage>0?()=>openPlaylist(playlistId!,playlistName!,playlistPage-1):null,icon:const Icon(Icons.chevron_left)),
         Text('${playlistPage+1} / $playlistPages'),
@@ -240,6 +340,15 @@ class _HomeState extends State<Home>{
     ],
   ]);
   Widget profile()=>ListView(padding:const EdgeInsets.all(16),children:[
+    if(taste!=null)...[
+      Text('Музыкальный профиль',style:Theme.of(context).textTheme.titleLarge),
+      Text('${taste!['available_count']} готовых · ${taste!['liked_count']} понравились · ${taste!['rated_count']} оценено'),
+      for(final a in taste!['artists'] as List)Padding(padding:const EdgeInsets.symmetric(vertical:6),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+        Text(a['name'] as String),LinearProgressIndicator(value:((a['affinity'] as num)/4.5).clamp(0,1).toDouble()),
+      ])),
+      const Text('Вес предпочтения — внутренний коэффициент, не процент совпадения.'),
+      const SizedBox(height:20),
+    ],
     Text('Настройки Волны',style:Theme.of(context).textTheme.titleLarge),
     if(settings!=null)...[
       DropdownButton<String>(value:settings!['preset'] as String,isExpanded:true,items:const [
@@ -285,17 +394,18 @@ class _HomeState extends State<Home>{
   }
   String formatTime(int ms){final seconds=ms~/1000;return '${seconds~/60}:${(seconds%60).toString().padLeft(2,'0')}';}
   @override Widget build(BuildContext context)=>ValueListenableBuilder<int>(valueListenable:player.changes,builder:(context,_,child)=>Scaffold(
-    appBar:AppBar(title:const Text('L A I N'),actions:[IconButton(onPressed:loading?null:()=>switch(tab){0=>player.startWave(mode),1=>loadLibrary(),2=>playlistId==null?loadPlaylists():openPlaylist(playlistId!,playlistName!,playlistPage),_=>loadProfile()},icon:const Icon(Icons.refresh))]),
+    appBar:AppBar(title:const Text('L A I N'),actions:[IconButton(onPressed:loading||tab==3?null:()=>switch(tab){0=>player.startWave(mode),1=>loadLibrary(),2=>playlistId==null?loadPlaylists():openPlaylist(playlistId!,playlistName!,playlistPage),3=>Future<void>.value(),_=>loadProfile()},icon:const Icon(Icons.refresh))]),
     body:SafeArea(child:Column(children:[
       if(loading)const LinearProgressIndicator(),
       if(error!=null||player.error!=null)Padding(padding:const EdgeInsets.all(8),child:Text(error??player.error!,style:TextStyle(color:Theme.of(context).colorScheme.error))),
-      Expanded(child:switch(tab){0=>home(),1=>collection(),2=>playlistsPage(),_=>profile()}),
+      Expanded(child:switch(tab){0=>home(),1=>collection(),2=>playlistsPage(),3=>CatalogPage(api:api,player:player),_=>profile()}),
       playerBar(),
     ])),
     bottomNavigationBar:NavigationBar(selectedIndex:tab,onDestinationSelected:chooseTab,destinations:const [
       NavigationDestination(icon:Icon(Icons.waves),label:'Волна'),
       NavigationDestination(icon:Icon(Icons.search),label:'Музыка'),
       NavigationDestination(icon:Icon(Icons.library_music),label:'Плейлисты'),
+      NavigationDestination(icon:Icon(Icons.explore),label:'Открытия'),
       NavigationDestination(icon:Icon(Icons.person_outline),label:'Профиль'),
     ]),
   ));
