@@ -19,12 +19,14 @@ class AudioCache {
   static const cacheOptions=[256,512,1024,2048,4096];
   static const offlineOptions=[1,5,10,20];
   static const warmOptions=[0,1,3,5];
+  static const qualityOptions=['original','economy'];
   final Map<int,Track> _pinned={};
   final Set<http.Client> _clients={};
-  final Map<int,Future<File?>> _jobs={};
+  final Map<String,Future<File?>> _jobs={};
   Future<void> _tail=Future.value();
   bool _closed=false;
   int cacheMiB=1024,offlineGiB=5,warmCount=3;
+  String quality='original';
   Set<int> Function()? protectedIds;
   AudioCache._(this.api,this.root,this.durable,this.newClient);
   static Future<AudioCache> create(LainApi api) async {
@@ -61,6 +63,7 @@ class AudioCache {
       if(cacheOptions.contains(c))cacheMiB=c as int;
       if(offlineOptions.contains(o))offlineGiB=o as int;
       if(warmOptions.contains(w))warmCount=w as int;
+      if(qualityOptions.contains(data['quality']))quality=data['quality'] as String;
       for(final raw in (data['downloads'] as List? ?? []).take(2000)){
         try{
           final t=Track.fromJson(Map<String,dynamic>.from(raw as Map));
@@ -75,23 +78,24 @@ class AudioCache {
       }
     }
   }
-  Future<void> _saveIndex(Map<int,Track> pins,{int? c,int? o,int? w}) async {
+  Future<void> _saveIndex(Map<int,Track> pins,{int? c,int? o,int? w,String? q}) async {
     final tmp=File('${_index.path}.part');
     await tmp.writeAsString(jsonEncode({'cache_mib':c??cacheMiB,'offline_gib':o??offlineGiB,
-      'warm_count':w??warmCount,'downloads':pins.values.map((t)=>t.toJson()).toList()}),flush:true);
+      'warm_count':w??warmCount,'quality':q??quality,'downloads':pins.values.map((t)=>t.toJson()).toList()}),flush:true);
     await tmp.rename(_index.path);
   }
-  Future<File?> _locate(Directory dir,int id)async{
+  Future<File?> _locate(Directory dir,int id,{String representation='original'})async{
     for(final ext in extensions.values){
-      final f=File('${dir.path}/$id.$ext');
+      final key=representation=='economy'?'$id-economy':'$id';
+      final f=File('${dir.path}/$key.$ext');
       try{if(await f.exists()&&await f.length()>0)return f;}catch(_){}
     }
     return null;
   }
-  Future<File?> find(int id) async {
+  Future<File?> find(int id,{String? representation}) async {
     final pinned=await _locate(offline,id);
     if(pinned!=null)return pinned;
-    final f=await _locate(root,id);
+    final f=await _locate(root,id)??((representation??quality)=='economy'?await _locate(root,id,representation:'economy'):null);
     if(f!=null){try{await f.setLastModified(DateTime.now());}catch(_){}}
     return f;
   }
@@ -104,28 +108,29 @@ class AudioCache {
     return total;
   }
   Future<Map<String,int>> usage() async=>{'cache':await _bytes(root),'offline':await _bytes(offline)};
-  Future<void> settings({required int cache,required int offlineLimit,required int warm})=>_serial(()async{
-    if(!cacheOptions.contains(cache)||!offlineOptions.contains(offlineLimit)||!warmOptions.contains(warm)){
+  Future<void> settings({required int cache,required int offlineLimit,required int warm,String? streamQuality})=>_serial(()async{
+    if(!cacheOptions.contains(cache)||!offlineOptions.contains(offlineLimit)||!warmOptions.contains(warm)||!qualityOptions.contains(streamQuality??quality)){
       throw const FormatException('Unsupported storage settings');
     }
-    await _saveIndex(_pinned,c:cache,o:offlineLimit,w:warm);
-    cacheMiB=cache;offlineGiB=offlineLimit;warmCount=warm;
+    await _saveIndex(_pinned,c:cache,o:offlineLimit,w:warm,q:streamQuality);
+    cacheMiB=cache;offlineGiB=offlineLimit;warmCount=warm;quality=streamQuality??quality;
     await _trim(0,{},strict:false);
   });
   Future<void> clearTemporary()=>_serial(()async{
     await for(final e in root.list()){
       if(e is! File||e.path.endsWith('.part'))continue;
-      final id=int.tryParse(e.uri.pathSegments.last.split('.').first);
+      final id=int.tryParse(e.uri.pathSegments.last.split('.').first.split('-').first);
       if(!_protected({}).contains(id)){try{await e.delete();}catch(_){}}
     }
   });
   Future<File?> fetch(Track track,{Set<int> protected=const {}}) {
     if(_closed||!track.playable)return Future.value(null);
-    return _jobs.putIfAbsent(track.id,()=>_serial<File?>(()async{
-      final existing=await find(track.id);
+    final selected=quality,key='${track.id}:$quality';
+    return _jobs.putIfAbsent(key,()=>_serial<File?>(()async{
+      final existing=await find(track.id,representation:selected);
       if(existing!=null)return existing;
-      return _download(track,root,protected,pin:false);
-    }).catchError((Object _)=>null).whenComplete((){_jobs.remove(track.id);}));
+      return _download(track,root,protected,pin:false,representation:selected);
+    }).catchError((Object _)=>null).whenComplete((){_jobs.remove(key);}));
   }
   Future<File?> pin(Track track)=>_serial(()async{
     if(!track.playable)return null;
@@ -162,16 +167,18 @@ class AudioCache {
     }
     return true;
   });
-  Future<File?> _download(Track t,Directory destination,Set<int> protected,{required bool pin}) async {
-    final temp=File('${destination.path}/${t.id}.part');
+  Future<File?> _download(Track t,Directory destination,Set<int> protected,{required bool pin,String representation='original'}) async {
+    final key=representation=='economy'?'${t.id}-economy':'${t.id}';
+    final temp=File('${destination.path}/$key.part');
     final client=newClient();_clients.add(client);
     IOSink? sink;
     try{
-      final request=http.Request('GET',api.uri('/v1/tracks/${t.id}/audio'))
+      final request=http.Request('GET',api.uri('/v1/tracks/${t.id}/audio',{'quality':representation}))
         ..followRedirects=false..headers.addAll(api.headers);
       final response=await client.send(request).timeout(const Duration(seconds:15));
       final ext=extensions[response.headers['content-type']?.split(';').first.trim()];
       final expected=response.contentLength;
+      if(representation=='economy'&&!['economy','original'].contains(response.headers['x-lain-representation']))return null;
       final declared=response.headers['content-length'];
       if(response.statusCode!=200||ext==null||expected==null||expected<=0||expected>maxFile)return null;
       if(declared!=null&&int.tryParse(declared)!=expected)return null;
@@ -189,7 +196,7 @@ class AudioCache {
       }
       await sink.close();sink=null;
       if(size!=expected||_closed)return null;
-      return await temp.rename('${destination.path}/${t.id}.$ext');
+      return await temp.rename('${destination.path}/$key.$ext');
     }catch(_){return null;}
     finally{
       client.close();_clients.remove(client);
@@ -206,7 +213,7 @@ class AudioCache {
     files.sort((a,b)=>a.lastModifiedSync().compareTo(b.lastModifiedSync()));
     for(final f in files){
       if(total+incoming<=cacheMiB*mib)break;
-      final id=int.tryParse(f.uri.pathSegments.last.split('.').first);
+      final id=int.tryParse(f.uri.pathSegments.last.split('.').first.split('-').first);
       if(_protected(protected).contains(id))continue;
       total-=await f.length();await f.delete();
     }
