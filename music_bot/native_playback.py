@@ -19,6 +19,7 @@ class NativePlayback:
               started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
               UNIQUE(device_id,play_id));
             CREATE INDEX IF NOT EXISTS native_plays_recent ON native_plays(id DESC);
+            CREATE INDEX IF NOT EXISTS native_plays_track_time ON native_plays(track_id,started_at);
             """)
 
     def report(self, device, play_id, track_id, event, listened_ms, duration_ms):
