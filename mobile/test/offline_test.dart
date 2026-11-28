@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
@@ -104,6 +105,28 @@ void main(){
     expect(await cache.find(a.id),isNull);
     expect((await cache.usage())['offline'],0);
     await cache.close();
+  });
+  test('in-flight progress acknowledgement cannot erase a newer queued report',()async{
+    final dir=Directory('${base.path}/race');
+    final arrived=Completer<void>(),release=Completer<void>();
+    final values=<int>[];
+    final retryApi=LainApi(serverUri('https://example.com'),'secret','device',client:MockClient((request)async{
+      final row=jsonDecode(request.body) as Map;
+      values.add(row['listened_ms'] as int);
+      if(values.length==1){arrived.complete();await release.future;}
+      return http.Response('{"changed":true}',200);
+    }));
+    final journal=await SessionJournal.open(dir,retryApi);
+    final id=List.filled(32,'c').join();
+    await journal.report(a,id,'progress',32000,100000,send:false);
+    final sending=journal.flush();
+    await arrived.future.timeout(const Duration(seconds:5));
+    await journal.report(a,id,'progress',62000,100000,send:false);
+    release.complete();
+    await sending.timeout(const Duration(seconds:5));
+    expect(values,[32000,62000]);
+    expect(journal.pendingCount,0);
+    await journal.close();retryApi.client.close();
   });
   test('progress outbox coalesces offline reports without losing terminal outcome',()async{
     final dir=Directory('${base.path}/progress');
