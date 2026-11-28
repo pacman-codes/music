@@ -277,3 +277,36 @@ originals. The economy cache has separate file identities; cached originals
 may play without network traffic. It prioritizes next ready tracks for server
 processing and does not silently fetch a larger original if the economy file
 is not prepared. This is a fixed quality option, not adaptive bitrate HLS.
+
+
+## Cross-device continuation and listening statistics
+
+All paired devices belong to the same private owner. GET /v1/devices returns
+active device labels and checkpoint summaries (no credentials).
+PUT /v1/checkpoint stores the calling device's ordered queue of 1–1000 known
+track IDs (repeats allowed), current index, position in milliseconds and
+optional Wave mode. Each device has its own monotonically increasing
+revision. GET /v1/devices/{device_id}/checkpoint retrieves that device's
+snapshot, resolving current library metadata and available audio. Missing
+non-current tracks are omitted with an explicit count; an unavailable current
+track returns 409. DELETE /v1/checkpoint clears only the caller's snapshot.
+Session revocation removes the corresponding checkpoint. No remote commands
+or automatic replacement of another device's queue. The client confirms
+before applying a snapshot and restores it paused.
+
+Automatic publication is opt-in and happens approximately every 15 seconds
+of online playing and when paused, with one request in flight. Offline-only
+queues are not uploaded. Device-local snapshots remain independent; failed
+cloud writes do not stop playback. This is checkpoint transfer rather than
+real-time synchronized audio, and remote device playback is not stopped.
+
+Native playback accepts a cumulative progress event alongside start, skip,
+complete and stop. A play ID has at most one terminal outcome. Progress
+updates cannot decrease the measured listening time, create a second play
+or produce preference feedback; terminal reports remain idempotent.
+GET /v1/listening-summary?period=7|30|365|all aggregates reported time,
+sessions, unique recordings/artists, substantial completions and early
+skips, top recordings/artists by time, and daily totals (up to 365 recorded
+days). No Telegram send history is counted. Time is client-estimated and
+can be incomplete; period and daily grouping use the first report's
+server receipt date in UTC, so delayed offline uploads may shift dates.
