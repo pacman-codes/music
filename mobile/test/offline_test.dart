@@ -58,6 +58,45 @@ void main(){
     await restored.close();
     expect(await Directory('${base.path}/durable').exists(),isFalse);
   });
+  test('economy cache never masquerades as an original offline download',()async{
+    final requests=<String>[];
+    final cache=await open(()=>MockClient((request)async{
+      final quality=request.url.queryParameters['quality']!;
+      requests.add(quality);
+      if(quality=='economy'){
+        return http.Response.bytes([9,8],200,headers:{'content-type':'audio/mp4',
+          'content-length':'2','x-lain-representation':'economy'});
+      }
+      return audio();
+    }));
+    await cache.settings(cache:256,offlineLimit:5,warm:3,streamQuality:'economy');
+    final reduced=await cache.fetch(a);
+    expect(reduced,isNotNull);
+    expect(reduced!.readAsBytesSync(),[9,8]);
+    expect(await cache.find(a.id,representation:'original'),isNull);
+    expect(await cache.hasOffline(a.id),isFalse);
+    final original=await cache.pin(a);
+    expect(original!.readAsBytesSync(),[1,2,3]);
+    expect(requests,['economy','original']);
+    expect(await cache.hasOffline(a.id),isTrue);
+    await cache.close(purge:false);
+    final restored=await open(()=>MockClient((_)async=>throw StateError('No network')));
+    expect(restored.quality,'economy');
+    expect((await restored.find(a.id))!.readAsBytesSync(),[1,2,3]);
+    await restored.close();
+  });
+  test('economy pending does not download original automatically',()async{
+    final requests=<String>[];
+    final cache=await open(()=>MockClient((request)async{
+      requests.add(request.url.queryParameters['quality']!);
+      return http.Response('{}',409);
+    }));
+    await cache.settings(cache:256,offlineLimit:5,warm:1,streamQuality:'economy');
+    expect(await cache.fetch(a),isNull);
+    expect(requests,['economy']);
+    expect(await cache.find(a.id),isNull);
+    await cache.close();
+  });
   test('invalid downloads never become playable or pinned',()async{
     final cache=await open(()=>MockClient((_)async=>audio(length:8)));
     expect(await cache.pin(a),isNull);
