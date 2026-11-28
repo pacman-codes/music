@@ -29,7 +29,6 @@ class LainPlayer extends BaseAudioHandler {
   int _lastTick=0;
   bool _started=false;
   bool _finished=false;
-  Timer? _timer;
   Track? get current => index>=0&&index<tracks.length?tracks[index]:null;
   void changed(){changes.value++;}
   LainPlayer(){
@@ -45,8 +44,8 @@ class LainPlayer extends BaseAudioHandler {
       if(item!=null&&d!=null)mediaItem.add(item.copyWith(duration:d));
     });
     engine.positionStream.listen(_tick);
-    _timer=Timer.periodic(const Duration(seconds:5),(_){
-      if(api!=null&&!busy&&current!=null){unawaited(_poll());unawaited(_refill());}
+    Timer.periodic(const Duration(seconds:5),(_){
+      if(api!=null&&!busy&&(current!=null||waveMode!=null)){unawaited(_poll());unawaited(_refill());}
     });
   }
   Future<void> _serial(Future<void> Function() task){
@@ -126,7 +125,9 @@ class LainPlayer extends BaseAudioHandler {
   Future<void> _load(int next)async{
     final client=api;if(client==null||next<0||next>=tracks.length)return;
     await engine.stop();
-    index=next;final t=tracks[index];
+    index=next;
+    if(index>30){tracks.removeRange(0,index-10);index=10;_syncQueue();}
+    final t=tracks[index];
     _playId=_newId();_listened=0;_started=false;_finished=false;_lastPosition=0;_lastTick=_clock.elapsedMilliseconds;
     mediaItem.add(item(t));
     final file=await cache?.find(t.id);
@@ -213,7 +214,7 @@ class LainPlayer extends BaseAudioHandler {
         final status=state['state'];
         if(status=='ready'){
           final t=preparing.remove(id);
-          if(t!=null&&!tracks.any((x)=>x.id==id))tracks.add(t.ready());
+          if(t!=null&&!tracks.skip(max(0,index-9)).any((x)=>x.id==id))tracks.add(t.ready());
         }else if(['failed','unavailable','busy','not_queued'].contains(status)){preparing.remove(id);}
       }
       _syncQueue();
