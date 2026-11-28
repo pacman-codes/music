@@ -14,11 +14,32 @@ def fatigue_suppressed(skips: int, completions: int) -> bool:
     return skips >= 3 and skips >= 2 * completions + 3
 
 
+def artist_key(name: str) -> str:
+    return " ".join(name.casefold().split())
+
+
+def rotation_pool(pool, rotation_ids, immediate_ids, recent_artists):
+    """Prefer unsent-in-recent-window tracks, then older repeats, then any.
+
+    Within that tier, avoid adjacent artists when possible. A one-artist
+    category or a tiny library never becomes unplayable.
+    """
+    fresh = [t for t in pool if t.id not in rotation_ids and t.id not in immediate_ids]
+    older = [t for t in pool if t.id not in immediate_ids]
+    eligible = fresh or older or pool
+    if recent_artists:
+        alternative = [t for t in eligible if artist_key(t.artist) != recent_artists[-1]]
+        if alternative:
+            eligible = alternative
+    return eligible
+
+
 def track_weight(
     track, liked_ids, favorite_artists, seen_artist,
     *, recent_ids=frozenset(), ratings=None, playback=None, mode="balanced",
     exposure=None, playlist_counts=None, related_ids=frozenset(),
-    recent_artists=(), maybe_ids=frozenset(),
+    recent_artists=(), maybe_ids=frozenset(), artist_affinity=None,
+    fresh_positive_ids=frozenset(),
 ) -> float:
     """Positive sampling weight with a mild, reversible exposure penalty.
 
@@ -29,7 +50,7 @@ def track_weight(
     playback = playback or {}
     exposure = exposure or {}
     playlist_counts = playlist_counts or {}
-    artist = track.artist.strip().casefold()
+    artist = artist_key(track.artist)
     liked = track.id in liked_ids
     score = 1.0
     if mode != "discover" and liked:
@@ -49,6 +70,10 @@ def track_weight(
     skip_penalty = 1 / (1 + 1.7 * (adjusted_skips ** 1.8) / (1 + .7 * completions))
     completion_bonus = 1 + min(0.75, completions * 0.12)
     score *= skip_penalty * completion_bonus
+    # Recent explicit positive feedback nudges, rather than replaces, old taste.
+    if track.id in fresh_positive_ids:
+        score *= 1.25
+    score *= 1 + min(0.45, 0.10 * (artist_affinity or {}).get(artist, 0.0))
 
     # Strength is capped: putting a track in many playlists is not equivalent
     # to many confirmed plays, and must not swamp explicit ratings.
@@ -73,7 +98,10 @@ def track_weight(
 def wave(tracks, liked_ids, disliked_ids=frozenset(), count=30, seed=None,
          recent_ids=frozenset(), mode="balanced", *, ratings=None, playback=None,
          exposure=None, playlist_counts=None, related_ids=frozenset(),
-         maybe_ids=frozenset()):
+         maybe_ids=frozenset(), rotation_ids=frozenset(),
+         immediate_ids=frozenset(), previous_artists=(),
+         preferred_artists=frozenset(), artist_affinity=None,
+         fresh_positive_ids=frozenset()):
     if mode not in {"balanced", "discover", "favorites"}:
         raise ValueError("Unknown wave mode")
     ratings = ratings or {}
@@ -87,30 +115,33 @@ def wave(tracks, liked_ids, disliked_ids=frozenset(), count=30, seed=None,
         return []
     rng = random.Random(seed)
     favorites = Counter(
-        t.artist.strip().casefold() for t in pool
+        artist_key(t.artist) for t in pool
         if t.id in liked_ids and t.artist.strip()
     )
+    favorites.update(preferred_artists)
     if mode == "favorites":
         pool = [t for t in pool if t.id in liked_ids] or pool
     if mode == "discover" and any(t.id not in liked_ids for t in pool):
         pool = [t for t in pool if t.id not in liked_ids]
     seen_artist = Counter()
-    recent_artists: list[str] = []
+    recent_artists = list(previous_artists)[-3:]
     out = []
     while pool and len(out) < count:
+        choices = rotation_pool(pool, rotation_ids, immediate_ids, recent_artists)
         weights = [
             track_weight(
                 t, liked_ids, favorites, seen_artist,
                 recent_ids=recent_ids, ratings=ratings, playback=playback, mode=mode,
                 exposure=exposure, playlist_counts=playlist_counts,
                 related_ids=related_ids, recent_artists=recent_artists,
-                maybe_ids=maybe_ids,
+                maybe_ids=maybe_ids, artist_affinity=artist_affinity,
+                fresh_positive_ids=fresh_positive_ids,
             )
-            for t in pool
+            for t in choices
         ]
-        selected = rng.choices(range(len(pool)), weights=weights, k=1)[0]
-        track = pool.pop(selected)
-        artist = track.artist.strip().casefold()
+        track = rng.choices(choices, weights=weights, k=1)[0]
+        pool.remove(track)
+        artist = artist_key(track.artist)
         seen_artist[artist] += 1
         recent_artists.append(artist)
         out.append(track)
