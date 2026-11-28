@@ -36,6 +36,20 @@
           <option value="explore">35% знакомое · 30% похожее · 35% новое</option>
         </select>
         <button type="button" id="discover">Открытия</button>
+        <button type="button" id="wave-settings-open" aria-expanded="false" aria-controls="wave-settings-panel">⚙ Настройки Волны</button>
+        <div id="wave-settings-panel" class="wave-settings-panel" hidden>
+          <label for="wave-diversity">Разнообразие <output id="wave-diversity-value">50%</output></label>
+          <input id="wave-diversity" type="range" min="0" max="100" step="1" value="50" disabled>
+          <small>Чем выше, тем меньше повторов одного артиста подряд.</small>
+          <label for="wave-repeat-window">Защита от повторов <output id="wave-repeat-value">10</output></label>
+          <input id="wave-repeat-window" type="range" min="0" max="100" step="1" value="10" disabled>
+          <small>Число последних отправок. При нехватке треков возможны повторы; базовая защита последних трёх сохраняется.</small>
+          <div class="wave-settings-actions">
+            <button type="button" id="wave-settings-save" disabled>Сохранить</button>
+            <button type="button" id="wave-settings-reset" disabled>По умолчанию</button>
+          </div>
+          <small id="wave-settings-status" role="status"></small>
+        </div>
       </div>
     </section>
     <section class="home-shortcuts" data-screen="home" aria-label="Быстрые действия">
