@@ -30,6 +30,7 @@ from music_bot.fingerprints import (
 )
 from music_bot.main import deliver_queue, send_single_track
 from music_bot.personalized import personalized_discovery
+from music_bot.personal_albums import recommend_albums
 from music_bot.weekly import weekly_discovery
 from music_bot.wrapped import wrapped_summary
 from music_bot.selection import select_wave_batch
@@ -961,6 +962,13 @@ def create_app(config: Settings | None = None,
             {**row, "cover_urls": album_cover_urls(
                 row["mbid"], cached_album_group(catalog_client, row["mbid"]))}
             for row in rows[:20]], "has_more": len(rows) > 20}
+
+    @app.get("/api/albums/for-you", dependencies=[auth])
+    async def albums_for_you(page: int = Query(0, ge=0, le=4)):
+        try:
+            return await recommend_albums(db, catalog_client, page=page)
+        except CatalogError as exc:
+            raise HTTPException(503, detail=str(exc)) from exc
 
     @app.get("/api/albums/search", dependencies=[auth])
     async def search_album(q: str = Query(min_length=2, max_length=90)):
