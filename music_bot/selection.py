@@ -88,7 +88,8 @@ def select_wave_batch(db: Library, mode: str, count: int = 10,
     if not candidates:
         return []
 
-    context = db.wave_recent_context()
+    settings = db.get_wave_settings()
+    context = db.wave_recent_context(settings["repeat_window"])
     preferred, affinity = wave_profile(
         db, all_tracks, liked_ids=liked_ids, disliked_ids=disliked_ids,
         ratings=ratings, playback=playback, suppressed=suppressed,
@@ -111,6 +112,7 @@ def select_wave_batch(db: Library, mode: str, count: int = 10,
         "preferred_artists": preferred,
         "artist_affinity": affinity,
         "count": count,
+        "diversity": settings["diversity"],
     }
     if mode == "balanced":
         return wave_v2(candidates, preset=db.get_wave_preset(), **prefs)

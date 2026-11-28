@@ -816,6 +816,35 @@ class Library:
             )
             return queue_id
 
+    def get_wave_settings(self) -> dict[str, int]:
+        defaults = {"diversity": 50, "repeat_window": 10}
+        with self.con() as db:
+            rows = db.execute(
+                "SELECT pref_key,pref_value FROM library_preferences WHERE pref_key IN ('wave_diversity','wave_repeat_window')"
+            ).fetchall()
+        for row in rows:
+            key = row["pref_key"].removeprefix("wave_")
+            try:
+                value = int(row["pref_value"])
+            except (TypeError, ValueError):
+                continue
+            if 0 <= value <= 100:
+                defaults[key] = value
+        return defaults
+
+    def set_wave_settings(self, *, diversity: int | None = None,
+                          repeat_window: int | None = None) -> dict[str, int]:
+        changes = {"diversity": diversity, "repeat_window": repeat_window}
+        for value in changes.values():
+            if value is not None and (type(value) is not int or not 0 <= value <= 100):
+                raise ValueError("Invalid Wave setting")
+        with self.con() as db:
+            db.executemany(
+                """INSERT INTO library_preferences(pref_key,pref_value) VALUES(?,?)
+                   ON CONFLICT(pref_key) DO UPDATE SET pref_value=excluded.pref_value""",
+                [("wave_"+key, str(value)) for key,value in changes.items() if value is not None])
+        return self.get_wave_settings()
+
     def get_wave_preset(self) -> str:
         with self.con() as db:
             row = db.execute(
@@ -1094,12 +1123,15 @@ class Library:
             "related_ids": related,
         }
 
-    def wave_recent_context(self) -> dict:
+    def wave_recent_context(self, repeat_window: int = 10) -> dict:
         """Recent delivery order and recent explicit positive decisions."""
+        if type(repeat_window) is not int or not 0 <= repeat_window <= 100:
+            raise ValueError("Invalid repeat window")
         with self.con() as db:
             rows = db.execute(
                 """SELECT h.track_id,t.artist FROM sent_history h
-                   JOIN tracks t ON t.id=h.track_id ORDER BY h.id DESC LIMIT 10"""
+                   JOIN tracks t ON t.id=h.track_id ORDER BY h.id DESC LIMIT ?""",
+                (max(3, repeat_window),)
             ).fetchall()
             positives = db.execute(
                 """SELECT track_id FROM track_ratings WHERE score>=8
@@ -1109,7 +1141,7 @@ class Library:
             ).fetchall()
         from music_bot.recommend import artist_key
         return {
-            "rotation_ids": {int(row["track_id"]) for row in rows},
+            "rotation_ids": {int(row["track_id"]) for row in rows[:repeat_window]},
             "immediate_ids": {int(row["track_id"]) for row in rows[:3]},
             "previous_artists": [artist_key(row["artist"]) for row in reversed(rows[:3])],
             "fresh_positive_ids": {int(row[0]) for row in positives},

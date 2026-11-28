@@ -155,7 +155,7 @@ def home_keyboard(webapp_url: str | None = None) -> InlineKeyboardMarkup:
         [button("⏭ Очередь", "nav:queue"), button("🔎 Поиск", "nav:search")],
     ]
     rows.append([button("🕘 История", "hist:tracks:0"), button("✨ Умные плейлисты", "smart:home")])
-    rows.append([button("👤 Исполнители", "artistlist:0")])
+    rows.append([button("👤 Исполнители", "artistlist:0"), button("⚙ Волна", "waveset:open")])
     if webapp_url:
         rows.insert(0, [
             InlineKeyboardButton(
@@ -1602,6 +1602,8 @@ def create_router(db: Library, owner_id: int, webapp_url: str | None = None,
     install_artist_handlers(router, db, catalog, send_history_queue, render_chat_panel)
     from music_bot.telegram_personal_albums import install_personal_album_handlers
     install_personal_album_handlers(router, db, catalog)
+    from music_bot.telegram_wave_settings import install_wave_settings
+    install_wave_settings(router, db, render_chat_panel)
 
     # Plain text music search is a fallback after all explicit command handlers.
     install_youtube_handlers(

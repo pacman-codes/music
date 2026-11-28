@@ -18,7 +18,7 @@ def artist_key(name: str) -> str:
     return " ".join(name.casefold().split())
 
 
-def rotation_pool(pool, rotation_ids, immediate_ids, recent_artists):
+def rotation_pool(pool, rotation_ids, immediate_ids, recent_artists, diversity=50, seen_artist=None):
     """Prefer unsent-in-recent-window tracks, then older repeats, then any.
 
     Within that tier, avoid adjacent artists when possible. A one-artist
@@ -27,10 +27,16 @@ def rotation_pool(pool, rotation_ids, immediate_ids, recent_artists):
     fresh = [t for t in pool if t.id not in rotation_ids and t.id not in immediate_ids]
     older = [t for t in pool if t.id not in immediate_ids]
     eligible = fresh or older or pool
-    if recent_artists:
-        alternative = [t for t in eligible if artist_key(t.artist) != recent_artists[-1]]
+    if diversity >= 50 and recent_artists:
+        window = recent_artists[-2:] if diversity >= 75 else recent_artists[-1:]
+        alternative = [t for t in eligible if artist_key(t.artist) not in window]
+        if not alternative and diversity >= 75:
+            alternative = [t for t in eligible if artist_key(t.artist) != recent_artists[-1]]
         if alternative:
             eligible = alternative
+    if diversity >= 75 and seen_artist is not None:
+        least = min(seen_artist.get(artist_key(t.artist), 0) for t in eligible)
+        eligible = [t for t in eligible if seen_artist.get(artist_key(t.artist), 0) == least]
     return eligible
 
 
@@ -39,7 +45,7 @@ def track_weight(
     *, recent_ids=frozenset(), ratings=None, playback=None, mode="balanced",
     exposure=None, playlist_counts=None, related_ids=frozenset(),
     recent_artists=(), maybe_ids=frozenset(), artist_affinity=None,
-    fresh_positive_ids=frozenset(),
+    fresh_positive_ids=frozenset(), diversity=50,
 ) -> float:
     """Positive sampling weight with a mild, reversible exposure penalty.
 
@@ -87,12 +93,13 @@ def track_weight(
     score /= 1 + 0.65 * max(0.0, exposure.get(track.id, 0.0))
 
     if artist:
-        score /= 1 + 2.5 * seen_artist.get(artist,0)
+        strength = diversity / 50
+        score /= 1 + 2.5 * strength * seen_artist.get(artist,0)
         # Diversify neighboring songs without hard bans on small libraries.
         if recent_artists and artist == recent_artists[-1]:
-            score *= 0.12
+            score *= 0.12 ** strength
         elif artist in recent_artists[-2:]:
-            score *= 0.50
+            score *= 0.50 ** strength
     return max(0.0001, score)
 
 
@@ -102,7 +109,7 @@ def wave(tracks, liked_ids, disliked_ids=frozenset(), count=30, seed=None,
          maybe_ids=frozenset(), rotation_ids=frozenset(),
          immediate_ids=frozenset(), previous_artists=(),
          preferred_artists=frozenset(), artist_affinity=None,
-         fresh_positive_ids=frozenset()):
+         fresh_positive_ids=frozenset(), diversity=50):
     if mode not in {"balanced", "discover", "favorites"}:
         raise ValueError("Unknown wave mode")
     ratings = ratings or {}
@@ -128,7 +135,7 @@ def wave(tracks, liked_ids, disliked_ids=frozenset(), count=30, seed=None,
     recent_artists = list(previous_artists)[-3:]
     out = []
     while pool and len(out) < count:
-        choices = rotation_pool(pool, rotation_ids, immediate_ids, recent_artists)
+        choices = rotation_pool(pool, rotation_ids, immediate_ids, recent_artists, diversity, seen_artist)
         weights = [
             track_weight(
                 t, liked_ids, favorites, seen_artist,
@@ -136,7 +143,7 @@ def wave(tracks, liked_ids, disliked_ids=frozenset(), count=30, seed=None,
                 exposure=exposure, playlist_counts=playlist_counts,
                 related_ids=related_ids, recent_artists=recent_artists,
                 maybe_ids=maybe_ids, artist_affinity=artist_affinity,
-                fresh_positive_ids=fresh_positive_ids,
+                fresh_positive_ids=fresh_positive_ids, diversity=diversity,
             )
             for t in choices
         ]
