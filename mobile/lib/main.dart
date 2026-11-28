@@ -11,6 +11,7 @@ import 'offline_page.dart';
 import 'now_playing.dart';
 import 'audio_insight.dart';
 import 'equalizer.dart';
+import 'device_sync.dart';
 import 'package:flutter/foundation.dart';
 
 Future<void> main() async {
@@ -420,6 +421,7 @@ class _HomeState extends State<Home>{
     const SizedBox(height:20),ListTile(title:const Text('Сервер'),subtitle:Text(api.origin.toString())),
     if(!kIsWeb&&defaultTargetPlatform==TargetPlatform.android)
       ListTile(leading:const Icon(Icons.equalizer),title:const Text('Эквалайзер Android'),onTap:()=>Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>EqualizerPage(player:player)))),
+    ListTile(leading:const Icon(Icons.devices),title:const Text('Устройства и продолжение'),subtitle:const Text('Очередь и позиция между телефонами'),onTap:()=>Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>DeviceSyncPage(api:api,player:player)))),
     ListTile(leading:const Icon(Icons.storage),title:const Text('Хранилище и предзагрузка'),subtitle:Text('${player.cache?.cacheMiB??1024} МБ кеша'),onTap:showStorage),
     ListTile(leading:const Icon(Icons.download_done),title:const Text('Скачанная музыка'),onTap:showOffline),
     ListTile(title:const Text('Синхронизация истории'),subtitle:Text('Ожидает отправки: ${player.journal?.pendingCount??0}'),trailing:IconButton(icon:const Icon(Icons.sync),onPressed:()async{await player.journal?.flush();player.changed();})),
