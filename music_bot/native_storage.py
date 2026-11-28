@@ -112,3 +112,60 @@ class NativeStorage:
             except OSError:
                 continue
         return available
+
+    def import_file(self, source: Path, *, title: str, artist: str, track_id=None):
+        """Operator-only import; atomic publication, no remote URLs or Telegram calls."""
+        import os
+        import tempfile
+        mime = {".mp3":"audio/mpeg",".m4a":"audio/mp4",".flac":"audio/flac",
+                ".ogg":"audio/ogg"}.get(source.suffix.lower())
+        if not mime or not source.is_file():
+            raise ValueError("Expected local MP3, M4A, FLAC or OGG")
+        title, artist = title.strip(), artist.strip()
+        if not title or not artist or len(title)>250 or len(artist)>250:
+            raise ValueError("Title and artist must be 1–250 characters")
+        if track_id is not None and self.library.get_track(track_id) is None:
+            raise ValueError("Track not found")
+        sha = hashlib.sha256()
+        size = 0
+        temp = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=self.root,delete=False) as out:
+                temp = Path(out.name)
+                with source.open("rb") as stream:
+                    while block := stream.read(1024*1024):
+                        size += len(block)
+                        if size > 200*1024*1024:
+                            raise ValueError("File exceeds 200 MiB")
+                        sha.update(block)
+                        out.write(block)
+                if not size:
+                    raise ValueError("Empty file")
+                out.flush()
+                os.fsync(out.fileno())
+            ident = sha.hexdigest()
+            target = self.root / ident
+            with self.library.con() as db:
+                db.execute("BEGIN IMMEDIATE")
+                if track_id is None:
+                    existing = db.execute("SELECT track_id FROM native_audio WHERE sha256=? ORDER BY track_id LIMIT 1",(ident,)).fetchone()
+                    if existing:
+                        track_id = existing[0]
+                    else:
+                        uid = "native:"+ident
+                        db.execute("""INSERT OR IGNORE INTO tracks(file_id,file_unique_id,title,artist,added_at)
+                                      VALUES(?,?,?,?,CURRENT_TIMESTAMP)""",(uid,uid,title,artist))
+                        track_id = db.execute("SELECT id FROM tracks WHERE file_unique_id=?",(uid,)).fetchone()[0]
+                previous = db.execute("SELECT sha256 FROM native_audio WHERE track_id=?",(track_id,)).fetchone()
+                if previous and previous[0]!=ident:
+                    raise ValueError("Track already has different local audio")
+                if target.is_symlink():
+                    raise ValueError("Unsafe media path")
+                os.replace(temp,target)
+                temp = None
+                db.execute("INSERT OR IGNORE INTO native_audio(track_id,sha256,size,mime) VALUES(?,?,?,?)",
+                           (track_id,ident,size,mime))
+            return track_id
+        finally:
+            if temp is not None:
+                temp.unlink(missing_ok=True)
