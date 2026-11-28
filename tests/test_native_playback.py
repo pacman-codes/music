@@ -55,3 +55,44 @@ def test_native_playback_api_and_rotation(tmp_path):
         settings={"diversity":75,"repeat_window":30,"preset":"explore"}
         assert client.put("/v1/wave/settings",json=settings,headers=headers).json()==settings
         assert client.get("/v1/wave/settings",headers=headers).json()==settings
+
+
+def test_progress_is_monotonic_and_summary_counts_sessions_not_events(tmp_path):
+    db=Library(tmp_path/"music.db")
+    store=NativeStorage(db,tmp_path/"audio")
+    a=db.add_track("f","u","Song","Artist")
+    b=db.add_track("g","v","Other","ARTIST")
+    with TestClient(create_app(tmp_path)) as client:
+        assert client.get("/v1/listening-summary").status_code==401
+        code=store.issue_pairing()
+        token=client.post("/v1/pair",json={"code":code,"label":"Phone"}).json()["token"]
+        headers={"Authorization":"Bearer "+token}
+        def report(tid,ident,event,ms):
+            return client.post("/v1/playback",headers=headers,json={
+                "track_id":tid,"play_id":ident,"event":event,
+                "listened_ms":ms,"duration_ms":100000}).json()["changed"]
+        assert report(a.id,"a"*32,"start",2000)
+        assert report(a.id,"a"*32,"progress",32000)
+        assert not report(a.id,"a"*32,"progress",31000)
+        assert not report(a.id,"a"*32,"progress",32000)
+        assert not db.playback_stats()
+        summary=client.get("/v1/listening-summary",headers=headers).json()
+        assert summary["sessions"]==1 and summary["listened_ms"]==32000
+        assert report(a.id,"a"*32,"complete",90000)
+        assert not report(a.id,"a"*32,"progress",99000)
+        assert report(b.id,"b"*32,"skip",5000)
+        # A progress-only report can recover a lost start.
+        assert report(a.id,"c"*32,"progress",35000)
+        summary=client.get("/v1/listening-summary?period=all",headers=headers).json()
+        assert summary["date_basis"]=="first_report_received_utc"
+        assert summary["sessions"]==3 and summary["listened_ms"]==130000
+        assert summary["unique_tracks"]==2 and summary["unique_artists"]==1
+        assert summary["substantial_completions"]==1 and summary["early_skips"]==1
+        assert summary["top_tracks"][0]["id"]==a.id
+        assert summary["top_tracks"][0]["listened_ms"]==125000
+        assert summary["top_artists"][0]["listened_ms"]==130000
+        with db.con() as con:
+            con.execute("UPDATE native_plays SET started_at=datetime('now','-40 days') WHERE play_id=?",("c"*32,))
+        summary=client.get("/v1/listening-summary?period=30",headers=headers).json()
+        assert summary["sessions"]==2 and summary["listened_ms"]==95000
+        assert client.get("/v1/listening-summary?period=8",headers=headers).status_code==422
