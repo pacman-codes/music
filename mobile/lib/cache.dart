@@ -121,7 +121,7 @@ class AudioCache {
   });
   Future<File?> fetch(Track track,{Set<int> protected=const {}}) {
     if(_closed||!track.playable)return Future.value(null);
-    return _jobs.putIfAbsent(track.id,()=>_serial(()async{
+    return _jobs.putIfAbsent(track.id,()=>_serial<File?>(()async{
       final existing=await find(track.id);
       if(existing!=null)return existing;
       return _download(track,root,protected,pin:false);
@@ -172,7 +172,9 @@ class AudioCache {
       final response=await client.send(request).timeout(const Duration(seconds:15));
       final ext=extensions[response.headers['content-type']?.split(';').first.trim()];
       final expected=response.contentLength;
+      final declared=response.headers['content-length'];
       if(response.statusCode!=200||ext==null||expected==null||expected<=0||expected>maxFile)return null;
+      if(declared!=null&&int.tryParse(declared)!=expected)return null;
       if(pin){
         if(await _bytes(offline)+expected>offlineGiB*gib)return null;
       }else{await _trim(expected,{...protected,t.id});}
