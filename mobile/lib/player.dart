@@ -178,6 +178,16 @@ class LainPlayer extends BaseAudioHandler {
     _syncQueue();
     unawaited(_warm());
   });
+  Future<void> editUpcoming(int position,int expectedId,int delta)=>_serial(()async{
+    if(position<=index||position>=tracks.length||tracks[position].id!=expectedId)return;
+    if(delta==0){tracks.removeAt(position);}
+    else if(delta==-1||delta==1){
+      final target=position+delta;
+      if(target<=index||target>=tracks.length)return;
+      final track=tracks[position];tracks[position]=tracks[target];tracks[target]=track;
+    }
+    _syncQueue();unawaited(_warm());
+  });
   Future<void> startWave(String mode)=>_serial(()async{
     final client=api;if(client==null)return;
     final data=await client.wave(mode);
