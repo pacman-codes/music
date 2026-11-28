@@ -39,8 +39,7 @@ server is unreachable, use the administrator CLI to revoke the session.
   runs out. Ready tracks may be appended, never unready placeholders.
 - Configurable temporary LRU cache: 256 MiB to 4 GiB; prepare 0, 1, 3 or
   5 upcoming tracks. Explicit permanent downloads are separate from cache,
-  have a 1/5/10/20 GiB admission limit and are not LRU victims. Original audio
-  only; current file is protected from cleanup. OS cache eviction is possible.
+  have a 1/5/10/20 GiB admission limit and are not LRU victims. Permanent downloads use original audio; current file is protected from cleanup. OS cache eviction is possible.
 - Search, library pages, editable playlists, five reactions, ratings,
   Wave settings and native history. Full playlists (up to 1000 tracks) play in order or shuffle; unavailable audio is skipped explicitly. No automatic import from unapproved URLs.
 - Reports playback start only after approximately two seconds of position
@@ -90,7 +89,7 @@ Only completed audio files are published. Downloads are limited to
 200 MiB/file and 2000 indexed tracks; the explicit download quota controls
 new admissions, not deletion of already downloaded files. No background
 download service for a killed application and no automatic transcoding.
-Original source format is used.
+Original source format is used for permanent downloads.
 
 The Скачанная музыка screen uses local files only, with ordered or shuffled
 playback. An unavailable local file cannot silently turn into a network
@@ -115,3 +114,27 @@ reports are dropped. Older entries can be dropped when the cap is reached;
 abrupt process termination between periodic snapshots may lose recent
 position or a not-yet-written event. No cross-device queue synchronization
 yet. Physical-device verification is still required.
+
+
+## Audio quality, similarity and equalizer
+
+Under storage settings select original or economy streaming. The server
+needs its optional media worker for economy. Next tracks are prioritized
+for processing, temporary compressed files remain separate from original
+downloads, and a pending representation does not silently stream a larger
+file. Local original copies can play without network transfer.
+
+Track actions open a Звучание page with measured approximate frequency
+balance, dynamics, optional tempo estimate, and similar playable local
+tracks. The server uses a small capped sound-based ranking bonus. These
+are classical signal descriptors, not AI embeddings or verified genres.
+
+On Android only, the profile contains an experimental equalizer. Opt in,
+restart the application, start a track and refresh the equalizer screen.
+It uses the actual frequency bands and gain limits exposed by just_audio
+AndroidEqualizer, with a conservative ±6 dB additional bound and flat,
+bass, voice, and treble presets. The audio effect is disabled by default;
+turn it on explicitly. The boot opt-in persists but gains are session-local.
+If the device effect fails, turn off the opt-in and restart. No iOS EQ is
+claimed. Android effects, Bluetooth output and background transitions still
+need testing on physical phones.
