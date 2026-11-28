@@ -751,6 +751,42 @@ async function refreshTracks() {
   const items=await api("/api/tracks"+(q?"?q="+encodeURIComponent(q):""));
   if(ticket===trackRefreshTicket && byId("query").value.trim()===q) renderTracks(items);
 }
+let waveSettingsBusy=false;
+function waveSettingsEnabled(enabled){
+  for(const id of ["wave-diversity","wave-repeat-window","wave-settings-save","wave-settings-reset"])
+    byId(id).disabled=!enabled;
+}
+function showWaveSettingValues(){
+  show("wave-diversity-value",byId("wave-diversity").value+"%");
+  show("wave-repeat-value",byId("wave-repeat-window").value);
+}
+function displayWaveSettings(data){
+  byId("wave-diversity").value=String(data.diversity);
+  byId("wave-repeat-window").value=String(data.repeat_window);
+  showWaveSettingValues();
+}
+async function loadWaveSettings(){
+  if(waveSettingsBusy)return;
+  waveSettingsBusy=true;waveSettingsEnabled(false);
+  try{
+    displayWaveSettings(await api("/api/wave/settings"));
+    show("wave-settings-status","");waveSettingsEnabled(true);
+  }catch(e){show("wave-settings-status",e.message);toast(e.message)}
+  finally{waveSettingsBusy=false;}
+}
+async function saveWaveSettings(reset=false){
+  if(waveSettingsBusy)return;
+  waveSettingsBusy=true;waveSettingsEnabled(false);
+  try{
+    const payload=reset?{diversity:50,repeat_window:10}:{
+      diversity:Number(byId("wave-diversity").value),
+      repeat_window:Number(byId("wave-repeat-window").value)};
+    displayWaveSettings(await api("/api/wave/settings",{method:"PUT",body:JSON.stringify(payload)}));
+    show("wave-settings-status","Сохранено. Применится к следующей подборке.");
+    toast("Настройки Волны сохранены");
+  }catch(e){show("wave-settings-status",e.message);toast(e.message)}
+  finally{waveSettingsBusy=false;waveSettingsEnabled(true);}
+}
 async function refreshImportSettings() {
   const config = await api("/api/discovery/import-config");
   directImportEnabled = config.enabled === true;
@@ -780,6 +816,16 @@ if (tg && initData) {
     try { await youtubeSearch(query); }
     catch(error) {show("youtube-status","YouTube-поиск недоступен");toast(error.message);}
   });
+  byId("wave-settings-open").addEventListener("click",()=>{
+    const panel=byId("wave-settings-panel");
+    panel.hidden=!panel.hidden;
+    byId("wave-settings-open").setAttribute("aria-expanded",String(!panel.hidden));
+    if(!panel.hidden)loadWaveSettings();
+  });
+  for(const id of ["wave-diversity","wave-repeat-window"])
+    byId(id).addEventListener("input",showWaveSettingValues);
+  byId("wave-settings-save").addEventListener("click",()=>saveWaveSettings());
+  byId("wave-settings-reset").addEventListener("click",()=>saveWaveSettings(true));
   byId("wave-preset").addEventListener("change", async event => {
     try {
       const result=await api("/api/wave/preset",{
