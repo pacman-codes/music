@@ -19,7 +19,7 @@ function run(initData) {
   const screens = [...html.matchAll(/<section[^>]*data-screen="([^"]+)"[^>]*>/g)].map(m=>{
     const n=node({screen:m[1]});n.hidden=/\bhidden\b/.test(m[0]);return n;
   });
-  const buttons = ["home","search","library","albums","queue","more","artists","history","smart"].map(r=>node({route:r},true));
+  const buttons = ["home","search","library","albums","queue","more","artists","history","smart","taste"].map(r=>node({route:r},true));
   const main=node();main.querySelectorAll=()=>screens;
   const nav=node();nav.hidden=true;
   const back={visible:false,show(){this.visible=true},hide(){this.visible=false},onClick(fn){this.click=fn}};
@@ -34,7 +34,7 @@ assert.equal(denied.window.navigateMusicScreen,undefined);
 const ui=run("owner-context");
 assert.equal(ui.nav.hidden,false);
 assert.equal(ui.main.dataset.activeScreen,"home");
-for(const route of ["search","library","albums","queue","more","artists","history","smart","home"]) {
+for(const route of ["search","library","albums","queue","more","artists","history","smart","taste","home"]) {
   const button=ui.buttons.find(b=>b.dataset.route===route);
   button.events.click();
   assert.equal(ui.main.dataset.activeScreen,route);
