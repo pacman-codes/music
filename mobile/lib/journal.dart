@@ -61,8 +61,13 @@ class SessionJournal{
       final next=[..._pending];
       // The server accepts a terminal event even if its start was lost.
       // Keep start before terminal if already queued; retries are idempotent.
-      if(next.any((r)=>r['play_id']==playId&&r['event']==event))return;
-      next.add(row);
+      final existing=next.indexWhere((r)=>r['play_id']==playId&&r['event']==event);
+      if(existing>=0){
+        if(event!='progress'||(next[existing]['listened_ms'] as int)>=row['listened_ms'])return;
+        next[existing]=row;
+      }else{
+        next.add(row);
+      }
       if(next.length>maxReports)next.removeRange(0,next.length-maxReports);
       await _write(_outbox,next);
       _pending..clear()..addAll(next);
@@ -85,7 +90,7 @@ class SessionJournal{
         }catch(_){break;}
         await _serial(()async{
           final next=[..._pending];
-          final index=next.indexWhere((r)=>r['play_id']==row['play_id']&&r['event']==row['event']);
+          final index=next.indexWhere((r)=>r['play_id']==row['play_id']&&r['event']==row['event']&&r['listened_ms']==row['listened_ms']);
           if(index>=0)next.removeAt(index);
           await _write(_outbox,next);
           _pending..clear()..addAll(next);
