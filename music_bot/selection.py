@@ -93,7 +93,7 @@ def wave_preferences(db: Library, all_tracks, *, liked_ids, disliked_ids, rating
 
 
 def select_wave_batch(db: Library, mode: str, count: int = 10,
-                      *, queue_id: int | None = None) -> list[Track]:
+                      *, queue_id: int | None = None, available_ids: set[int] | None = None) -> list[Track]:
     if mode not in DYNAMIC_MODES:
         raise ValueError("Unknown radio mode")
     if not 1 <= count <= 10:
@@ -103,7 +103,8 @@ def select_wave_batch(db: Library, mode: str, count: int = 10,
     liked_ids, disliked_ids = db.liked_ids(), db.disliked_ids()
     ratings, playback = db.ratings(), db.playback_stats()
     verdicts = db.track_verdicts()
-    candidates = [t for t in all_tracks if t.id not in suppressed
+    candidates = [t for t in all_tracks if (available_ids is None or t.id in available_ids)
+                  and t.id not in suppressed
                   and t.id not in disliked_ids
                   and not fatigue_suppressed(*playback.get(t.id, (0, 0)))]
     if queue_id is not None:
