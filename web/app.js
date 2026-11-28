@@ -190,40 +190,101 @@ async function choosePlaylistForTrack(t, panel) {
     await refreshPlaylists();
   }),action("Закрыть",async()=>panel.replaceChildren()));
 }
+// Keep one expanded card per list; a refresh of the same track preserves its menu.
+let expandedLibraryTrack = null;
+let expandedCatalogTrack = null;
+let disclosureSerial = 0;
+const shortReaction = {
+  maybe:"Может добавлю", add:"Добавлю", never:"Никогда",
+  later:"Не сейчас", interesting:"Интересно, не буду слушать",
+};
+function trackDisclosure(head, panel, title, initial, changed) {
+  const toggle = element("button","track-more","⋯");
+  toggle.type = "button";
+  panel.id = "track-details-" + (++disclosureSerial);
+  toggle.setAttribute("aria-controls",panel.id);
+  toggle.setAttribute("aria-label","Действия: "+title);
+  function setOpen(open) {
+    panel.hidden = !open;
+    toggle.setAttribute("aria-expanded",String(open));
+  }
+  toggle.addEventListener("click",()=>{
+    const open=panel.hidden;
+    setOpen(open);
+    changed(open);
+  });
+  setOpen(initial);
+  head.append(toggle);
+  return {setOpen};
+}
+function trackActionGroup(label) {
+  const group=element("div","track-detail-group");
+  const controls=element("div","track-actions");
+  group.append(element("div","track-detail-label",label),controls);
+  return {group,controls};
+}
+function trackIcon(label, accessible, handler, klass="") {
+  const button=action(label,handler,"track-icon "+klass);
+  button.setAttribute("aria-label",accessible);
+  return button;
+}
 function renderTracks(items) {
   const host = byId("tracks");
   host.replaceChildren();
   show("count", String(items.length));
+  if (!items.some(t=>t.id===expandedLibraryTrack)) expandedLibraryTrack=null;
+  let activeDisclosure=null;
   if (!items.length) {
     host.append(element("div", "empty", "Треков пока нет. Отправь музыку боту."));
   }
   for (const t of items) {
-    const row = element("div", "item track-card");
+    const row = element("div", "item track-card compact-track");
     const head = element("div", "track-head");
     const info = element("div", "info");
+    const summary=[t.artist];
+    if(t.rating!=null) summary.push("★ "+t.rating+"/10");
+    if(shortReaction[t.decision]) summary.push(shortReaction[t.decision]);
     info.append(element("div", "name", t.title),
-                element("div", "sub", t.artist));
-    head.append(info, action(t.liked ? "♥" : "♡", async () => {
+                element("div", "sub", summary.filter(Boolean).join(" · ")));
+    const play=trackIcon("▶","Отправить в Telegram: "+t.title,async()=>{
+      await post("/api/tracks/" + t.id + "/play");
+      toast("Песня отправлена в Telegram ▶");
+      tg?.HapticFeedback?.notificationOccurred("success");
+    },"track-play");
+    const heart=trackIcon(t.liked ? "♥" : "♡","Избранное: "+t.title,async () => {
       if (t.liked) {
         await api("/api/like/" + t.id, {method: "DELETE"});
       } else {
         await post("/api/like/" + t.id);
       }
       await refreshTracks();
-    }, t.liked ? "heart liked" : "heart"));
-
-    const actions = element("div", "track-actions");
-    actions.append(action("▶ Слушать", async () => {
-      await post("/api/tracks/" + t.id + "/play");
-      toast("Песня отправлена в Telegram ▶");
-      tg?.HapticFeedback?.notificationOccurred("success");
-    }));
+    }, t.liked ? "heart liked" : "heart");
+    heart.setAttribute("aria-pressed",String(Boolean(t.liked)));
+    head.append(info,play,heart);
+    const details=element("div","track-details");
+    const ratingGroup=trackActionGroup("Оценка и реакция");
+    const libraryGroup=trackActionGroup("Коллекция и очередь");
+    const discoverGroup=trackActionGroup("Поиск и рекомендации");
+    const reportGroup=trackActionGroup("Ручные отметки");
+    const actions=libraryGroup.controls;
+    details.append(ratingGroup.group,libraryGroup.group,discoverGroup.group,reportGroup.group);
+    const disclosure=trackDisclosure(head,details,t.title,expandedLibraryTrack===t.id,open=>{
+      if(open){
+        activeDisclosure?.setOpen(false);
+        activeDisclosure=disclosure;
+        expandedLibraryTrack=t.id;
+      }else{
+        activeDisclosure=null;
+        expandedLibraryTrack=null;
+      }
+    });
+    if(expandedLibraryTrack===t.id) activeDisclosure=disclosure;
     actions.append(action("⏭ Следующим", async () => {
       await queueAddNext(t.id);
       toast("Песня поставлена следующей в очереди");
     }, "secondary-action"));
     if (fingerprintEnabled) {
-      actions.append(action("🧬 Узнать песню", async()=>{
+      discoverGroup.controls.append(action("🧬 Узнать песню", async()=>{
         show("catalog-status","Снимаю отпечаток и сверяю с AcoustID…");
         const result=await post("/api/tracks/"+t.id+"/fingerprint");
         const dup=result.duplicates.length
@@ -237,7 +298,7 @@ function renderTracks(items) {
       },"secondary-action"));
     }
     if (t.recording) {
-      actions.append(action("🏷 Обновить теги", async()=>{
+      discoverGroup.controls.append(action("🏷 Обновить теги", async()=>{
         const result=await post("/api/tracks/"+t.id+"/apply-recording-tags");
         toast("Локальные теги обновлены. Telegram-файл не менялся.");
         await refreshTracks();
@@ -272,7 +333,7 @@ function renderTracks(items) {
         rating.disabled = false;
       }
     });
-    actions.append(rating);
+    ratingGroup.controls.append(rating);
     const decision = element("select", "decision-select");
     decision.setAttribute("aria-label", "Реакция на " + t.title);
     const noDecision = element("option", "", "🧭 Решение");
@@ -303,18 +364,18 @@ function renderTracks(items) {
         decision.disabled = false;
       }
     });
-    actions.append(decision);
-    actions.append(action("⏭ Пропустил", async () => {
+    ratingGroup.controls.append(decision);
+    reportGroup.controls.append(action("⏭ Пропустил", async () => {
       await post("/api/report/" + t.id, {event: "skip"});
       toast("Пропуск отмечен вручную");
       await refreshTracks();
     }, "secondary-action"));
-    actions.append(action("✅ Дослушал", async () => {
+    reportGroup.controls.append(action("✅ Дослушал", async () => {
       await post("/api/report/" + t.id, {event: "complete"});
       toast("Дослушивание отмечено вручную");
       await refreshTracks();
     }, "secondary-action"));
-    actions.append(action("🎸 Радио", async () => {
+    discoverGroup.controls.append(action("🎸 Радио", async () => {
       show("catalog-status", "Подбираю музыку по этому треку…");
       const result=await api("/api/tracks/" + t.id + "/radio");
       show("catalog-status", "По «" + t.title + "»: " +
@@ -323,7 +384,7 @@ function renderTracks(items) {
       window.navigateMusicScreen?.("search", {scroll:false});
       byId("catalog-heading").scrollIntoView({behavior:"smooth"});
     }, "secondary-action"));
-    actions.append(action(t.recording ? "🔗 Связано" : "🔍 Найти запись", async () => {
+    discoverGroup.controls.append(action(t.recording ? "🔗 Связано" : "🔍 Найти запись", async () => {
       if (t.recording) {
         if (t.recording.provenance !== "confirmed") {
           toast("Запись привязана при импорте и не меняется вручную");
@@ -343,12 +404,13 @@ function renderTracks(items) {
       window.navigateMusicScreen?.("search", {scroll:false});
       byId("catalog-heading").scrollIntoView({behavior:"smooth"});
     }, "secondary-action"));
-    actions.append(action("👤 Исполнитель",()=>window.openMusicArtistSearch(t.artist),"secondary-action"));
+    discoverGroup.controls.append(action("👤 Исполнитель",()=>window.openMusicArtistSearch(t.artist),"secondary-action"));
     const picker=element("div","track-actions playlist-picker");
     actions.append(action("＋ Плейлист",()=>choosePlaylistForTrack(t,picker),"secondary-action"));
-    row.append(head,actions,picker);
+    libraryGroup.group.append(picker);
+    row.append(head,details);
     if (t.reported_skips || t.reported_completions) {
-      row.append(element("div", "track-feedback",
+      reportGroup.group.append(element("div", "track-feedback",
         "Ручные отметки за 30 дней: ⏭ " + t.reported_skips +
         " · ✅ " + t.reported_completions));
     }
@@ -358,7 +420,11 @@ function renderTracks(items) {
 
 
 function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
+  if(rows!==lastCatalogView.rows || fromWishlist!==lastCatalogView.fromWishlist ||
+     matchingTrackId!==lastCatalogView.matchingTrackId) expandedCatalogTrack=null;
   lastCatalogView = {rows, fromWishlist, matchingTrackId};
+  if(!rows.some(t=>t.mbid===expandedCatalogTrack)) expandedCatalogTrack=null;
+  let activeDisclosure=null;
   const host = byId("catalog-results");
   host.replaceChildren();
   if (!rows.length) {
@@ -366,26 +432,39 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
     return;
   }
   for (const item of rows) {
-    const card = element("div", "item track-card");
+    const card = element("div", "item track-card compact-track");
     const header = element("div", "track-head");
     const info = element("div", "info");
+    const meta=[item.artist,item.local_track_id?"В медиатеке":"Без аудио"];
+    if(shortReaction[item.decision]) meta.push(shortReaction[item.decision]);
     info.append(element("div", "name", item.title),
-                element("div", "sub", item.artist));
+                element("div", "sub", meta.filter(Boolean).join(" · ")));
     header.append(info);
-    const controls = element("div", "track-actions");
+    const details=element("div","track-details");
+    const controls=element("div","track-actions");
     if (item.local_track_id) {
       controls.append(element("span", "catalog-available", "✓ Связано с треком #" + item.local_track_id));
-      controls.append(action("▶ Слушать", async () => {
+      header.append(trackIcon("▶","Отправить в Telegram: "+item.title,async () => {
         await post("/api/tracks/" + item.local_track_id + "/play");
         toast("Песня отправлена в Telegram ▶");
         tg?.HapticFeedback?.notificationOccurred("success");
-      }));
+      },"track-play"));
     } else if (item.possible_match_track_id) {
       controls.append(element("span", "catalog-unavailable",
         "Возможно совпадение с #" + item.possible_match_track_id + " — ещё не подтверждено"));
-    } else {
-      controls.append(element("span", "catalog-unavailable", "Пока без аудио"));
     }
+    const disclosure=trackDisclosure(header,details,item.title,
+      expandedCatalogTrack===item.mbid,open=>{
+        if(open){
+          activeDisclosure?.setOpen(false);
+          activeDisclosure=disclosure;
+          expandedCatalogTrack=item.mbid;
+        }else{
+          if(activeDisclosure===disclosure)activeDisclosure=null;
+          if(expandedCatalogTrack===item.mbid)expandedCatalogTrack=null;
+        }
+      });
+    if(expandedCatalogTrack===item.mbid)activeDisclosure=disclosure;
     if (!item.local_track_id) {
       const query = encodeURIComponent((item.artist + " " + item.title).trim());
       for (const [label, url] of [
@@ -406,8 +485,9 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
       }
     }
     const toMatch = matchingTrackId ?? item.possible_match_track_id;
+    const matchingActions=element("div","track-actions compact-match");
     if (toMatch && item.local_track_id == null) {
-      controls.append(action("🔗 Это та запись", async () => {
+      (matchingTrackId!=null?matchingActions:controls).append(action("🔗 Это та запись", async () => {
         const ok = window.confirm(
           "Подтвердить, что файл #" + toMatch + " — именно «" +
           item.artist + " — " + item.title + "»?\n" +
@@ -478,6 +558,8 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
         await post("/api/decisions/catalog/" + encodeURIComponent(item.mbid),
                    {status: verdict.value});
         item.decision = verdict.value;
+        info.querySelector(".sub").textContent=[item.artist,item.local_track_id?"В медиатеке":"Без аудио",
+          shortReaction[item.decision]].filter(Boolean).join(" · ");
         toast("Реакция сохранена");
         if (window.refreshDecisions) await window.refreshDecisions();
       } catch (error) {
@@ -515,10 +597,19 @@ function renderExternalCatalog(rows, fromWishlist=false, matchingTrackId=null) {
       link.rel = "noopener noreferrer";
       controls.append(link);
     }
-    card.append(header, controls);
+    details.append(controls);
+    card.append(header);
     if (item.variant) {
-      card.append(element("div", "catalog-caption", "Может быть ремиксом, live или другой версией."));
+      card.append(element("div", "catalog-caption compact-warning", "Возможна другая версия (remix/live)."));
     }
+    if (!item.local_track_id && toMatch) {
+      // Explicit matching remains visible even when the ordinary controls are folded.
+      const matchNotice=element("div","catalog-caption compact-warning",
+        matchingTrackId!=null?"Проверь точную версию перед подтверждением.":"Есть кандидат на совпадение. Проверь точную версию в действиях.");
+      card.append(matchNotice);
+    }
+    if(matchingActions.childNodes.length)card.append(matchingActions);
+    card.append(details);
     host.append(card);
   }
 }
@@ -653,9 +744,12 @@ async function refreshPlaylists(){
   const items=await api("/api/playlists");
   if(request===playlistRequest) renderPlaylists(items);
 }
+let trackRefreshTicket=0;
 async function refreshTracks() {
+  const ticket=++trackRefreshTicket;
   const q=byId("query").value.trim();
-  renderTracks(await api("/api/tracks"+(q?"?q="+encodeURIComponent(q):"")));
+  const items=await api("/api/tracks"+(q?"?q="+encodeURIComponent(q):""));
+  if(ticket===trackRefreshTicket && byId("query").value.trim()===q) renderTracks(items);
 }
 async function refreshImportSettings() {
   const config = await api("/api/discovery/import-config");
@@ -663,11 +757,11 @@ async function refreshImportSettings() {
 }
 async function refresh() {
   await Promise.all([
-    refreshPlaylists(), refreshTracks(),
+    refreshPlaylists(),
     refreshImportSettings(), refreshYoutubeSettings(),
     api("/api/fingerprint/status").then(data=>{
       fingerprintEnabled=data.enabled===true;
-    }),
+    }).catch(()=>{fingerprintEnabled=false;}).then(refreshTracks),
     api("/api/wave/preset").then(data=>{
       byId("wave-preset").value=data.preset;
     })
