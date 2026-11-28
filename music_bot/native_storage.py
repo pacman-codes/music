@@ -93,7 +93,10 @@ class NativeStorage:
         if not re.fullmatch(r"[a-f0-9]{64}",sha):
             return None
         path=self.root / sha
-        if path.is_symlink() or not path.is_file() or path.stat().st_size != row["size"]:
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size != row["size"]:
+                return None
+        except OSError:
             return None
         return path,row["mime"],row["size"]
 
