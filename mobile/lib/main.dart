@@ -7,6 +7,8 @@ import 'api.dart';
 import 'cache.dart';
 import 'player.dart';
 import 'catalog.dart';
+import 'offline_page.dart';
+import 'now_playing.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -169,6 +171,7 @@ class _HomeState extends State<Home>{
         for(final e in const {'add':'Добавлю','maybe':'Может добавлю','never':'Никогда','later':'Не сейчас','interesting':'Интересно, но не слушать'}.entries)
           ListTile(title:Text(e.value),onTap:()=>Navigator.pop(ctx,e.key)),
         ListTile(leading:const Icon(Icons.playlist_add),title:const Text('В плейлист'),onTap:()=>Navigator.pop(ctx,'playlist')),
+        if(t.playable)ListTile(leading:const Icon(Icons.download),title:const Text('Скачать офлайн'),onTap:()=>Navigator.pop(ctx,'download')),
         if(t.playable)ListTile(leading:const Icon(Icons.queue_music),title:const Text('Следующим'),onTap:()=>Navigator.pop(ctx,'next')),
         if(tab==2&&playlistId!=null)ListTile(leading:const Icon(Icons.remove_circle_outline),title:const Text('Убрать из плейлиста'),onTap:()=>Navigator.pop(ctx,'remove')),
         if(tab==2&&playlistId!=null&&isCustomPlaylist)...[
@@ -181,6 +184,7 @@ class _HomeState extends State<Home>{
     )));
     if(action==null||!mounted)return;
     try{
+      if(action=='download'){await downloadTracks([t]);return;}
       if(action=='playlist'){await addToPlaylist(t);return;}
       if(action=='next'){await player.enqueueNext(t);return;}
       if(action=='remove'){await api.request('DELETE','/v1/playlists/$playlistId/tracks/${t.id}');}
@@ -209,6 +213,31 @@ class _HomeState extends State<Home>{
       trailing:IconButton(icon:Icon(t.liked?Icons.favorite:Icons.more_horiz),onPressed:()=>feedback(t)),
     );
   }
+  Future<void> downloadTracks(List<Track> rows)async{
+    final ready=rows.where((t)=>t.playable).toList();
+    if(ready.isEmpty){message('Нет готового аудио');return;}
+    if(!mounted)return;
+    await Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>DownloadPage(player:player,tracks:ready)));
+  }
+  Future<void> showOffline()async{
+    await Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>OfflinePage(player:player)));
+  }
+  Future<void> showStorage()async{
+    if(player.cache==null)return;
+    await Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>StoragePage(player:player)));
+  }
+  Future<void> showNowPlaying()async{
+    if(player.current==null)return;
+    await Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>NowPlayingPage(player:player,feedback:feedback,download:downloadTracks)));
+  }
+  Future<void> downloadPlaylist()async{
+    final id=playlistId;
+    if(id==null)return;
+    try{
+      final data=await api.request('GET','/v1/playlists/$id/queue') as Map;
+      if(mounted)await downloadTracks(api.rows(data['results']));
+    }catch(e){message(e.toString());}
+  }
   Widget home()=>ListView(padding:const EdgeInsets.all(16),children:[
     Card(child:Padding(padding:const EdgeInsets.all(22),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
       const Text('ПЕРСОНАЛЬНОЕ РАДИО',style:TextStyle(letterSpacing:2,fontSize:11)),
@@ -223,6 +252,7 @@ class _HomeState extends State<Home>{
       const SizedBox(height:8),
       FilledButton.icon(onPressed:player.busy?null:()=>player.startWave(mode),icon:const Icon(Icons.play_arrow),label:const Text('Слушать')),
     ]))),
+    ListTile(leading:const Icon(Icons.download_done),title:const Text('Скачанная музыка'),subtitle:Text('${player.cache?.downloads.length??0} треков'),onTap:showOffline),
     if(player.preparing.isNotEmpty)ListTile(leading:const Icon(Icons.cloud_download),title:Text('Сервер готовит: ${player.preparing.length}')),
     Text('Очередь',style:Theme.of(context).textTheme.titleLarge),
     if(player.tracks.isEmpty)const ListTile(title:Text('Пока пусто')),
@@ -318,6 +348,7 @@ class _HomeState extends State<Home>{
   }
   Widget playlistsPage()=>ListView(children:[
     if(playlistId==null)...[
+      ListTile(leading:const Icon(Icons.download_done),title:const Text('Скачанная музыка'),onTap:showOffline),
       ListTile(leading:const Icon(Icons.add),title:const Text('Создать плейлист'),onTap:createPlaylist),
       for(final row in playlists)ListTile(leading:const Icon(Icons.queue_music),title:Text(row['name'] as String),
         subtitle:Text('${row['count']} треков'),onTap:()=>openPlaylist(row['id'] as int,row['name'] as String,0)),
@@ -329,6 +360,7 @@ class _HomeState extends State<Home>{
       Wrap(alignment:WrapAlignment.center,spacing:8,children:[
         FilledButton.icon(onPressed:()=>playFullPlaylist(),icon:const Icon(Icons.play_arrow),label:const Text('Весь плейлист')),
         OutlinedButton.icon(onPressed:()=>playFullPlaylist(shuffle:true),icon:const Icon(Icons.shuffle),label:const Text('Перемешать')),
+        OutlinedButton.icon(onPressed:downloadPlaylist,icon:const Icon(Icons.download),label:const Text('Скачать доступные')),
         if(isCustomPlaylist)...[TextButton(onPressed:renamePlaylist,child:const Text('Переименовать')),TextButton(onPressed:deletePlaylist,child:const Text('Удалить'))],
       ]),
       for(final t in playlistTracks)ListTile(leading:Icon(t.playable?Icons.music_note:Icons.cloud_off),title:Text(t.title),subtitle:Text(t.artist),onTap:t.playable?()=>playFullPlaylist(from:t.id):()=>prepare(t),trailing:IconButton(icon:const Icon(Icons.more_horiz),onPressed:()=>feedback(t))),
@@ -367,7 +399,9 @@ class _HomeState extends State<Home>{
       subtitle:Text('${row['artist']} · ${(row['listened_ms'] as int)~/1000} сек.')),
     if(history.isEmpty)const Text('Пока нет подтверждённых событий.'),
     const SizedBox(height:20),ListTile(title:const Text('Сервер'),subtitle:Text(api.origin.toString())),
-    const ListTile(title:Text('Кеш'),subtitle:Text('До 1 ГБ, автоматически подготавливаются следующие 3 трека.')),
+    ListTile(leading:const Icon(Icons.storage),title:const Text('Хранилище и предзагрузка'),subtitle:Text('${player.cache?.cacheMiB??1024} МБ кеша'),onTap:showStorage),
+    ListTile(leading:const Icon(Icons.download_done),title:const Text('Скачанная музыка'),onTap:showOffline),
+    ListTile(title:const Text('Синхронизация истории'),subtitle:Text('Ожидает отправки: ${player.journal?.pendingCount??0}'),trailing:IconButton(icon:const Icon(Icons.sync),onPressed:()async{await player.journal?.flush();player.changed();})),
     OutlinedButton(onPressed:widget.onLogout,child:const Text('Отключить устройство')),
   ]);
   Widget playerBar(){
@@ -375,20 +409,21 @@ class _HomeState extends State<Home>{
     if(t==null)return const SizedBox.shrink();
     return Material(color:const Color(0xff29243a),child:Padding(padding:const EdgeInsets.all(8),child:Column(mainAxisSize:MainAxisSize.min,children:[
       Row(children:[
-        Expanded(child:ListTile(dense:true,title:Text(t.title,maxLines:1,overflow:TextOverflow.ellipsis),subtitle:Text(t.artist),onTap:()=>feedback(t))),
+        Expanded(child:ListTile(dense:true,title:Text(t.title,maxLines:1,overflow:TextOverflow.ellipsis),subtitle:Text(t.artist),onTap:showNowPlaying)),
         IconButton(onPressed:player.busy?null:player.skipToPrevious,icon:const Icon(Icons.skip_previous)),
         IconButton(onPressed:player.busy?null:player.engine.playing?player.pause:player.play,icon:Icon(player.engine.playing?Icons.pause_circle_filled:Icons.play_circle_fill,size:34)),
         IconButton(onPressed:player.busy?null:player.skipToNext,icon:const Icon(Icons.skip_next)),
       ]),
       StreamBuilder<Duration>(stream:player.engine.positionStream,builder:(context,snapshot){
         final duration=player.engine.duration?.inMilliseconds??0;
-        final pos=(snapshot.data?.inMilliseconds??0).clamp(0,duration).toDouble();
+        final pos=player.displayedPosition.clamp(0,duration).toDouble();
         return Row(children:[
-          Text(formatTime(pos.toInt()),style:const TextStyle(fontSize:11)),
-          Expanded(child:Slider(value:pos,max:duration>0?duration.toDouble():1,onChanged:duration>0&&!player.busy?(v)=>player.seek(Duration(milliseconds:v.round())):null)),
+          Text(formatTime(duration==0?player.displayedPosition:pos.toInt()),style:const TextStyle(fontSize:11)),
+          Expanded(child:Slider(value:pos,max:duration>0?duration.toDouble():1,onChanged:duration>0&&!player.busy?(v){}:null,onChangeEnd:duration>0&&!player.busy?(v)=>player.seek(Duration(milliseconds:v.round())):null)),
           Text(formatTime(duration),style:const TextStyle(fontSize:11)),
         ]);
       }),
+      if(player.offlineOnly)const Text('Офлайн',style:TextStyle(fontSize:11)),
       if(player.engine.processingState==ProcessingState.loading||player.engine.processingState==ProcessingState.buffering)const LinearProgressIndicator(),
     ])));
   }
