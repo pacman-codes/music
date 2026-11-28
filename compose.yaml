@@ -83,6 +83,23 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+  standalone-audio-migrate:
+    profiles: ["migration"]
+    build:
+      context: .
+    environment:
+      LAIN_DATA_DIR: /app/data
+      BOT_TOKEN: ${BOT_TOKEN:-}
+    command: ["python", "-m", "music_bot.native_cli", "migrate-telegram-audio", "--confirm-authorized"]
+    volumes:
+      - standalone_data:/app/data
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
   standalone-migrate:
     profiles: ["migration"]
     build:

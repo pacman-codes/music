@@ -133,3 +133,41 @@ reapproval. Restart recovery does not require the phone to remain online.
 Worker activation and live source transfers still require testing on the VPS.
 Phone-side buffering, automatic source discovery and native playback telemetry
 remain separate client/provider work.
+
+
+## Mobile client and native playback
+
+See [mobile README](../mobile/README.md) for Flutter setup and CI.
+Native playback reports (POST /v1/playback) use a random 32-hex play_id scoped
+to a device, track_id, event (start/skip/complete/stop), listened_ms and optional
+duration_ms. Reports below two seconds are ignored; completion requires >=80%
+played time and early explicit skip requires <25% and <30 seconds. Reports
+are client telemetry, not independently verified acoustics. No duplicate
+terminal feedback for the same play ID. GET /v1/history exposes this history.
+GET/PUT /v1/wave/settings share the existing settings. Native Wave uses
+native playback history, rather than treating migrated Telegram sends as plays.
+The original legacy history is retained unchanged.
+
+
+### Optional one-time transfer of legacy audio bytes
+
+After copying the metadata database, you can import existing bot-accessible
+audio using the same legacy BOT_TOKEN. Only do this for audio you are
+authorized to store. The one-off container never polls or sends messages;
+the standalone API never receives the Telegram token.
+
+```sh
+docker compose --profile migration run --rm --build standalone-audio-migrate
+# Continue with the next_after value returned by the prior batch:
+docker compose --profile migration run --rm standalone-audio-migrate \
+  python -m music_bot.native_cli migrate-telegram-audio --confirm-authorized --after 50
+```
+
+The cursor 50 is an example, not a fixed page number. Default batch 50;
+maximum 100. Existing local files are skipped, old track IDs and ratings
+are retained. The official hosted Bot API download limit is approximately
+20 MB; the migration conservatively accepts <=19 MiB, checks file size and
+basic audio signature, and reports unavailable items rather than inventing
+audio. Large/unavailable files need separate authorized local import.
+Rate limiting or low disk space stops the batch and leaves a resumable cursor.
+The explicit migration container is the only new component with BOT_TOKEN.
