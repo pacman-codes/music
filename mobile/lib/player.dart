@@ -45,7 +45,7 @@ class LainPlayer extends BaseAudioHandler {
     });
     engine.positionStream.listen(_tick);
     Timer.periodic(const Duration(seconds:5),(_){
-      if(api!=null&&!busy&&(current!=null||waveMode!=null)){unawaited(_poll());unawaited(_refill());}
+      if(api!=null&&!busy&&(current!=null||waveMode!=null)){unawaited(_poll());unawaited(_refill());unawaited(_warm());}
     });
   }
   Future<void> _serial(Future<void> Function() task){
@@ -146,6 +146,7 @@ class LainPlayer extends BaseAudioHandler {
   @override Future<void> play()=>_serial(()async{
     if(current==null)return;
     if(_finished){await _load(index);return;}
+    if(engine.processingState==ProcessingState.idle){await _load(index);return;}
     unawaited(engine.play().catchError((Object _){error='Аудио недоступно';changed();}));
   });
   @override Future<void> pause()=>_serial(()=>engine.pause());
@@ -166,7 +167,7 @@ class LainPlayer extends BaseAudioHandler {
     await super.stop();
   });
   Future<void> _warm() async {
-    if(_warming)return;
+    if(_warming||busy&&current==null)return;
     _warming=true;
     final generation=_generation;
     try{
@@ -194,6 +195,7 @@ class LainPlayer extends BaseAudioHandler {
       for(final t in client.rows(data['preparing'])){preparing[t.id]=t;}
       if(next.isNotEmpty){
         final wasFinished=_finished;
+        for(final t in next){preparing.remove(t.id);}
         tracks.addAll(next);_syncQueue();
         if(wasFinished||index<0){
           unawaited(_serial(()async{if(generation==_generation&&(_finished||index<0)&&index+1<tracks.length)await _load(index+1);}));
@@ -228,7 +230,7 @@ class LainPlayer extends BaseAudioHandler {
     _finish('stop');await engine.stop();_generation++;
     final old=cache;cache=null;api=null;waveMode=null;
     tracks.clear();preparing.clear();index=-1;mediaItem.add(null);_syncQueue();
-    if(old!=null)await old.close();
+    if(old!=null){try{await old.close();}catch(_){}}
     await super.stop();
   });
 }
