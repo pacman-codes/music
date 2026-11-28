@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from music_bot.native_storage import NativeStorage
+from music_bot.native_playback import NativePlayback
 from music_bot.native_prefetch import Prefetch, configured_hosts
 from music_bot.selection import select_wave_batch
 from music_bot.storage import Library
@@ -20,6 +21,20 @@ class PairRequest(BaseModel):
 
 class PrefetchRequest(BaseModel):
     track_ids: list[Annotated[int, Field(gt=0,le=9223372036854775807,strict=True)]] = Field(min_length=1,max_length=5)
+
+
+class PlaybackReport(BaseModel):
+    play_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    track_id: int = Field(gt=0,le=9223372036854775807,strict=True)
+    event: Literal["start","skip","complete","stop"]
+    listened_ms: int = Field(ge=0,le=86400000,strict=True)
+    duration_ms: int | None = Field(default=None,gt=0,le=86400000,strict=True)
+
+
+class WaveSettings(BaseModel):
+    diversity: int = Field(ge=0,le=100,strict=True)
+    repeat_window: int = Field(ge=0,le=100,strict=True)
+    preset: Literal["balanced","familiar","explore"]
 
 
 class Rating(BaseModel):
@@ -35,6 +50,7 @@ def create_app(root: Path | None = None):
     db = Library(root/"music.db")
     store = NativeStorage(db,root/"audio")
     prefetch = Prefetch(store,configured_hosts())
+    playback = NativePlayback(db)
     app = FastAPI(title="LAIN native",docs_url=None,redoc_url=None,openapi_url=None)
 
     def owner(authorization: Annotated[str|None,Header()] = None):
@@ -100,10 +116,34 @@ def create_app(root: Path | None = None):
         path,mime,_=asset
         return FileResponse(path,media_type=mime)
 
+    @app.post("/v1/playback")
+    def report_playback(payload: PlaybackReport, device: str=auth):
+        try:
+            return {"changed":playback.report(device,**payload.model_dump())}
+        except ValueError as exc:
+            raise HTTPException(422,str(exc)) from None
+
+    @app.get("/v1/history",dependencies=[auth])
+    def history(before: int|None=Query(None,ge=1,le=9223372036854775807)):
+        return playback.history(before)
+
+    @app.get("/v1/wave/settings",dependencies=[auth])
+    def wave_settings():
+        return {**db.get_wave_settings(),"preset":db.get_wave_preset()}
+
+    @app.put("/v1/wave/settings",dependencies=[auth])
+    def save_wave_settings(payload: WaveSettings):
+        db.set_wave_settings(diversity=payload.diversity,repeat_window=payload.repeat_window)
+        db.set_wave_preset(payload.preset)
+        return {**db.get_wave_settings(),"preset":db.get_wave_preset()}
+
+    def native_context():
+        return playback.context(db.get_wave_settings()["repeat_window"])
+
     @app.get("/v1/wave",dependencies=[auth])
     def wave(mode: Literal["balanced","discover","favorites"]="balanced"):
         available=store.available_ids()
-        return {"results":public(select_wave_batch(db,mode,available_ids=available),available)}
+        return {"results":public(select_wave_batch(db,mode,available_ids=available,native_context=native_context()),available)}
 
     @app.post("/v1/prefetch",dependencies=[auth])
     def prepare(payload: PrefetchRequest):
@@ -117,13 +157,13 @@ def create_app(root: Path | None = None):
     def prepare_wave(mode: Literal["balanced","discover","favorites"]="balanced"):
         """Return playable music now; schedule approved missing tracks separately."""
         available=store.available_ids()
-        ready=select_wave_batch(db,mode,available_ids=available)
+        ready=select_wave_batch(db,mode,available_ids=available,native_context=native_context())
         missing=prefetch.approved_ids()-available
         # Failed jobs require an explicit operator reapproval, not endless retries.
         with db.con() as con:
             failed={row[0] for row in con.execute(
                 "SELECT track_id FROM native_prefetch_jobs WHERE state='failed'")}
-        upcoming=select_wave_batch(db,mode,count=5,available_ids=missing-failed)
+        upcoming=select_wave_batch(db,mode,count=5,available_ids=missing-failed,native_context=native_context())
         jobs=prefetch.enqueue([t.id for t in upcoming])
         states={row["track_id"]:row["state"] for row in jobs}
         return {"results":public(ready,available),
