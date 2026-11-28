@@ -79,7 +79,7 @@ def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
             maybe_ids=frozenset(), rotation_ids=frozenset(),
             immediate_ids=frozenset(), previous_artists=(),
             preferred_artists=frozenset(), artist_affinity=None,
-            fresh_positive_ids=frozenset()):
+            fresh_positive_ids=frozenset(), diversity=50):
     """Personalized native playback batch, no hypothetical audio candidates."""
     if preset not in PRESETS:
         raise ValueError("Unknown Wave 2.0 preset")
@@ -118,7 +118,7 @@ def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
     result = []
     for name in schedule:
         pool = groups[name]
-        choices = rotation_pool(pool, rotation_ids, immediate_ids, recent_artists)
+        choices = rotation_pool(pool, rotation_ids, immediate_ids, recent_artists, diversity, seen_artists)
         scores = [
             track_weight(
                 t, liked_ids, favorites, seen_artists,
@@ -127,7 +127,7 @@ def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
                 playlist_counts=playlist_counts, related_ids=related_ids,
                 recent_artists=recent_artists,
                 maybe_ids=maybe_ids, artist_affinity=artist_affinity,
-                fresh_positive_ids=fresh_positive_ids,
+                fresh_positive_ids=fresh_positive_ids, diversity=diversity,
             )
             for t in choices
         ]
