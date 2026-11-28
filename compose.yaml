@@ -52,11 +52,30 @@ services:
     command: ["uvicorn", "music_bot.native_api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8086"]
     environment:
       LAIN_DATA_DIR: /app/data
+      LAIN_PREFETCH_HOSTS: ${LAIN_PREFETCH_HOSTS:-}
     restart: unless-stopped
     volumes:
       - standalone_data:/app/data
     ports:
       - "127.0.0.1:8086:8086"
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+  standalone-prefetch:
+    profiles: ["prefetch"]
+    build:
+      context: .
+    command: ["python", "-m", "music_bot.native_prefetch"]
+    environment:
+      LAIN_DATA_DIR: /app/data
+      LAIN_PREFETCH_HOSTS: ${LAIN_PREFETCH_HOSTS:-}
+    restart: unless-stopped
+    volumes:
+      - standalone_data:/app/data
     tmpfs:
       - /tmp:size=64m,mode=1777
     pids_limit: 64
