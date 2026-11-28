@@ -123,6 +123,11 @@ class PlaybackReport(BaseModel):
     event: Literal["skip", "complete"]
 
 
+class WaveSettingsRequest(BaseModel):
+    diversity: int | None = Field(default=None, ge=0, le=100, strict=True)
+    repeat_window: int | None = Field(default=None, ge=0, le=100, strict=True)
+
+
 class WavePresetRequest(BaseModel):
     preset: Literal["balanced", "familiar", "explore"]
 
@@ -1282,6 +1287,15 @@ def create_app(config: Settings | None = None,
         period: Literal["7d", "30d", "365d", "all"] = "30d",
     ):
         return wrapped_summary(db, period)
+
+    @app.get("/api/wave/settings", dependencies=[auth])
+    async def wave_settings():
+        return db.get_wave_settings()
+
+    @app.put("/api/wave/settings", dependencies=[auth])
+    async def update_wave_settings(payload: WaveSettingsRequest):
+        return db.set_wave_settings(diversity=payload.diversity,
+                                    repeat_window=payload.repeat_window)
 
     @app.get("/api/wave/preset", dependencies=[auth])
     async def wave_preset():
