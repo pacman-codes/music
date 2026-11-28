@@ -31,7 +31,7 @@ class PrefetchRequest(BaseModel):
 class PlaybackReport(BaseModel):
     play_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     track_id: int = Field(gt=0,le=9223372036854775807,strict=True)
-    event: Literal["start","skip","complete","stop"]
+    event: Literal["start","progress","skip","complete","stop"]
     listened_ms: int = Field(ge=0,le=86400000,strict=True)
     duration_ms: int | None = Field(default=None,gt=0,le=86400000,strict=True)
 
@@ -164,6 +164,10 @@ def create_app(root: Path | None = None, catalog=None):
             return {"changed":playback.report(device,**payload.model_dump())}
         except ValueError as exc:
             raise HTTPException(422,str(exc)) from None
+
+    @app.get("/v1/listening-summary",dependencies=[auth])
+    def listening_summary(period: Literal["7","30","365","all"]="30"):
+        return playback.summary(None if period=="all" else int(period))
 
     @app.get("/v1/history",dependencies=[auth])
     def history(before: int|None=Query(None,ge=1,le=9223372036854775807)):
