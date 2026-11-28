@@ -9,6 +9,7 @@ import 'player.dart';
 import 'catalog.dart';
 import 'offline_page.dart';
 import 'now_playing.dart';
+import 'audio_insight.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -171,6 +172,7 @@ class _HomeState extends State<Home>{
         for(final e in const {'add':'Добавлю','maybe':'Может добавлю','never':'Никогда','later':'Не сейчас','interesting':'Интересно, но не слушать'}.entries)
           ListTile(title:Text(e.value),onTap:()=>Navigator.pop(ctx,e.key)),
         ListTile(leading:const Icon(Icons.playlist_add),title:const Text('В плейлист'),onTap:()=>Navigator.pop(ctx,'playlist')),
+        if(t.playable)ListTile(leading:const Icon(Icons.graphic_eq),title:const Text('Анализ и похожие по звучанию'),onTap:()=>Navigator.pop(ctx,'insight')),
         if(t.playable)ListTile(leading:const Icon(Icons.download),title:const Text('Скачать офлайн'),onTap:()=>Navigator.pop(ctx,'download')),
         if(t.playable)ListTile(leading:const Icon(Icons.queue_music),title:const Text('Следующим'),onTap:()=>Navigator.pop(ctx,'next')),
         if(tab==2&&playlistId!=null)ListTile(leading:const Icon(Icons.remove_circle_outline),title:const Text('Убрать из плейлиста'),onTap:()=>Navigator.pop(ctx,'remove')),
@@ -184,6 +186,9 @@ class _HomeState extends State<Home>{
     )));
     if(action==null||!mounted)return;
     try{
+      if(action=='insight'){
+        await Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>AudioInsightPage(api:api,player:player,track:t)));return;
+      }
       if(action=='download'){await downloadTracks([t]);return;}
       if(action=='playlist'){await addToPlaylist(t);return;}
       if(action=='next'){await player.enqueueNext(t);return;}
