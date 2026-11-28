@@ -208,10 +208,16 @@ class LainPlayer extends BaseAudioHandler {
     final t=tracks[index];
     _playId=_newId();_listened=0;_started=false;_finished=false;_lastPosition=0;_lastTick=_clock.elapsedMilliseconds;
     mediaItem.add(item(t));
-    final file=await cache?.find(t.id);
+    final quality=cache?.quality??'original';
+    final file=await cache?.find(t.id,representation:quality);
     if(offlineOnly&&(file==null||await cache?.hasOffline(t.id)!=true))throw const ApiError(404);
+    if(file==null&&quality=='economy'){
+      final data=await client.request('POST','/v1/media/prepare',body:{'track_ids':[t.id]}) as Map;
+      final rows=data['results'] as List;
+      if(rows.isEmpty||rows.first['economy_state']!='ready')throw const ApiError(425);
+    }
     await engine.setAudioSource(file!=null?AudioSource.file(file.path,tag:item(t)):
-      AudioSource.uri(client.uri('/v1/tracks/${t.id}/audio'),headers:client.headers,tag:item(t)),
+      AudioSource.uri(client.uri('/v1/tracks/${t.id}/audio',{'quality':quality}),headers:client.headers,tag:item(t)),
       initialPosition:Duration(milliseconds:position));
     _restored=false;_resumePosition=0;_lastPosition=position;_lastTick=_clock.elapsedMilliseconds;
     unawaited(engine.play().catchError((Object _){error='Аудио недоступно';changed();}));
@@ -260,6 +266,9 @@ class LainPlayer extends BaseAudioHandler {
       final local=cache;
       if(local==null)return;
       final next=tracks.skip(max(0,index+1)).take(local.warmCount).toList();
+      if(local.quality=='economy'&&next.isNotEmpty){
+        try{await api?.request('POST','/v1/media/prepare',body:{'track_ids':next.map((t)=>t.id).toList()});}catch(_){}
+      }
       for(final t in next){
         if(generation!=_generation)break;
         await local.fetch(t,protected:{if(current!=null)current!.id,...next.map((x)=>x.id)});
