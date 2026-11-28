@@ -219,6 +219,14 @@ class _HomeState extends State<Home>{
     if(!mounted)return;
     await Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>DownloadPage(player:player,tracks:ready)));
   }
+  Future<void> confirmLogout()async{
+    final confirmed=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(
+      title:const Text('Отключить устройство?'),
+      content:const Text('Локальные скачанные файлы, очередь и ещё не синхронизированная история будут удалены с этого устройства. Музыка и коллекция на сервере останутся.'),
+      actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Отмена')),
+        FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Отключить'))]));
+    if(confirmed==true&&mounted)await widget.onLogout();
+  }
   Future<void> showOffline()async{
     await Navigator.push<void>(context,MaterialPageRoute(builder:(_)=>OfflinePage(player:player)));
   }
@@ -402,7 +410,7 @@ class _HomeState extends State<Home>{
     ListTile(leading:const Icon(Icons.storage),title:const Text('Хранилище и предзагрузка'),subtitle:Text('${player.cache?.cacheMiB??1024} МБ кеша'),onTap:showStorage),
     ListTile(leading:const Icon(Icons.download_done),title:const Text('Скачанная музыка'),onTap:showOffline),
     ListTile(title:const Text('Синхронизация истории'),subtitle:Text('Ожидает отправки: ${player.journal?.pendingCount??0}'),trailing:IconButton(icon:const Icon(Icons.sync),onPressed:()async{await player.journal?.flush();player.changed();})),
-    OutlinedButton(onPressed:widget.onLogout,child:const Text('Отключить устройство')),
+    OutlinedButton(onPressed:confirmLogout,child:const Text('Отключить устройство')),
   ]);
   Widget playerBar(){
     final t=player.current;
