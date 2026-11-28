@@ -926,6 +926,43 @@ async function refreshAlbums(offset=0) {
   albumPaging(offset > 0, data.has_more);
   show("albums-status", "Сохранённые альбомы");
 }
+async function personalAlbumShelf(page=0) {
+  const request=++albumRequest;
+  albumView="personal";
+  albumPaging(false,false);
+  const host=byId("albums-results");
+  host.replaceChildren();
+  show("albums-status","Подбираю альбомы по твоему вкусу…");
+  const data=await api("/api/albums/for-you?page="+page);
+  if(request!==albumRequest)return;
+  show("albums-status",data.seed_artists.length
+    ?"На основе: "+data.seed_artists.join(", "):"Добавь любимых артистов или оцени песни");
+  const top=element("div","actions");
+  top.append(action("← Мои альбомы",()=>refreshAlbums()));
+  host.append(top);
+  const grid=element("div","artist-album-grid");
+  for(const album of data.results){
+    const card=action("",async()=>{
+      const resolved=await api("/api/artist-release-groups/"+encodeURIComponent(album.mbid));
+      if(request!==albumRequest)return;
+      await openAlbum(resolved.release_id);
+    },"artist-album");
+    card.append(albumCover(album),element("span","name",album.title),
+      element("span","sub",album.artist+" · "+(album.date?.slice(0,4)||"—")),
+      element("span","recommendation-reason",album.reason==="preferred"
+        ?"Из любимых исполнителей":"Похоже на "+album.seed));
+    grid.append(card);
+  }
+  host.append(grid);
+  if(!data.results.length)host.append(element("div","empty","В этой подборке нет подходящих альбомов."));
+  for(const warning of data.warnings)host.append(element("div","catalog-caption",warning));
+  const nav=element("div","actions");
+  if(page>0)nav.append(action("←",()=>personalAlbumShelf(page-1)));
+  nav.append(element("span","catalog-caption","Подборка "+(page+1)));
+  if(data.has_more)nav.append(action("Другая подборка →",()=>personalAlbumShelf(page+1)));
+  nav.append(action("↻",()=>personalAlbumShelf(page)));
+  host.append(nav);
+}
 async function searchAlbums(query) {
   const request = ++albumRequest;
   albumView = "search";
@@ -1105,6 +1142,7 @@ if (tg && initData) {
     if (q.length >= 2) searchAlbums(q).catch(albumError);
   });
   byId("albums-refresh").addEventListener("click", () => refreshAlbums().catch(albumError));
+  byId("albums-for-you").addEventListener("click", () => personalAlbumShelf().catch(albumError));
   byId("albums-prev").addEventListener("click", () => {
     if (albumView === "saved") refreshAlbums(Math.max(0, albumOffset-20)).catch(albumError);
   });
