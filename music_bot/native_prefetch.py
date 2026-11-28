@@ -113,6 +113,37 @@ class Prefetch:
         tid=self.approve_recording(mbid,row["url"],preserve_existing=True)
         return self.enqueue([tid])[0]
 
+    def prepare_saved_recordings(self, limit):
+        """Wave can prepare positively marked or saved, explicitly indexed recordings."""
+        if not 0<=limit<=5:
+            raise ValueError("Invalid preparation limit")
+        if not limit:return []
+        indexed=self.indexed_recordings()
+        if not indexed:return []
+        linked=self.db.resolved_catalog_tracks()
+        approved=self.approved_ids()
+        ready=self.store.available_ids()
+        with self.db.con() as db:
+            rows=db.execute("""SELECT c.mbid FROM catalog_candidates c
+                JOIN native_recording_sources s ON s.mbid=c.mbid
+                LEFT JOIN catalog_verdicts v ON v.mbid=c.mbid
+                LEFT JOIN discovery_wishlist w ON w.mbid=c.mbid
+                WHERE (v.status IN ('add','maybe') OR (v.status IS NULL AND w.mbid IS NOT NULL))
+                ORDER BY CASE v.status WHEN 'add' THEN 0 WHEN 'maybe' THEN 1 ELSE 2 END,
+                COALESCE(v.updated_at,w.created_at,c.last_seen_at) DESC,c.mbid LIMIT 100""").fetchall()
+        jobs=[]
+        for row in rows:
+            mbid=row["mbid"]
+            tid=linked.get(mbid)
+            if mbid not in indexed or tid in approved or tid in ready:
+                continue
+            try:job=self.prepare_recording(mbid)
+            except (MediaImportError,ValueError):continue
+            if job["state"] not in {"unavailable","failed"}:
+                jobs.append(job)
+            if len(jobs)>=limit:break
+        return jobs
+
     def approve_recording(self, mbid, url, *, preserve_existing=False):
         """Operator-confirmed exact recording; prepare a missing asset without pretending it exists."""
         from music_bot.catalog import valid_mbid
