@@ -176,7 +176,7 @@ def create_app(root: Path | None = None, catalog=None):
                 "SELECT track_id FROM native_prefetch_jobs WHERE state='failed'")}
         upcoming=select_wave_batch(db,mode,count=5,available_ids=missing-failed,native_context=native_context())
         jobs=prefetch.enqueue([t.id for t in upcoming])
-        extra=prefetch.prepare_saved_recordings(5-len(jobs))
+        extra=prefetch.prepare_saved_recordings(5-len(jobs),mode)
         for job in extra:
             track=db.get_track(job["track_id"]) if job["track_id"] else None
             if track is not None and all(t.id!=track.id for t in upcoming):
