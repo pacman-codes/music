@@ -17,6 +17,12 @@ class LainPlayer extends BaseAudioHandler {
   AudioCache? cache;
   SessionJournal? journal;
   bool offlineOnly=false;
+  bool shareProgress=false;
+  bool _publishing=false;
+  String? _lastShared;
+  String? syncError;
+  int _lastSyncTick=0;
+  static const shareProgressKey='lain_share_progress';
   bool _restored=false;
   int _resumePosition=0;
   bool _repeatOne=false;
@@ -33,6 +39,7 @@ class LainPlayer extends BaseAudioHandler {
   Future<void> _tail=Future.value();
   String _playId='';
   int _listened=0;
+  int _lastProgress=0;
   int _lastPosition=0;
   final _clock=Stopwatch()..start();
   int _lastTick=0;
@@ -58,6 +65,9 @@ class LainPlayer extends BaseAudioHandler {
     Timer.periodic(const Duration(seconds:5),(_){
       if(api!=null&&!busy){
         if(!offlineOnly)unawaited(journal?.flush()??Future<void>.value());
+        if(shareProgress&&!offlineOnly&&!_restored&&engine.playing&&_clock.elapsedMilliseconds-_lastSyncTick>=15000){
+          _lastSyncTick=_clock.elapsedMilliseconds;unawaited(publishCheckpoint(quiet:true));
+        }
         if(!_restored&&(current!=null||waveMode!=null)){
           _persist();
           if(!offlineOnly){unawaited(_poll());unawaited(_refill());unawaited(_warm());}
@@ -78,6 +88,7 @@ class LainPlayer extends BaseAudioHandler {
     api=client;cache=storage;_generation++;
     storage.protectedIds=()=>{if(current!=null)current!.id};
     journal=await SessionJournal.open(storage.durable,client);
+    try{shareProgress=await Sessions.storage.read(key:shareProgressKey)=='true';}catch(_){}
     final data=await journal!.readQueue();
     if(data!=null){
       try{
@@ -94,6 +105,52 @@ class LainPlayer extends BaseAudioHandler {
       }catch(_){}
     }
   });
+  Future<void> setShareProgress(bool value)async{
+    await Sessions.storage.write(key:shareProgressKey,value:value?'true':'false');
+    shareProgress=value;_lastShared=null;changed();
+  }
+  Future<bool> publishCheckpoint({bool quiet=false})async{
+    final client=api;
+    if(client==null||current==null||_publishing||offlineOnly||index>=1000)return false;
+    final snapshot=<String,dynamic>{'track_ids':tracks.take(1000).map((t)=>t.id).toList(),
+      'index':index,'position_ms':(_finished?0:displayedPosition).clamp(0,86400000),'wave':waveMode};
+    final fingerprint=snapshot.toString();
+    if(quiet&&fingerprint==_lastShared)return true;
+    _publishing=true;
+    try{
+      await client.request('PUT','/v1/checkpoint',body:snapshot);
+      if(api==client){_lastShared=fingerprint;syncError=null;}
+      return true;
+    }catch(e){if(api==client)syncError=e is ApiError?e.toString():'Не удалось сохранить позицию';return false;}
+    finally{_publishing=false;changed();}
+  }
+  Future<void> clearCheckpoint()async{
+    final client=api;if(client==null)return;
+    await setShareProgress(false);
+    // Wait for the in-flight write before deletion, so it cannot resurrect the checkpoint.
+    final deadline=DateTime.now().add(const Duration(seconds:25));
+    while(_publishing&&DateTime.now().isBefore(deadline)){await Future<void>.delayed(const Duration(milliseconds:100));}
+    if(_publishing)throw const ApiError(0);
+    await client.request('DELETE','/v1/checkpoint');
+    _lastShared=null;changed();
+  }
+  Future<bool> restoreCheckpoint(Map<String,dynamic> data)async{
+    final client=api;if(client==null)return false;
+    var applied=false;
+    await _serial(()async{
+      final rows=client.rows(data['results']);
+      final idx=data['index'] as int;
+      if(rows.isEmpty||rows.length>1000||idx<0||idx>=rows.length||rows.any((t)=>!t.playable))throw const FormatException('Invalid checkpoint');
+      _finish('stop');await engine.stop();
+      _generation++;preparing.clear();offlineOnly=false;
+      tracks..clear()..addAll(rows);index=idx;
+      final mode=data['wave'];waveMode=['balanced','discover','favorites'].contains(mode)?mode as String:null;
+      _resumePosition=(data['position_ms'] as int).clamp(0,86400000).toInt();
+      _restored=true;_finished=false;_playId='';_listened=0;_started=false;
+      mediaItem.add(item(rows[idx]));_syncQueue();applied=true;
+    });
+    return applied;
+  }
   int get displayedPosition=>_restored?_resumePosition:engine.position.inMilliseconds;
   void _persist(){
     final j=journal;
@@ -146,7 +203,8 @@ class LainPlayer extends BaseAudioHandler {
     if(!busy&&!_finished&&current!=null&&engine.playing&&engine.processingState==ProcessingState.ready
        &&wall>0&&wall<2000&&delta>0&&delta<=wall+300){
       _listened+=min(delta,wall);
-      if(!_started&&_listened>=2000){_started=true;_report('start');}
+      if(!_started&&_listened>=2000){_started=true;_lastProgress=_listened;_report('start');}
+      if(_started&&_listened-_lastProgress>=30000){_lastProgress=_listened;_report('progress');}
     }
     _lastTick=now;_lastPosition=p.inMilliseconds;
   }
@@ -209,7 +267,7 @@ class LainPlayer extends BaseAudioHandler {
     index=next;
     if(waveMode!=null&&index>30){tracks.removeRange(0,index-10);index=10;_syncQueue();}
     final t=tracks[index];
-    _playId=_newId();_listened=0;_started=false;_finished=false;_lastPosition=0;_lastTick=_clock.elapsedMilliseconds;
+    _playId=_newId();_listened=0;_lastProgress=0;_started=false;_finished=false;_lastPosition=0;_lastTick=_clock.elapsedMilliseconds;
     mediaItem.add(item(t));
     final quality=cache?.quality??'original';
     final file=await cache?.find(t.id,representation:quality);
@@ -241,7 +299,11 @@ class LainPlayer extends BaseAudioHandler {
     if(engine.processingState==ProcessingState.idle){await _load(index);return;}
     unawaited(engine.play().catchError((Object _){error='Аудио недоступно';changed();}));
   });
-  @override Future<void> pause()=>_serial(()=>engine.pause());
+  @override Future<void> pause()=>_serial(()async{
+    await engine.pause();
+    if(_started&&!_finished&&_listened>_lastProgress){_lastProgress=_listened;_report('progress');}
+    if(shareProgress&&!offlineOnly&&!_restored)unawaited(publishCheckpoint(quiet:true));
+  });
   @override Future<void> seek(Duration p)=>_serial(()async{
     if(_restored){_resumePosition=p.inMilliseconds;return;}
     await engine.seek(p);_lastPosition=p.inMilliseconds;_lastTick=_clock.elapsedMilliseconds;
@@ -327,6 +389,8 @@ class LainPlayer extends BaseAudioHandler {
   Future<void> disconnect()=>_serial(()async{
     _finish('stop');await engine.stop();_generation++;
     final old=cache,j=journal;cache=null;journal=null;api=null;waveMode=null;offlineOnly=false;_restored=false;_resumePosition=0;
+    shareProgress=false;_lastShared=null;syncError=null;
+    try{await Sessions.storage.delete(key:shareProgressKey);}catch(_){}
     if(j!=null){try{await j.close();}catch(_){}}
     tracks.clear();preparing.clear();index=-1;mediaItem.add(null);_syncQueue();
     if(old!=null){try{await old.close();}catch(_){}}

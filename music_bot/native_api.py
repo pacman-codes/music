@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from music_bot.native_storage import NativeStorage
 from music_bot.native_playback import NativePlayback
 from music_bot.native_media import MediaProcessor
+from music_bot.native_sync import install_sync
 from music_bot.native_prefetch import Prefetch, configured_hosts
 from music_bot.selection import select_wave_batch
 from music_bot.storage import Library
@@ -30,7 +31,7 @@ class PrefetchRequest(BaseModel):
 class PlaybackReport(BaseModel):
     play_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     track_id: int = Field(gt=0,le=9223372036854775807,strict=True)
-    event: Literal["start","skip","complete","stop"]
+    event: Literal["start","progress","skip","complete","stop"]
     listened_ms: int = Field(ge=0,le=86400000,strict=True)
     duration_ms: int | None = Field(default=None,gt=0,le=86400000,strict=True)
 
@@ -164,6 +165,10 @@ def create_app(root: Path | None = None, catalog=None):
         except ValueError as exc:
             raise HTTPException(422,str(exc)) from None
 
+    @app.get("/v1/listening-summary",dependencies=[auth])
+    def listening_summary(period: Literal["7","30","365","all"]="30"):
+        return playback.summary(None if period=="all" else int(period))
+
     @app.get("/v1/history",dependencies=[auth])
     def history(before: int|None=Query(None,ge=1,le=9223372036854775807)):
         return playback.history(before)
@@ -250,4 +255,5 @@ def create_app(root: Path | None = None, catalog=None):
         return {"ok":True}
 
     install_native_catalog(app,db,store,prefetch,catalog_client,auth,public)
+    install_sync(app,db,store,auth,public)
     return app

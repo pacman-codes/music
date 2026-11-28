@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
@@ -104,6 +105,51 @@ void main(){
     expect(await cache.find(a.id),isNull);
     expect((await cache.usage())['offline'],0);
     await cache.close();
+  });
+  test('in-flight progress acknowledgement cannot erase a newer queued report',()async{
+    final dir=Directory('${base.path}/race');
+    final arrived=Completer<void>(),release=Completer<void>();
+    final values=<int>[];
+    final retryApi=LainApi(serverUri('https://example.com'),'secret','device',client:MockClient((request)async{
+      final row=jsonDecode(request.body) as Map;
+      values.add(row['listened_ms'] as int);
+      if(values.length==1){arrived.complete();await release.future;}
+      return http.Response('{"changed":true}',200);
+    }));
+    final journal=await SessionJournal.open(dir,retryApi);
+    final id=List.filled(32,'c').join();
+    await journal.report(a,id,'progress',32000,100000,send:false);
+    final sending=journal.flush();
+    await arrived.future.timeout(const Duration(seconds:5));
+    await journal.report(a,id,'progress',62000,100000,send:false);
+    release.complete();
+    await sending.timeout(const Duration(seconds:5));
+    expect(values,[32000,62000]);
+    expect(journal.pendingCount,0);
+    await journal.close();retryApi.client.close();
+  });
+  test('progress outbox coalesces offline reports without losing terminal outcome',()async{
+    final dir=Directory('${base.path}/progress');
+    final seen=<Map>[];
+    final retryApi=LainApi(serverUri('https://example.com'),'secret','device',client:MockClient((request)async{
+      seen.add(jsonDecode(request.body) as Map);
+      return http.Response('{"changed":true}',200);
+    }));
+    final journal=await SessionJournal.open(dir,retryApi);
+    final id=List.filled(32,'b').join();
+    await journal.report(a,id,'start',2000,100000,send:false);
+    await journal.report(a,id,'progress',32000,100000,send:false);
+    await journal.report(a,id,'progress',62000,100000,send:false);
+    await journal.report(a,id,'progress',40000,100000,send:false);
+    await journal.report(a,id,'complete',100000,100000,send:false);
+    expect(journal.pendingCount,3);
+    await journal.close();
+    final restored=await SessionJournal.open(dir,retryApi);
+    await restored.flush();
+    expect(seen.map((row)=>row['event']).toList(),['start','progress','complete']);
+    expect(seen.map((row)=>row['listened_ms']).toList(),[2000,62000,100000]);
+    expect(restored.pendingCount,0);
+    await restored.close();retryApi.client.close();
   });
   test('queue snapshots and offline telemetry survive restart and retry in order',()async{
     final dir=Directory('${base.path}/state');

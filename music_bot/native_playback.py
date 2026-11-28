@@ -25,7 +25,7 @@ class NativePlayback:
     def report(self, device, play_id, track_id, event, listened_ms, duration_ms):
         if not re.fullmatch(r"[a-f0-9]{32}",play_id):
             raise ValueError("Invalid play ID")
-        if event not in {"start","skip","complete","stop"} or not 0<=listened_ms<=86400000:
+        if event not in {"start","progress","skip","complete","stop"} or not 0<=listened_ms<=86400000:
             raise ValueError("Invalid report")
         if duration_ms is not None and not 0<duration_ms<=86400000:
             raise ValueError("Invalid duration")
@@ -44,7 +44,9 @@ class NativePlayback:
             listened=max(listened_ms,row["listened_ms"] if row else 0)
             if listened<2000:
                 return False
-            outcome=None if event=="start" else event
+            outcome=None if event in {"start","progress"} else event
+            if row and event=="progress" and listened<=row["listened_ms"]:
+                return False
             if not row:
                 con.execute("""INSERT INTO native_plays(device_id,play_id,track_id,listened_ms,duration_ms,outcome)
                                VALUES(?,?,?,?,?,?)""",(device,play_id,track_id,listened,duration_ms,outcome))
@@ -75,6 +77,35 @@ class NativePlayback:
                 "immediate_ids":{r["track_id"] for r in rows[:3]},
                 "previous_artists":[artist_key(r["artist"]) for r in reversed(rows[:3])],
                 "recent_ids":{r["track_id"] for r in rows[:60]},"exposure":exposure}
+
+    def summary(self, days=None):
+        """Counts and observed playback time by receipt date (UTC), not deliveries."""
+        if days not in (None,7,30,365):
+            raise ValueError("Invalid period")
+        where=" WHERE p.started_at>=datetime('now',?)" if days else ""
+        args=(f"-{days} days",) if days else ()
+        source=" FROM native_plays p JOIN tracks t ON t.id=p.track_id"+where
+        with self.db.con() as con:
+            row=con.execute("""SELECT COUNT(*) AS sessions,COALESCE(SUM(p.listened_ms),0) AS listened_ms,
+                COUNT(DISTINCT p.track_id) AS unique_tracks,
+                COUNT(DISTINCT lower(trim(t.artist))) AS unique_artists,
+                COALESCE(SUM(CASE WHEN p.outcome='complete' AND p.duration_ms>0
+                    AND p.listened_ms>=p.duration_ms*.8 THEN 1 ELSE 0 END),0) AS substantial_completions,
+                COALESCE(SUM(CASE WHEN p.outcome='skip' AND p.duration_ms>0
+                    AND p.listened_ms<min(30000,p.duration_ms*.25) THEN 1 ELSE 0 END),0) AS early_skips"""
+                +source,args).fetchone()
+            tracks=[dict(r) for r in con.execute("""SELECT t.id,t.title,t.artist,COUNT(*) AS sessions,
+                SUM(p.listened_ms) AS listened_ms"""+source+
+                " GROUP BY t.id ORDER BY listened_ms DESC,t.id LIMIT 10",args)]
+            artists=[dict(r) for r in con.execute("""SELECT MIN(t.artist) AS artist,COUNT(*) AS sessions,
+                SUM(p.listened_ms) AS listened_ms"""+source+
+                " GROUP BY lower(trim(t.artist)) ORDER BY listened_ms DESC,artist LIMIT 10",args)]
+            daily=[dict(r) for r in con.execute("""SELECT date(p.started_at) AS day,COUNT(*) AS sessions,
+                SUM(p.listened_ms) AS listened_ms"""+source+
+                " GROUP BY day ORDER BY day DESC LIMIT 365",args)]
+        return {"period_days":days,"date_basis":"first_report_received_utc",
+                **dict(row),"top_tracks":tracks,"top_artists":artists,
+                "daily":list(reversed(daily))}
 
     def history(self, before=None):
         with self.db.con() as con:
