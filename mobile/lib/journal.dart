@@ -54,7 +54,7 @@ class SessionJournal{
       'index':index,'position_ms':position.clamp(0,86400000),'wave':wave,'offline':offline,'finished':finished};
     return _serial(()=>_write(_queue,data));
   }
-  Future<void> report(Track track,String playId,String event,int listened,int? duration)async{
+  Future<void> report(Track track,String playId,String event,int listened,int? duration,{bool send=true})async{
     final row=<String,dynamic>{'track_id':track.id,'play_id':playId,'event':event,
       'listened_ms':listened.clamp(0,86400000),'duration_ms':duration==null||duration<=0?null:duration.clamp(1,86400000)};
     await _serial(()async{
@@ -67,7 +67,7 @@ class SessionJournal{
       await _write(_outbox,next);
       _pending..clear()..addAll(next);
     });
-    unawaited(flush());
+    if(send)unawaited(flush());
   }
   Future<void> flush()async{
     if(_closed||_sending)return;
