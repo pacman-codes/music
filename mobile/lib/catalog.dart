@@ -9,8 +9,15 @@ class AlbumCover extends StatelessWidget{
   final double size;
   const AlbumCover({super.key,required this.urls,this.size=96});
   @override Widget build(BuildContext context){
-    final List<dynamic> list=urls is List?List<dynamic>.from(urls as List):[];
-    final safe=list.whereType<String>().where((s)=>RegExp(r'^https://coverartarchive\.org/(release|release-group)/[a-f0-9-]{36}/front-250
+    final list=urls is List?List<dynamic>.from(urls as List):<dynamic>[];
+    final safe=list.whereType<String>().where((s)=>RegExp(r'^https://coverartarchive\.org/(release|release-group)/[a-f0-9-]{36}/front-250$').hasMatch(s)).toList();
+    Widget fallback()=>SizedBox(width:size,height:size,child:ColoredBox(color:const Color(0xff29243a),child:Icon(Icons.album,size:size*0.6)));
+    Widget image(int i)=>i>=safe.length?fallback():Image.network(safe[i],width:size,height:size,fit:BoxFit.cover,
+      errorBuilder:(_,__,___)=>image(i+1));
+    return ClipRRect(borderRadius:BorderRadius.circular(10),child:image(0));
+  }
+}
+
 class CatalogPage extends StatefulWidget {
   final LainApi api;
   final LainPlayer player;
