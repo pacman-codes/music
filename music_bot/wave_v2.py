@@ -9,7 +9,7 @@ from __future__ import annotations
 import random
 from collections import Counter
 
-from music_bot.recommend import fatigue_suppressed, track_weight
+from music_bot.recommend import artist_key, fatigue_suppressed, rotation_pool, track_weight
 
 PRESETS: dict[str, tuple[float, float, float]] = {
     "balanced": (0.60, 0.25, 0.15),
@@ -19,23 +19,25 @@ PRESETS: dict[str, tuple[float, float, float]] = {
 CATEGORIES = ("familiar", "similar", "new")
 
 
-def classify(tracks, liked_ids, ratings, playback, related_ids=frozenset()):
+def classify(tracks, liked_ids, ratings, playback, related_ids=frozenset(), *,
+             preferred_artists=frozenset()):
     """Return category buckets without turning a low rating into a dislike."""
     positive_artists = {
-        t.artist.strip().casefold()
+        artist_key(t.artist)
         for t in tracks
         if (t.id in liked_ids or ratings.get(t.id, 0) >= 8)
         and ratings.get(t.id, 10) >= 5
         and not fatigue_suppressed(*playback.get(t.id, (0, 0)))
         and t.artist.strip()
     }
+    positive_artists.update(preferred_artists)
     groups = {category: [] for category in CATEGORIES}
     for t in tracks:
         loved = t.id in liked_ids or ratings.get(t.id, 0) >= 8
         if loved:
             category = "familiar"
         elif (ratings.get(t.id, 10) >= 5 and
-              (t.artist.strip().casefold() in positive_artists or t.id in related_ids)):
+              (artist_key(t.artist) in positive_artists or t.id in related_ids)):
             category = "similar"
         else:
             category = "new"
@@ -74,7 +76,10 @@ def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
             playback=None, recent_ids=frozenset(), count=10,
             preset="balanced", seed=None, exposure=None,
             playlist_counts=None, related_ids=frozenset(),
-            maybe_ids=frozenset()):
+            maybe_ids=frozenset(), rotation_ids=frozenset(),
+            immediate_ids=frozenset(), previous_artists=(),
+            preferred_artists=frozenset(), artist_affinity=None,
+            fresh_positive_ids=frozenset()):
     """Personalized native playback batch, no hypothetical audio candidates."""
     if preset not in PRESETS:
         raise ValueError("Unknown Wave 2.0 preset")
@@ -89,7 +94,8 @@ def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
     ]
     if not eligible:
         return []
-    groups = classify(eligible, liked_ids, ratings, playback, related_ids)
+    groups = classify(eligible, liked_ids, ratings, playback, related_ids,
+                      preferred_artists=preferred_artists)
     limits = allocate_mix(count, {key: len(value) for key, value in groups.items()}, preset)
     rng = random.Random(seed)
     # Interleave quota buckets without long same-category runs when possible.
@@ -104,13 +110,15 @@ def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
         choice = rng.choices(possible, weights=[remaining[n] for n in possible], k=1)[0]
         schedule.append(choice)
         remaining[choice] -= 1
-    favorites = Counter(t.artist.strip().casefold() for t in eligible
+    favorites = Counter(artist_key(t.artist) for t in eligible
                         if t.id in liked_ids or ratings.get(t.id, 0) >= 8)
+    favorites.update(preferred_artists)
     seen_artists = Counter()
-    recent_artists: list[str] = []
+    recent_artists = list(previous_artists)[-3:]
     result = []
     for name in schedule:
         pool = groups[name]
+        choices = rotation_pool(pool, rotation_ids, immediate_ids, recent_artists)
         scores = [
             track_weight(
                 t, liked_ids, favorites, seen_artists,
@@ -118,13 +126,14 @@ def wave_v2(tracks, liked_ids, disliked_ids=frozenset(), *, ratings=None,
                 mode="balanced", exposure=exposure,
                 playlist_counts=playlist_counts, related_ids=related_ids,
                 recent_artists=recent_artists,
-                maybe_ids=maybe_ids,
+                maybe_ids=maybe_ids, artist_affinity=artist_affinity,
+                fresh_positive_ids=fresh_positive_ids,
             )
-            for t in pool
+            for t in choices
         ]
-        index = rng.choices(range(len(pool)), weights=scores, k=1)[0]
-        track = pool.pop(index)
-        artist = track.artist.strip().casefold()
+        track = rng.choices(choices, weights=scores, k=1)[0]
+        pool.remove(track)
+        artist = artist_key(track.artist)
         seen_artists[artist] += 1
         recent_artists.append(artist)
         result.append(track)

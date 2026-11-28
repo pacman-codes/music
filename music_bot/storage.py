@@ -1094,6 +1094,27 @@ class Library:
             "related_ids": related,
         }
 
+    def wave_recent_context(self) -> dict:
+        """Recent delivery order and recent explicit positive decisions."""
+        with self.con() as db:
+            rows = db.execute(
+                """SELECT h.track_id,t.artist FROM sent_history h
+                   JOIN tracks t ON t.id=h.track_id ORDER BY h.id DESC LIMIT 10"""
+            ).fetchall()
+            positives = db.execute(
+                """SELECT track_id FROM track_ratings WHERE score>=8
+                   AND updated_at>=datetime('now','-30 days')
+                   UNION SELECT track_id FROM track_verdicts WHERE status='add'
+                   AND updated_at>=datetime('now','-30 days')"""
+            ).fetchall()
+        from music_bot.recommend import artist_key
+        return {
+            "rotation_ids": {int(row["track_id"]) for row in rows},
+            "immediate_ids": {int(row["track_id"]) for row in rows[:3]},
+            "previous_artists": [artist_key(row["artist"]) for row in reversed(rows[:3])],
+            "fresh_positive_ids": {int(row[0]) for row in positives},
+        }
+
     def latest_sent_ids(self, limit: int = 3) -> set[int]:
         with self.con() as db:
             return {int(row[0]) for row in db.execute(
