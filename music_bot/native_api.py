@@ -1,5 +1,8 @@
 """Standalone private music API. Does not require a bot token."""
 from pathlib import Path
+from contextlib import asynccontextmanager
+from music_bot.catalog import MusicCatalog
+from music_bot.native_catalog import install_native_catalog
 import os
 from typing import Annotated, Literal
 
@@ -45,13 +48,21 @@ class Reaction(BaseModel):
     status: Literal["maybe","add","never","later","interesting"]
 
 
-def create_app(root: Path | None = None):
+def create_app(root: Path | None = None, catalog=None):
     root = Path(root or os.environ.get("LAIN_DATA_DIR","data/standalone"))
     db = Library(root/"music.db")
     store = NativeStorage(db,root/"audio")
     prefetch = Prefetch(store,configured_hosts())
     playback = NativePlayback(db)
-    app = FastAPI(title="LAIN native",docs_url=None,redoc_url=None,openapi_url=None)
+    catalog_client=catalog or MusicCatalog(db.path)
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            yield
+        finally:
+            if catalog is None:
+                await catalog_client.close()
+    app = FastAPI(title="LAIN native",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 
     def owner(authorization: Annotated[str|None,Header()] = None):
         scheme, _, token = (authorization or "").partition(" ")
@@ -201,4 +212,5 @@ def create_app(root: Path | None = None):
             raise HTTPException(404,"Track not found") from None
         return {"ok":True}
 
+    install_native_catalog(app,db,store,prefetch,catalog_client,auth,public)
     return app
