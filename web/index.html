@@ -11,6 +11,7 @@
   <script src="/assets/app.js" defer></script>
   <script src="/assets/artists.js" defer></script>
   <script src="/assets/collections.js" defer></script>
+  <script src="/assets/taste-profile.js" defer></script>
   <script src="/assets/queue.js" defer></script>
   <script src="/assets/decisions.js" defer></script>
   <script src="/assets/sources.js" defer></script>
@@ -62,8 +63,18 @@
         <button data-route="artists" type="button"><span class="shortcut-icon">◎</span><strong>Исполнители</strong><small>Избранное и дискографии</small></button>
         <button data-route="history" type="button"><span class="shortcut-icon">↶</span><strong>История</strong><small>Последние песни</small></button>
         <button data-route="smart" type="button"><span class="shortcut-icon">✦</span><strong>Умные плейлисты</strong><small>Подборки из медиатеки</small></button>
+        <button data-route="taste" type="button"><span class="shortcut-icon">◈</span><strong>Музыкальный профиль</strong><small>Вкус и рекомендации</small></button>
       </div>
       <p class="playback-note">Аудио отправляется в чат с ботом и воспроизводится в плеере Telegram.</p>
+    </section>
+    <section id="taste-profile-section" data-screen="taste">
+      <div class="heading"><h2>Музыкальный профиль</h2><button id="taste-profile-refresh" type="button">Обновить</button></div>
+      <p class="catalog-hint">Текущие сигналы для Волны, не статистика фактических прослушиваний.</p>
+      <div id="taste-profile-status" role="status" class="catalog-caption"></div>
+      <div id="taste-profile-results" class="list"></div>
+      <div class="heading"><h2>Жанры артистов</h2><button id="taste-genres-load" type="button">Загрузить</button></div>
+      <p class="catalog-hint">Жанры до трёх сохранённых исполнителей из MusicBrainz, не анализ звучания.</p>
+      <div id="taste-genres-results" class="list"></div>
     </section>
     <section id="history-section" data-screen="history">
       <div class="heading"><h2>История</h2><button id="history-refresh" type="button">Обновить</button></div>
