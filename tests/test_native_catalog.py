@@ -116,3 +116,38 @@ def test_album_artist_and_playlist_native_collection(tmp_path,monkeypatch):
     assert client.post("/v1/playback",headers=headers,json=payload).status_code==200
     assert tid not in {r["id"] for r in client.get("/v1/smart-playlists/unheard",headers=headers).json()["results"]}
     client.close()
+
+
+def test_source_manifest_matches_exact_ids_and_wave_prepares_saved_only(tmp_path,monkeypatch):
+    import pytest
+    from music_bot.importer import MediaImportError
+    monkeypatch.setenv("LAIN_PREFETCH_HOSTS",HOST)
+    client,headers,store=owner_client(tmp_path,object())
+    db=store.library
+    wanted=RECORDING
+    rejected="00000000-0000-0000-0000-000000000010"
+    maybe="00000000-0000-0000-0000-000000000011"
+    unknown="00000000-0000-0000-0000-000000000012"
+    prefetch=Prefetch(store,(HOST,))
+    manifest=[{"mbid":ident,"url":URL} for ident in (wanted,rejected,maybe,unknown)]
+    assert prefetch.register_manifest(manifest)==4
+    with pytest.raises(MediaImportError):
+        prefetch.register_manifest([{"mbid":wanted,"url":"http://127.0.0.1/x.mp3"}])
+    assert db.all_tracks()==[]
+    db.remember_candidates([CatalogTrack(ident,"Song "+ident[-2:],"Artist") for ident in (wanted,rejected,maybe)])
+    db.set_catalog_verdict(wanted,"add")
+    db.set_catalog_verdict(rejected,"never")
+    db.set_catalog_verdict(maybe,"maybe")
+    detail=client.get(f"/v1/discovery/{wanted}",headers=headers).json()
+    assert detail["preparable"] and not detail["playable"] and detail["local_track_id"] is None
+    prepared=client.post("/v1/wave/prepare?mode=favorites",headers=headers).json()
+    assert not prepared["results"]
+    assert len(prepared["preparing"])==1
+    assert prepared["preparing"][0]["decision"]=="add"
+    tid=prepared["preparing"][0]["id"]
+    assert db.resolved_catalog_tracks()=={wanted:tid}
+    again=client.post(f"/v1/discovery/{wanted}/prepare",headers=headers).json()
+    assert again["track_id"]==tid and again["state"]=="queued"
+    assert client.post(f"/v1/discovery/{unknown}/prepare",headers=headers).status_code==404
+    assert len(db.all_tracks())==1
+    client.close()
