@@ -44,6 +44,8 @@ def main():
     migrate.add_argument("--after",type=int,default=0)
     migrate.add_argument("--limit",type=int,default=50)
     migrate.add_argument("--confirm-authorized",action="store_true",required=True)
+    manifest=commands.add_parser("register-source-manifest")
+    manifest.add_argument("file",type=Path)
     recording=commands.add_parser("approve-recording")
     recording.add_argument("mbid")
     recording.add_argument("url")
@@ -80,6 +82,13 @@ def main():
             async with Bot(token=token) as bot:
                 return await migrate(store,bot,after=args.after,limit=args.limit)
         print(json.dumps(asyncio.run(run()),ensure_ascii=False))
+    elif args.command=="register-source-manifest":
+        import json
+        from music_bot.native_prefetch import Prefetch, configured_hosts
+        if args.file.stat().st_size>8*1024*1024:
+            raise SystemExit("Manifest exceeds 8 MiB")
+        data=json.loads(args.file.read_text(encoding="utf-8"))
+        print("Registered:",Prefetch(store,configured_hosts()).register_manifest(data))
     elif args.command=="approve-recording":
         from music_bot.native_prefetch import Prefetch, configured_hosts
         print("Track ID:",Prefetch(store,configured_hosts()).approve_recording(args.mbid,args.url))
