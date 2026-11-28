@@ -44,6 +44,9 @@ def main():
     migrate.add_argument("--after",type=int,default=0)
     migrate.add_argument("--limit",type=int,default=50)
     migrate.add_argument("--confirm-authorized",action="store_true",required=True)
+    recording=commands.add_parser("approve-recording")
+    recording.add_argument("mbid")
+    recording.add_argument("url")
     approve=commands.add_parser("approve-source")
     approve.add_argument("track_id",type=int)
     approve.add_argument("url")
@@ -77,6 +80,9 @@ def main():
             async with Bot(token=token) as bot:
                 return await migrate(store,bot,after=args.after,limit=args.limit)
         print(json.dumps(asyncio.run(run()),ensure_ascii=False))
+    elif args.command=="approve-recording":
+        from music_bot.native_prefetch import Prefetch, configured_hosts
+        print("Track ID:",Prefetch(store,configured_hosts()).approve_recording(args.mbid,args.url))
     elif args.command=="approve-source":
         from music_bot.native_prefetch import Prefetch, configured_hosts
         Prefetch(store,configured_hosts()).approve(args.track_id,args.url)
