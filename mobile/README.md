@@ -138,3 +138,26 @@ turn it on explicitly. The boot opt-in persists but gains are session-local.
 If the device effect fails, turn off the opt-in and restart. No iOS EQ is
 claimed. Android effects, Bluetooth output and background transitions still
 need testing on physical phones.
+
+
+## Device continuation and listening statistics
+
+Profile → Устройства и продолжение: save the current online queue/position
+manually, or enable automatic publication (~15 seconds while playing and
+on pause). Each device has an independent checkpoint. Choose a device,
+preview the current song, position and queue length, then explicitly
+restore. Local playback stops and the new queue stays paused until Play;
+the other phone is unaffected. Offline-only queues are never published.
+Deleting a checkpoint disables automatic publishing on that device.
+Local queue restoration remains available without the server.
+
+Profile → Статистика прослушивания: 7 days, 30 days, 365 days or all time,
+reported listening time, sessions, unique tracks/artists, substantial
+completions, early skips, and rankings by listening time. Progress is
+reported after ~30 additional seconds of measured playback and on pause,
+coalesced in the local outbox and retried idempotently. Offline events
+remain local until synchronization. Newer progress is retained even if an
+older request is in flight. No real-time synchronization or playback
+remote control. Date buckets reflect first server receipt in UTC, not
+necessarily the actual offline listening date. Some time may be lost if
+the app is killed between checkpoints. Real device testing remains pending.
