@@ -37,11 +37,10 @@ server is unreachable, use the administrator CLI to revoke the session.
 - Wave obtains available music immediately and queues approved sources on
   the server. It polls preparation statuses and refills before the local queue
   runs out. Ready tracks may be appended, never unready placeholders.
-- Prefetch next three ready tracks sequentially into a private, temporary
-  per-device cache. Cache target limit 1 GiB, maximum 200 MiB/file, LRU
-  eviction, temporary file and atomic rename, bounded network timeouts.
-  Playback does not wait for the background cache. Cache may be evicted by OS;
-  this is not permanent offline library or a promise of gapless playback.
+- Configurable temporary LRU cache: 256 MiB to 4 GiB; prepare 0, 1, 3 or
+  5 upcoming tracks. Explicit permanent downloads are separate from cache,
+  have a 1/5/10/20 GiB admission limit and are not LRU victims. Original audio
+  only; current file is protected from cleanup. OS cache eviction is possible.
 - Search, library pages, editable playlists, five reactions, ratings,
   Wave settings and native history. Full playlists (up to 1000 tracks) play in order or shuffle; unavailable audio is skipped explicitly. No automatic import from unapproved URLs.
 - Reports playback start only after approximately two seconds of position
@@ -78,3 +77,41 @@ audio. Native smart playlists use native playback history rather than legacy
 Telegram delivery counts. Full playlists can be created, renamed, deleted,
 reordered, and played in order or shuffled. Queue and profile are shared with
 the native server. These changes still require real-device verification.
+
+
+## Offline playback and full player
+
+Select Скачать офлайн from a track, album, artist or playlist. A download
+screen processes ready tracks sequentially, with per-track success/failure
+counts and cancellation between files. Explicit downloads are retained in
+the application's private support directory across restarts. They are
+not removed by automatic prefetch eviction or clearing temporary cache.
+Only completed audio files are published. Downloads are limited to
+200 MiB/file and 2000 indexed tracks; the explicit download quota controls
+new admissions, not deletion of already downloaded files. No background
+download service for a killed application and no automatic transcoding.
+Original source format is used.
+
+The Скачанная музыка screen uses local files only, with ordered or shuffled
+playback. An unavailable local file cannot silently turn into a network
+stream in offline mode. Ordinary online queues may also use a local copy.
+Cache and download size, prefetch depth, and clear-cache controls are under
+Хранилище и предзагрузка. Sign-out explicitly warns that device-local
+downloads, queue snapshots and unsynchronized events are deleted.
+
+Tap the mini-player to open full player controls, seek on release, volume,
+repeat-one and upcoming-track reorder/removal. Album art in catalog views
+is unchanged; the player currently uses a generic illustration.
+A device-local snapshot retains up to 1000 tracks, active index and position
+every five seconds and at control transitions. Relaunch restores the queue
+paused; pressing play resumes the saved position, with a new play ID.
+It does not invent a completion for the previous process.
+
+Playback reports now use an atomic local outbox (up to 2000 reports);
+server retries remain idempotent. Explicit offline playback doesn't
+automatically send its events; switch to online playback or use the sync
+button to flush. Failed network/auth requests retain reports, while invalid
+reports are dropped. Older entries can be dropped when the cap is reached;
+abrupt process termination between periodic snapshots may lose recent
+position or a not-yet-written event. No cross-device queue synchronization
+yet. Physical-device verification is still required.
